@@ -1,11 +1,13 @@
 use secretguard::SecretGuardEngine;
 use std::env;
+use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.1.0) - Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.1.1) - Sub-millisecond Terminal Secret & Privacy Guard
 
 USAGE:
     secretguard <SUBCOMMAND> [OPTIONS]
@@ -14,9 +16,68 @@ SUBCOMMANDS:
     check <STRING>      Scans input string; exits with 1 if secret detected, 0 if clean.
     sanitize <STRING>   Prints sanitized string; exits with 1 if redacted, 0 if clean.
     wrap <COMMAND...>   Executes command and sanitizes stdout stream in real time.
+    audit [FILE]        Scans local shell history (.zsh_history / .bash_history) for historical leaks.
     hook <SHELL>        Prints the integration hook for (zsh | bash | fish | powershell).
 "#
     );
+}
+
+fn run_audit(target_path: Option<&str>, engine: &SecretGuardEngine) {
+    let home = env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+
+    let file_path = if let Some(p) = target_path {
+        PathBuf::from(p)
+    } else {
+        let zsh = Path::new(&home).join(".zsh_history");
+        let bash = Path::new(&home).join(".bash_history");
+        if zsh.exists() {
+            zsh
+        } else if bash.exists() {
+            bash
+        } else {
+            eprintln!("❌ No .zsh_history or .bash_history found. Provide path: secretguard audit <PATH>");
+            process::exit(1);
+        }
+    };
+
+    println!("🔍 Auditing history file: {}\n", file_path.display());
+
+    let file = match File::open(&file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("❌ Failed to open file: {}", e);
+            process::exit(1);
+        }
+    };
+
+    let reader = io::BufReader::new(file);
+    let mut total_lines = 0;
+    let mut leaks = 0;
+
+    for (idx, line) in reader.lines().flatten().enumerate() {
+        total_lines += 1;
+        let res = engine.scan_and_sanitize(&line);
+        if res.has_secret {
+            leaks += 1;
+            println!(
+                "⚠️  [Line {}] Detected {:?}\n   Original: {}\n   Redacted: {}\n",
+                idx + 1,
+                res.matched_rules,
+                line.trim(),
+                res.sanitized_text.trim()
+            );
+        }
+    }
+
+    println!("────────────────────────────────────────────");
+    println!("Total Commands Scanned: {}", total_lines);
+    if leaks == 0 {
+        println!("✅ Clean! Zero unmasked secrets found in history.");
+    } else {
+        println!("🚨 Found {} exposed credentials in your history file!", leaks);
+    }
 }
 
 fn print_hook(shell: &str) {
@@ -129,6 +190,10 @@ fn main() {
         "hook" => {
             let shell = if args.len() >= 3 { &args[2] } else { "zsh" };
             print_hook(shell);
+        }
+        "audit" => {
+            let target = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
+            run_audit(target, &engine);
         }
         "wrap" => {
             if args.len() < 3 {

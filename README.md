@@ -45,6 +45,41 @@ Traditional secret scanners (like GitGuardian, TruffleHog, and pre-commit hooks)
 
 ---
 
+## 🥊 Head-to-Head Comparison: Why SecretGuard?
+
+| Capability | GitGuardian / TruffleHog | 1Password CLI / Doppler | Atuin | **SecretGuard** |
+| :--- | :---: | :---: | :---: | :---: |
+| **Catches secrets BEFORE shell execution** | ❌ (Post-execution) | ❌ | ❌ | ✅ **Yes (< 0.02ms)** |
+| **Prevents `.zsh_history` credential leakage** | ❌ | ❌ | ❌ | ✅ **Yes** |
+| **Instant 1-Command History Audit (`audit`)** | ❌ | ❌ | ❌ | ✅ **Yes** |
+| **Protects AI Coding Agents (Claude Code / Cursor)** | ❌ | ❌ | ❌ | ✅ **Yes** |
+| **Real-time `stdout` screen-share masking (`wrap`)** | ❌ | ❌ | ❌ | ✅ **Yes** |
+| **Requires zero discipline / zero config changes** | ❌ (Requires Git) | ❌ (Requires `op run`) | ❌ | ✅ **Yes (Hooks once)** |
+
+---
+
+## 🔍 Instant Day-1 Audit (`audit`)
+
+Audit your entire existing shell history for past credential exposures in seconds:
+
+```bash
+secretguard audit
+```
+
+```
+🔍 Auditing history file: ~/.zsh_history
+
+⚠️  [Line 482] Detected ["OpenAI API Key"]
+   Original: curl -H "Authorization: Bearer sk-proj-98a7sdf..." https://api.openai.com
+   Redacted: curl -H "Authorization: Bearer sk-p[REDACTED]" https://api.openai.com
+
+────────────────────────────────────────────
+Total Commands Scanned: 4,120
+🚨 Found 1 exposed credential in your history file!
+```
+
+---
+
 ## 📊 Benchmark Results
 
 Benchmarked across a synthetic test suite of **1,000 commands** (500 positive credential samples + 500 clean commands):
