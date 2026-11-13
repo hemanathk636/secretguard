@@ -1,0 +1,26 @@
+[package]
+name = "secretguard"
+version = "0.1.0"
+edition = "2021"
+authors = ["SecretGuard Team"]
+description = "Sub-millisecond terminal secret interceptor and privacy guard for developers and AI agents"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+regex = "1.10"
+lazy_static = "1.4"
+
+[lib]
+name = "secretguard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "secretguard"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
