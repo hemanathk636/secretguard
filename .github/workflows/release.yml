@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build - ${{ matrix.target }}
@@ -20,7 +23,7 @@ jobs:
             archive: secretguard-aarch64-apple-darwin.tar.gz
 
           # macOS Intel
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             bin: secretguard
             archive: secretguard-x86_64-apple-darwin.tar.gz
@@ -55,16 +58,19 @@ jobs:
           cd target/${{ matrix.target }}/release
           tar -czvf ../../../${{ matrix.archive }} ${{ matrix.bin }}
           cd ../../..
-          shasum -a 256 ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+          else
+            shasum -a 256 ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+          fi
 
       - name: Package binary (Windows)
         if: matrix.os == 'windows-latest'
-        shell: bash
+        shell: pwsh
         run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../${{ matrix.archive }} ${{ matrix.bin }}
-          cd ../../..
-          sha256sum ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.bin }}" -DestinationPath "${{ matrix.archive }}"
+          $hash = (Get-FileHash "${{ matrix.archive }}" -Algorithm SHA256).Hash
+          Set-Content -Path "${{ matrix.archive }}.sha256" -Value $hash
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
