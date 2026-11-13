@@ -3,7 +3,7 @@ set -e
 
 # SecretGuard 1-Line Universal Installer for macOS and Linux
 
-REPO="secretguard/secretguard"
+REPO="hemanathk636/secretguard"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 
 echo "🛡️ Installing SecretGuard..."

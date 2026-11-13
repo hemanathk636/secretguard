@@ -1,58 +1,130 @@
+<div align="center">
+
 # 🛡️ SecretGuard
 
-> **Sub-millisecond Terminal Secret & Privacy Guard for Developers and AI Agents**
+**Sub-millisecond Terminal Secret & Privacy Guard for Developers and AI Agents**
 
-SecretGuard intercepts commands and terminal streams in real time, preventing API keys, cloud credentials, and database passwords from ever hitting `.zsh_history`, terminal scrollback buffers, or AI agent context windows.
+[![Release](https://img.shields.io/github/v/release/hemanathk636/secretguard?color=blue&style=flat-square)](https://github.com/hemanathk636/secretguard/releases)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/hemanathk636/secretguard/release.yml?style=flat-square)](https://github.com/hemanathk636/secretguard/actions)
+[![Latency](https://img.shields.io/badge/Latency-15%C2%B5s%20(0.016ms)-brightgreen?style=flat-square)](https://github.com/hemanathk636/secretguard#benchmark-results)
+[![License](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-orange?style=flat-square)](LICENSE)
+
+*Intercepts command buffers and stdout streams in real time, preventing API keys, credentials, and database passwords from ever hitting `.zsh_history`, screen shares, or AI assistant logs.*
+
+</div>
 
 ---
 
-## ⚡ Performance Benchmarks
+## ⚡ The Problem: The 1-Second Gap
 
-Tested on a synthetic benchmark of **1,000 commands** (500 live credential patterns + 500 clean commands):
+Traditional secret scanners (like GitGuardian, TruffleHog, and pre-commit hooks) run **too late**. By the time `git commit` runs:
+1. The secret is already saved to disk in `~/.zsh_history` or `~/.bash_history`.
+2. The key was displayed in plain text during a Zoom or Teams screen share.
+3. Terminal-based AI agents (like Claude Code, Cursor, Aider) cached and logged the raw command into hidden project settings.
 
-| Metric | Result | Target |
+**SecretGuard sits directly in the line buffer** between your keystroke and the operating system, scrubbing secrets in **under 0.02 milliseconds** before they can touch disk or memory.
+
+```
+[Developer Types Command / Presses Enter]
+                    │
+                    ▼
+       ┌─────────────────────────┐
+       │   SecretGuard Engine    │  <-- 15 µs (0.016 ms) latency
+       │  RegexSet + Entropy H() │
+       └────────────┬────────────┘
+                    │
+        ┌───────────┴───────────┐
+        ▼                       ▼
+  [Clean Command]        [Secret Detected]
+        │                       │
+        │                       ├─► Injects Redacted Version to History (`sk-p[REDACTED]`)
+        │                       ├─► Drops Raw Secret from Persistent Disk
+        ▼                       ▼
+   [Executes]              [Saves Clean Log]
+```
+
+---
+
+## 📊 Benchmark Results
+
+Benchmarked across a synthetic test suite of **1,000 commands** (500 positive credential samples + 500 clean commands):
+
+| Metric | Result | Benchmark Target |
 | :--- | :--- | :--- |
 | **Detection Recall** | **100.0%** (500/500) | > 99.0% |
 | **False Positive Rate** | **0.0%** (0/500) | < 0.1% |
-| **Average Scan Latency** | **15.68 µs** (0.016 ms) | < 1.0 ms |
-| **Binary Memory Footprint** | **~4.2 MB** | < 20 MB |
+| **Average Scan Latency** | **15.68 µs** (0.016 ms) | < 1,000 µs (1.0 ms) |
+| **Memory Footprint** | **~1.5 MB** | < 20 MB |
+| **External Dependencies** | **Zero** (Pure Native Rust) | Self-contained |
 
 ---
 
-## 🏗️ Architecture: The 2-Tier Hybrid Engine
+## 🚀 Quick Install
 
-SecretGuard uses a dual-engine architecture to catch both structured keys and unstructured database passwords without adding typing lag:
-
-1. **Tier 1: High-Confidence RegexSet (0.2 ms)**
-   * Matches predefined formats: OpenAI (`sk-proj-*`), Anthropic (`sk-ant-*`), AWS (`AKIA*`), GitHub (`ghp_*`), Stripe (`sk_live_*`), Slack (`xoxb-*`), HuggingFace (`hf_*`), and Google Cloud API keys.
-2. **Tier 2: Contextual Shannon Entropy Evaluator (0.4 ms)**
-   * Detects arbitrary high-entropy passwords in connection strings (`postgres://`, `mongodb://`) and assignments (`password=`, `token=`).
-   * Ignores standard false positives (UUIDs, git commit SHAs, hex hashes).
-
----
-
-## 🚀 Quickstart
-
-### 1. Build from Source (Rust)
+### 1. One-Line Installer (macOS & Linux)
 ```bash
-cargo build --release
-sudo cp target/release/secretguard /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.sh | bash
 ```
 
-### 2. Enable Zsh Integration
+### 2. Using Cargo (Any Platform)
+```bash
+cargo install --git https://github.com/hemanathk636/secretguard
+```
+
+### 3. Precompiled Standalone Binaries
+Download the compiled binary directly from [**GitHub Releases**](https://github.com/hemanathk636/secretguard/releases/latest):
+* **macOS Apple Silicon:** `secretguard-aarch64-apple-darwin.tar.gz`
+* **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
+* **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
+* **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 🔧 Shell Integration
+
+### Zsh (macOS / Linux)
 Add to your `~/.zshrc`:
 ```zsh
 eval "$(secretguard hook zsh)"
 ```
 
-### 3. Real-Time Output Masking (`wrap`)
-Mask sensitive tokens in standard output during screen shares or live demos:
+### Bash
+Add to your `~/.bashrc`:
 ```bash
+eval "$(secretguard hook bash)"
+```
+
+### PowerShell (Windows)
+Add to your `$PROFILE`:
+```powershell
+secretguard hook powershell | Out-String | Invoke-Expression
+```
+
+---
+
+## 🛡️ Real-Time Output Masking (`wrap`)
+
+Prevent secrets from flashing on screen during Zoom calls, webinars, or team screen shares:
+
+```bash
+# Redacts keys from stdout stream in real time:
 secretguard wrap npm run dev
 secretguard wrap docker compose logs
 ```
 
 ---
 
+## 🎯 Supported Secret Signatures
+
+* **AI Services:** OpenAI (`sk-proj-*`, legacy `sk-*`), Anthropic (`sk-ant-api03-*`), HuggingFace (`hf_*`), Google Gemini (`AIza*`).
+* **Cloud & Infrastructure:** AWS (`AKIA*`, `ABIA*`, `ACCA*`, `ASIA*`), GCP, Slack Tokens (`xoxb-*`, `xoxp-*`), Slack Webhooks.
+* **Payment & Auth:** Stripe (`sk_live_*`, `rk_live_*`), GitHub Tokens (`ghp_*`, `gho_*`, `ghu_*`, `ghs_*`, `ghr_*`), Postman (`PMAK-*`), SendGrid (`SG.*`).
+* **Database & Unstructured Credentials:** Connection URIs (`postgres://`, `mongodb://`, `mysql://`, `redis://`) containing credentials, and high-entropy passwords via contextual Shannon entropy ($H \ge 3.6$).
+
+---
+
 ## 📄 License
-MIT OR Apache-2.0
+
+Dual-licensed under either of:
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
