@@ -17,6 +17,7 @@ SUBCOMMANDS:
     sanitize <STRING>   Prints sanitized string; exits with 1 if redacted, 0 if clean.
     wrap <COMMAND...>   Executes command and sanitizes stdout stream in real time.
     audit [FILE]        Scans local shell history (.zsh_history / .bash_history) for historical leaks.
+    clean-history       Safely scrubs exposed secrets from shell history with atomic backups.
     protect-agent [DIR] Shields workspace from AI coding agent (Claude Code, Cursor, MCP) leaks.
     hook <SHELL>        Prints the integration hook for (zsh | bash | fish | powershell).
 "#
@@ -79,6 +80,133 @@ fn run_audit(target_path: Option<&str>, engine: &SecretGuardEngine) {
     } else {
         println!("🚨 Found {} exposed credentials in your history file!", leaks);
     }
+}
+
+fn run_clean_history(target_path: Option<&str>, dry_run: bool, engine: &SecretGuardEngine) {
+    let home = env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+
+    let file_path = if let Some(p) = target_path {
+        PathBuf::from(p)
+    } else {
+        let zsh = Path::new(&home).join(".zsh_history");
+        let bash = Path::new(&home).join(".bash_history");
+        if zsh.exists() {
+            zsh
+        } else if bash.exists() {
+            bash
+        } else {
+            eprintln!("❌ No .zsh_history or .bash_history found. Provide path: secretguard clean-history <PATH>");
+            process::exit(1);
+        }
+    };
+
+    println!("🧹 SecretGuard History Sanitizer: {}", file_path.display());
+    if dry_run {
+        println!("ℹ️  Mode: DRY-RUN (Preview only, no files will be modified)\n");
+    }
+
+    let file = match File::open(&file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("❌ Failed to open history file: {}", e);
+            process::exit(1);
+        }
+    };
+
+    let reader = io::BufReader::new(file);
+    let mut total_lines = 0;
+    let mut sanitized_lines = Vec::new();
+    let mut leaks_found = 0;
+
+    for (idx, line_res) in reader.lines().enumerate() {
+        match line_res {
+            Ok(line) => {
+                total_lines += 1;
+                let res = engine.scan_and_sanitize(&line);
+                if res.has_secret {
+                    leaks_found += 1;
+                    println!(
+                        "⚠️  [Line {}] Found {:?}\n   Before: {}\n   After:  {}\n",
+                        idx + 1,
+                        res.matched_rules,
+                        line.trim(),
+                        res.sanitized_text.trim()
+                    );
+                    sanitized_lines.push(res.sanitized_text);
+                } else {
+                    sanitized_lines.push(line);
+                }
+            }
+            Err(_) => {
+                continue;
+            }
+        }
+    }
+
+    println!("────────────────────────────────────────────");
+    println!("Total Commands Scanned: {}", total_lines);
+    println!("Exposed Secrets Found:  {}", leaks_found);
+
+    if leaks_found == 0 {
+        println!("✅ Your history is already 100% clean! No changes needed.");
+        return;
+    }
+
+    if dry_run {
+        println!("\n💡 Dry-run complete. Run without '--dry-run' to apply changes safely.");
+        return;
+    }
+
+    print!("\n⚠️  Safely sanitize {} exposed secrets in {}? (y/N): ", leaks_found, file_path.display());
+    io::stdout().flush().unwrap();
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer).unwrap_or(0);
+
+    if !answer.trim().eq_ignore_ascii_case("y") {
+        println!("Aborted. No changes were made.");
+        return;
+    }
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let backup_path = file_path.with_extension(format!("backup.{}", timestamp));
+
+    if let Err(e) = std::fs::copy(&file_path, &backup_path) {
+        eprintln!("❌ Failed to create safe backup at {}: {}", backup_path.display(), e);
+        eprintln!("Aborting operation to prevent any data loss.");
+        process::exit(1);
+    }
+    println!("📦 Safe backup created at: {}", backup_path.display());
+
+    let temp_path = file_path.with_extension(format!("tmp.{}", timestamp));
+    let write_result = (|| -> io::Result<()> {
+        let mut tmp_file = File::create(&temp_path)?;
+        for l in sanitized_lines {
+            writeln!(tmp_file, "{}", l)?;
+        }
+        tmp_file.flush()?;
+        tmp_file.sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(e) = write_result {
+        eprintln!("❌ Failed to write temporary file: {}", e);
+        let _ = std::fs::remove_file(&temp_path);
+        process::exit(1);
+    }
+
+    if let Err(e) = std::fs::rename(&temp_path, &file_path) {
+        eprintln!("❌ Failed to replace history file: {}", e);
+        let _ = std::fs::remove_file(&temp_path);
+        process::exit(1);
+    }
+
+    println!("✨ Successfully sanitized {} commands!", leaks_found);
+    println!("🔒 Your history file is now safe. Backup preserved at: {}", backup_path.display());
 }
 
 fn run_protect_agent(target_dir: Option<&str>, engine: &SecretGuardEngine) {
@@ -259,6 +387,18 @@ fn main() {
         "audit" => {
             let target = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
             run_audit(target, &engine);
+        }
+        "clean-history" => {
+            let mut dry_run = false;
+            let mut target = None;
+            for arg in &args[2..] {
+                if arg == "--dry-run" {
+                    dry_run = true;
+                } else if target.is_none() {
+                    target = Some(arg.as_str());
+                }
+            }
+            run_clean_history(target, dry_run, &engine);
         }
         "protect-agent" => {
             let target = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
