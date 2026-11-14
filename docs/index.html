@@ -11,24 +11,21 @@
 
   <style>
     :root {
-      --bg: #06070a;
-      --surface: #0c0e15;
-      --surface-elevated: #121520;
-      --surface-card: #0e111a;
-      --surface-hover: #171b28;
-      --border: #1a1e2b;
-      --border-subtle: rgba(255, 255, 255, 0.07);
-      --border-active: rgba(96, 165, 250, 0.4);
-      --text-main: #f3f5f9;
-      --text-secondary: #9098a9;
-      --text-tertiary: #525a6c;
+      --bg: #07080b;
+      --surface: #0d1017;
+      --surface-elevated: #131722;
+      --surface-hover: #1a202e;
+      --border: #1c2230;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-active: rgba(96, 165, 250, 0.35);
+      --text-main: #f1f5f9;
+      --text-secondary: #8b949e;
+      --text-tertiary: #4b5563;
       --accent: #3b82f6;
-      --accent-glow: rgba(59, 130, 246, 0.2);
+      --accent-glow: rgba(59, 130, 246, 0.15);
       --mint: #10b981;
-      --mint-glow: rgba(16, 185, 129, 0.2);
+      --mint-glow: rgba(16, 185, 129, 0.15);
       --danger: #f43f5e;
-      --danger-glow: rgba(244, 63, 94, 0.2);
-      --warning: #f59e0b;
       --code-font: 'JetBrains Mono', monospace;
       --mouse-x: 50%;
       --mouse-y: 50%;
@@ -46,11 +43,11 @@
       position: relative;
     }
 
-    /* Ambient Spotlight Cursor Following */
+    /* Ambient Spotlight */
     .spotlight {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
-      background: radial-gradient(900px circle at var(--mouse-x) var(--mouse-y), rgba(59, 130, 246, 0.08), transparent 80%);
+      background: radial-gradient(850px circle at var(--mouse-x) var(--mouse-y), rgba(59, 130, 246, 0.06), transparent 80%);
       pointer-events: none;
       z-index: 0;
     }
@@ -58,14 +55,14 @@
     .bg-grid {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
-      background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+      background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
       background-size: 32px 32px;
       pointer-events: none;
       z-index: 0;
     }
 
     .container {
-      max-width: 1180px;
+      max-width: 1140px;
       margin: 0 auto;
       padding: 0 24px;
       position: relative;
@@ -75,17 +72,16 @@
     /* Top Announcement Bar */
     .announcement-bar {
       border-bottom: 1px solid var(--border);
-      background: rgba(12, 14, 21, 0.85);
+      background: rgba(13, 16, 23, 0.85);
       backdrop-filter: blur(12px);
-      padding: 10px 16px;
+      padding: 9px 16px;
       text-align: center;
-      font-size: 0.84rem;
+      font-size: 0.82rem;
       color: var(--text-secondary);
       display: flex;
       justify-content: center;
       align-items: center;
       gap: 10px;
-      flex-wrap: wrap;
     }
     .announcement-bar a {
       color: #60a5fa;
@@ -93,24 +89,24 @@
       font-weight: 600;
     }
     .kbd-hint {
-      background: rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.06);
       border: 1px solid var(--border);
       border-radius: 4px;
-      padding: 2px 7px;
+      padding: 2px 6px;
       font-family: var(--code-font);
-      font-size: 0.74rem;
-      color: var(--text-secondary);
+      font-size: 0.72rem;
+      color: var(--text-tertiary);
     }
 
     /* Navigation */
     nav {
-      height: 68px;
+      height: 64px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       border-bottom: 1px solid var(--border);
-      background: rgba(6, 7, 10, 0.85);
-      backdrop-filter: blur(18px);
+      background: rgba(7, 8, 11, 0.88);
+      backdrop-filter: blur(16px);
       position: sticky;
       top: 0;
       z-index: 100;
@@ -118,20 +114,19 @@
     .nav-brand {
       display: flex;
       align-items: center;
-      gap: 12px;
-      font-size: 1.15rem;
-      font-weight: 900;
-      letter-spacing: -0.03em;
+      gap: 10px;
+      font-size: 1.05rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
       color: var(--text-main);
       text-decoration: none;
     }
     .brand-icon {
-      width: 28px;
-      height: 28px;
+      width: 24px;
+      height: 24px;
       stroke: #60a5fa;
       stroke-width: 2.2;
       fill: none;
-      filter: drop-shadow(0 0 10px rgba(96, 165, 250, 0.5));
     }
     .nav-items {
       display: flex;
@@ -141,7 +136,7 @@
     .nav-link {
       color: var(--text-secondary);
       text-decoration: none;
-      font-size: 0.9rem;
+      font-size: 0.86rem;
       font-weight: 500;
       transition: color 0.15s;
     }
@@ -150,142 +145,124 @@
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 8px 16px;
-      border-radius: 8px;
-      background: linear-gradient(180deg, #181d2a 0%, #10131d 100%);
-      border: 1px solid var(--border-active);
+      padding: 6px 14px;
+      border-radius: 6px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
       color: var(--text-main);
       text-decoration: none;
-      font-size: 0.88rem;
+      font-size: 0.84rem;
       font-weight: 600;
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
-      transition: all 0.2s;
+      transition: all 0.15s;
     }
     .btn-nav:hover {
-      background: linear-gradient(180deg, #202638 0%, #151a26 100%);
-      transform: translateY(-1px);
-      box-shadow: 0 6px 20px rgba(59, 130, 246, 0.25);
+      background: var(--surface-hover);
+      border-color: var(--border-active);
     }
 
-    /* Hero Section */
+    /* Hero */
     .hero {
-      padding: 80px 0 50px;
+      padding: 84px 0 52px;
       text-align: center;
     }
     .release-tag {
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 6px 16px;
+      padding: 5px 14px;
       border-radius: 9999px;
-      background: rgba(16, 185, 129, 0.08);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      color: var(--mint);
-      font-size: 0.84rem;
-      font-weight: 600;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+      font-weight: 500;
       margin-bottom: 24px;
       font-family: var(--code-font);
-      box-shadow: 0 0 20px rgba(16, 185, 129, 0.15);
     }
     .status-dot {
-      width: 8px;
-      height: 8px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
       background: var(--mint);
-      box-shadow: 0 0 10px var(--mint);
-      animation: pulse-glow 2s infinite;
-    }
-    @keyframes pulse-glow {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.6; transform: scale(0.9); }
+      box-shadow: 0 0 8px var(--mint);
     }
     
     h1 {
-      font-size: clamp(2.5rem, 5.8vw, 4.5rem);
+      font-size: clamp(2.4rem, 5.5vw, 4.2rem);
       font-weight: 900;
       letter-spacing: -0.04em;
-      line-height: 1.08;
-      margin-bottom: 20px;
+      line-height: 1.1;
+      margin-bottom: 18px;
       color: var(--text-main);
     }
     .gradient-text {
-      background: linear-gradient(135deg, #60a5fa 0%, #38bdf8 50%, #34d399 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      color: #93c5fd;
     }
     .hero-lead {
-      font-size: clamp(1.1rem, 2vw, 1.3rem);
+      font-size: clamp(1.05rem, 1.8vw, 1.2rem);
       color: var(--text-secondary);
-      max-width: 720px;
-      margin: 0 auto 40px;
+      max-width: 680px;
+      margin: 0 auto 36px;
       line-height: 1.6;
     }
 
-    /* ======================================================== */
-    /* ALL INSTALL COMMANDS DISPLAYED AT ONCE (No clicking needed) */
-    /* ======================================================== */
+    /* Install Box - Clean & Unified */
     .install-all-box {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 22px;
-      max-width: 860px;
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 820px;
       margin: 0 auto 56px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
     }
     .install-box-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 16px;
-      padding-bottom: 12px;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
       border-bottom: 1px solid var(--border);
     }
     .install-box-title {
-      font-size: 0.92rem;
-      font-weight: 700;
+      font-size: 0.86rem;
+      font-weight: 600;
       color: var(--text-main);
-      display: flex;
-      align-items: center;
-      gap: 8px;
     }
     .install-row {
       display: grid;
-      grid-template-columns: 140px 1fr auto;
+      grid-template-columns: 130px 1fr auto;
       gap: 12px;
       align-items: center;
       background: #080a0f;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: 8px;
-      padding: 10px 14px;
-      margin-bottom: 10px;
-      transition: all 0.2s;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 6px;
+      padding: 9px 14px;
+      margin-bottom: 8px;
+      transition: all 0.15s;
     }
     .install-row:last-child { margin-bottom: 0; }
     .install-row:hover {
       border-color: var(--border-active);
-      background: #0b0e16;
     }
-    @media (max-width: 700px) {
+    @media (max-width: 680px) {
       .install-row { grid-template-columns: 1fr; gap: 8px; }
     }
     .platform-pill {
-      font-size: 0.78rem;
-      font-weight: 700;
-      color: #93c5fd;
-      background: rgba(59, 130, 246, 0.1);
-      border: 1px solid rgba(59, 130, 246, 0.2);
-      padding: 4px 10px;
-      border-radius: 6px;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
+      font-size: 0.76rem;
+      font-weight: 600;
+      color: #cbd5e1;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      padding: 3px 8px;
+      border-radius: 4px;
       width: fit-content;
+      font-family: var(--code-font);
     }
     .install-cmd-code {
       font-family: var(--code-font);
-      font-size: 0.88rem;
-      color: #e2e8f0;
+      font-size: 0.85rem;
+      color: #93c5fd;
       overflow-x: auto;
       white-space: nowrap;
     }
@@ -293,10 +270,10 @@
       background: var(--surface-elevated);
       border: 1px solid var(--border);
       color: var(--text-main);
-      font-size: 0.78rem;
+      font-size: 0.76rem;
       font-weight: 600;
-      padding: 6px 12px;
-      border-radius: 6px;
+      padding: 5px 12px;
+      border-radius: 4px;
       cursor: pointer;
       transition: all 0.15s;
       white-space: nowrap;
@@ -308,113 +285,106 @@
 
     /* Section Headlines */
     .section-headline {
-      font-size: clamp(2rem, 3.4vw, 2.7rem);
-      font-weight: 900;
+      font-size: clamp(1.8rem, 3.2vw, 2.4rem);
+      font-weight: 800;
       letter-spacing: -0.03em;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       text-align: center;
       color: var(--text-main);
     }
     .section-subhead {
-      font-size: 1.05rem;
+      font-size: 0.98rem;
       color: var(--text-secondary);
       text-align: center;
-      max-width: 660px;
-      margin: 0 auto 46px;
-      line-height: 1.6;
+      max-width: 620px;
+      margin: 0 auto 40px;
+      line-height: 1.55;
     }
 
-    /* ======================================================== */
-    /* ALL COMMANDS VISIBLE IN A HIGH-CONVERTING GRID (No click needed) */
-    /* ======================================================== */
+    /* Commands Grid - Clean Slate Cards */
     .commands-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      gap: 20px;
+      gap: 16px;
       margin-bottom: 96px;
     }
-    @media (max-width: 860px) {
+    @media (max-width: 840px) {
       .commands-grid { grid-template-columns: 1fr; }
     }
     .cmd-card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 10px;
       overflow: hidden;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      transition: border-color 0.2s, transform 0.2s;
     }
     .cmd-card:hover {
-      transform: translateY(-3px);
+      transform: translateY(-2px);
       border-color: var(--border-active);
-      box-shadow: 0 16px 40px rgba(59, 130, 246, 0.15);
     }
     .cmd-card.featured {
       grid-column: span 2;
-      border-color: rgba(59, 130, 246, 0.35);
-      background: linear-gradient(180deg, #0e121d 0%, #0a0d14 100%);
+      border-color: rgba(96, 165, 250, 0.25);
     }
-    @media (max-width: 860px) {
+    @media (max-width: 840px) {
       .cmd-card.featured { grid-column: span 1; }
     }
     .cmd-card-header {
-      padding: 20px 24px 14px;
+      padding: 20px 22px 14px;
     }
     .cmd-badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-size: 0.76rem;
-      font-weight: 700;
+      font-size: 0.72rem;
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      padding: 3px 10px;
-      border-radius: 999px;
-      margin-bottom: 12px;
+      letter-spacing: 0.05em;
+      padding: 3px 8px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      font-family: var(--code-font);
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      color: #93c5fd;
     }
-    .badge-blue { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
-    .badge-green { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .badge-amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
-    .badge-purple { background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); }
-    .badge-cyan { background: rgba(6, 182, 212, 0.15); color: #22d3ee; border: 1px solid rgba(6, 182, 212, 0.3); }
-
     .cmd-card-title {
-      font-size: 1.25rem;
-      font-weight: 800;
+      font-size: 1.15rem;
+      font-weight: 700;
       color: var(--text-main);
       margin-bottom: 6px;
+      letter-spacing: -0.015em;
     }
     .cmd-card-desc {
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       color: var(--text-secondary);
       line-height: 1.55;
     }
     .cmd-terminal-box {
       background: #06070a;
       border-top: 1px solid var(--border);
-      padding: 16px 20px;
+      padding: 14px 18px;
       font-family: var(--code-font);
-      font-size: 0.82rem;
+      font-size: 0.8rem;
       line-height: 1.6;
-      color: #94a3b8;
+      color: #8b949e;
       overflow-x: auto;
     }
     .cmd-terminal-action {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 10px 20px;
+      padding: 10px 18px;
       background: rgba(255, 255, 255, 0.02);
       border-top: 1px solid var(--border);
     }
     .cmd-syntax {
       font-family: var(--code-font);
-      font-size: 0.84rem;
+      font-size: 0.82rem;
       color: #93c5fd;
-      font-weight: 600;
+      font-weight: 500;
     }
 
     /* Live Interactive Sandbox */
@@ -425,9 +395,9 @@
     .sandbox-window {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 12px;
       overflow: hidden;
-      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
     }
     .sandbox-top {
       display: flex;
@@ -442,13 +412,11 @@
       gap: 6px;
     }
     .mac-dot {
-      width: 10px;
-      height: 10px;
+      width: 9px;
+      height: 9px;
       border-radius: 50%;
+      background: rgba(255, 255, 255, 0.15);
     }
-    .mac-dot:nth-child(1) { background: #ff5f56; }
-    .mac-dot:nth-child(2) { background: #ffbd2e; }
-    .mac-dot:nth-child(3) { background: #27c93f; }
     
     .sandbox-main {
       padding: 24px;
@@ -458,40 +426,39 @@
       justify-content: space-between;
       align-items: center;
       margin-bottom: 10px;
-      font-size: 0.88rem;
+      font-size: 0.86rem;
       color: var(--text-secondary);
     }
     .sandbox-input {
       width: 100%;
       background: #080a0f;
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 14px 16px;
+      border-radius: 6px;
+      padding: 12px 16px;
       font-family: var(--code-font);
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       color: var(--text-main);
       outline: none;
-      transition: all 0.2s;
+      transition: border-color 0.15s;
       margin-bottom: 14px;
     }
     .sandbox-input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-glow);
+      border-color: var(--border-active);
     }
     .preset-row {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin-bottom: 20px;
+      margin-bottom: 18px;
     }
     .preset-chip {
       background: var(--surface-elevated);
       border: 1px solid var(--border);
       color: var(--text-secondary);
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       font-family: var(--code-font);
-      padding: 7px 14px;
-      border-radius: 6px;
+      padding: 6px 12px;
+      border-radius: 4px;
       cursor: pointer;
       transition: all 0.15s;
     }
@@ -505,16 +472,16 @@
     .entropy-bar-wrap {
       background: #080a0f;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 6px;
       padding: 12px 16px;
-      margin-bottom: 20px;
+      margin-bottom: 18px;
     }
     .entropy-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       font-family: var(--code-font);
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       margin-bottom: 8px;
     }
     .entropy-track {
@@ -532,10 +499,10 @@
     .telemetry-card {
       background: #080a0f;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 6px;
       padding: 16px;
       font-family: var(--code-font);
-      font-size: 0.85rem;
+      font-size: 0.84rem;
     }
     .telemetry-row {
       display: flex;
@@ -546,84 +513,83 @@
     }
     .telemetry-label { color: var(--text-tertiary); }
     .badge-danger {
-      background: rgba(244, 63, 94, 0.15);
+      background: rgba(244, 63, 94, 0.12);
       border: 1px solid rgba(244, 63, 94, 0.3);
       color: var(--danger);
       padding: 2px 8px;
       border-radius: 4px;
-      font-weight: 700;
+      font-weight: 600;
     }
     .badge-mint {
-      background: rgba(16, 185, 129, 0.15);
+      background: rgba(16, 185, 129, 0.12);
       border: 1px solid rgba(16, 185, 129, 0.3);
       color: var(--mint);
       padding: 2px 8px;
       border-radius: 4px;
-      font-weight: 700;
+      font-weight: 600;
     }
 
     /* Comparison Table */
     .comparison-wrap {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 12px;
       overflow-x: auto;
       margin-bottom: 96px;
-      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
     }
     table { width: 100%; border-collapse: collapse; text-align: left; }
     th, td {
-      padding: 16px 20px;
+      padding: 15px 18px;
       border-bottom: 1px solid var(--border);
-      font-size: 0.88rem;
+      font-size: 0.86rem;
       vertical-align: middle;
     }
     th {
       color: var(--text-tertiary);
-      font-size: 0.78rem;
+      font-size: 0.75rem;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.06em;
-      background: rgba(255, 255, 255, 0.02);
+      background: rgba(255, 255, 255, 0.015);
     }
     tr:last-child td { border-bottom: none; }
-    .col-feature { font-weight: 700; color: var(--text-main); min-width: 200px; }
-    .col-competitor { color: var(--text-secondary); min-width: 210px; }
+    .col-feature { font-weight: 600; color: var(--text-main); min-width: 190px; }
+    .col-competitor { color: var(--text-secondary); min-width: 200px; }
     .col-target {
       color: var(--text-main);
       font-weight: 600;
-      background: rgba(59, 130, 246, 0.04);
-      min-width: 240px;
-      border-left: 1px solid rgba(59, 130, 246, 0.2);
-      border-right: 1px solid rgba(59, 130, 246, 0.2);
+      background: rgba(59, 130, 246, 0.03);
+      min-width: 230px;
+      border-left: 1px solid rgba(59, 130, 246, 0.15);
+      border-right: 1px solid rgba(59, 130, 246, 0.15);
     }
     th.col-target {
       color: #93c5fd;
-      background: rgba(59, 130, 246, 0.1);
+      background: rgba(59, 130, 246, 0.06);
     }
-    .badge-check { display: inline-flex; align-items: center; gap: 6px; color: var(--mint); font-weight: 700; }
-    .badge-cross { display: inline-flex; align-items: center; gap: 6px; color: #f87171; }
-    .badge-warn { display: inline-flex; align-items: center; gap: 6px; color: #fbbf24; }
+    .text-check { color: var(--mint); font-weight: 600; }
+    .text-cross { color: #f87171; }
+    .text-warn { color: #eab308; }
 
     /* Speed Bars */
     .perf-chart {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 28px;
+      padding: 24px;
       margin-bottom: 96px;
     }
-    .perf-row { margin-bottom: 20px; }
+    .perf-row { margin-bottom: 18px; }
     .perf-row:last-child { margin-bottom: 0; }
     .perf-label {
       display: flex;
       justify-content: space-between;
-      font-size: 0.88rem;
+      font-size: 0.84rem;
       font-family: var(--code-font);
       margin-bottom: 6px;
     }
     .perf-track {
-      height: 8px;
+      height: 7px;
       background: #141824;
       border-radius: 999px;
       overflow: hidden;
@@ -634,40 +600,73 @@
     .faq-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 20px;
+      gap: 16px;
       margin-bottom: 96px;
     }
     @media (max-width: 768px) { .faq-grid { grid-template-columns: 1fr; } }
     .faq-card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 24px;
+      border-radius: 8px;
+      padding: 22px;
     }
     .faq-q {
-      font-size: 1rem;
-      font-weight: 700;
-      margin-bottom: 8px;
+      font-size: 0.94rem;
+      font-weight: 600;
+      margin-bottom: 6px;
       color: var(--text-main);
-      display: flex;
-      align-items: center;
-      gap: 8px;
     }
     .faq-a {
-      font-size: 0.88rem;
+      font-size: 0.86rem;
       color: var(--text-secondary);
-      line-height: 1.6;
+      line-height: 1.55;
     }
 
-    /* Final CTA */
+    /* Final CTA Card (Clean & Focused, Exactly matching user image) */
     .cta-card {
-      background: linear-gradient(180deg, #10141f 0%, #080a0f 100%);
-      border: 1px solid var(--border-active);
-      border-radius: 16px;
-      padding: 64px 24px;
+      background: linear-gradient(180deg, #0d1017 0%, #07090e 100%);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 56px 24px;
       text-align: center;
       margin-bottom: 96px;
-      box-shadow: 0 20px 60px rgba(59, 130, 246, 0.15);
+    }
+    .cta-install-box {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      max-width: 620px;
+      margin: 0 auto;
+      background: #080a0f;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 16px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+    .cta-cmd-text {
+      font-family: var(--code-font);
+      font-size: 0.88rem;
+      color: #93c5fd;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .copy-pill {
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+    .copy-pill:hover {
+      background: var(--surface-hover);
+      border-color: var(--border-active);
     }
 
     /* Toast */
@@ -675,13 +674,13 @@
       position: fixed;
       bottom: 24px;
       right: 24px;
-      background: #10b981;
+      background: var(--mint);
       color: #000;
-      font-weight: 800;
-      font-size: 0.86rem;
-      padding: 10px 18px;
+      font-weight: 700;
+      font-size: 0.84rem;
+      padding: 9px 16px;
       border-radius: 6px;
-      box-shadow: 0 10px 25px rgba(16, 185, 129, 0.4);
+      box-shadow: 0 8px 20px rgba(16, 185, 129, 0.3);
       transform: translateY(100px);
       opacity: 0;
       transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
@@ -695,9 +694,9 @@
     /* Footer */
     footer {
       border-top: 1px solid var(--border);
-      padding: 40px 0;
+      padding: 36px 0;
       text-align: center;
-      font-size: 0.84rem;
+      font-size: 0.82rem;
       color: var(--text-tertiary);
     }
     footer a { color: var(--text-secondary); text-decoration: none; }
@@ -710,7 +709,7 @@
 
   <!-- Top Announcement Bar -->
   <div class="announcement-bar">
-    <span>🛡️ <strong>SecretGuard v0.1.3</strong> is live on Homebrew, Cargo, and GitHub Releases!</span>
+    <span>SecretGuard v0.1.3 is live on Homebrew, Cargo, and GitHub Releases.</span>
     <span class="kbd-hint">Press C to copy install</span>
   </div>
 
@@ -744,7 +743,7 @@
   <section class="hero container">
     <div class="release-tag">
       <span class="status-dot"></span>
-      ⚡ 0.016ms Native Rust • Instant Terminal Secret Protection
+      0.016ms Native Rust • Instant Terminal Secret Protection
     </div>
 
     <h1>
@@ -757,72 +756,68 @@
       SecretGuard catches credentials the exact millisecond you hit Enter — before they ever touch your disk.
     </p>
 
-    <!-- ======================================================== -->
     <!-- ALL INSTALL COMMANDS VISIBLE SIMULTANEOUSLY -->
-    <!-- ======================================================== -->
     <div class="install-all-box" id="install">
       <div class="install-box-header">
         <div class="install-box-title">
-          <span>📦 Quick Install (Choose your platform):</span>
+          <span>Quick Install:</span>
         </div>
         <span class="kbd-hint">Press C to copy Homebrew</span>
       </div>
 
       <!-- Homebrew -->
       <div class="install-row">
-        <span class="platform-pill">🍺 Homebrew</span>
+        <span class="platform-pill">Homebrew</span>
         <span class="install-cmd-code" id="cmd-brew">brew tap hemanathk636/tap &amp;&amp; brew install secretguard</span>
         <button class="copy-btn-sm" onclick="copySnippet('cmd-brew')">Copy</button>
       </div>
 
       <!-- Curl Script -->
       <div class="install-row">
-        <span class="platform-pill" style="color: #34d399; background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.2);">⚡ Curl Script</span>
+        <span class="platform-pill">Curl Script</span>
         <span class="install-cmd-code" id="cmd-curl">curl -fsSL https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.sh | bash</span>
         <button class="copy-btn-sm" onclick="copySnippet('cmd-curl')">Copy</button>
       </div>
 
       <!-- Cargo -->
       <div class="install-row">
-        <span class="platform-pill" style="color: #fb923c; background: rgba(251, 146, 60, 0.1); border-color: rgba(251, 146, 60, 0.2);">🦀 Cargo (Rust)</span>
+        <span class="platform-pill">Cargo (Rust)</span>
         <span class="install-cmd-code" id="cmd-cargo">cargo install secretguard</span>
         <button class="copy-btn-sm" onclick="copySnippet('cmd-cargo')">Copy</button>
       </div>
 
       <!-- Windows PowerShell -->
       <div class="install-row">
-        <span class="platform-pill" style="color: #38bdf8; background: rgba(56, 189, 248, 0.1); border-color: rgba(56, 189, 248, 0.2);">🪟 PowerShell</span>
+        <span class="platform-pill">PowerShell</span>
         <span class="install-cmd-code" id="cmd-pwsh">irm https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.ps1 | iex</span>
         <button class="copy-btn-sm" onclick="copySnippet('cmd-pwsh')">Copy</button>
       </div>
     </div>
   </section>
 
-  <!-- ======================================================== -->
-  <!-- ALL 5 COMMANDS DISPLAYED LIVE (User can see all without clicking!) -->
-  <!-- ======================================================== -->
+  <!-- ALL 5 COMMANDS DISPLAYED LIVE (Clean, Uncluttered Grid) -->
   <section class="container" id="commands">
-    <h2 class="section-headline">Everything SecretGuard Can Do 💻</h2>
-    <p class="section-subhead">Every command is ready out-of-the-box. See each command and its real output below:</p>
+    <h2 class="section-headline">Commands &amp; Capabilities</h2>
+    <p class="section-subhead">Every command is ready out of the box with zero runtime configuration.</p>
 
     <div class="commands-grid">
-      <!-- Command 1: hook (Featured Full-Width Card) -->
+      <!-- Command 1: hook (Featured Card) -->
       <div class="cmd-card featured">
         <div class="cmd-card-header">
-          <span class="cmd-badge badge-blue">🛡️ Core Protection • Set &amp; Forget</span>
-          <div class="cmd-card-title">1. Automatic Terminal Shield (`secretguard hook`)</div>
+          <span class="cmd-badge">Terminal Interceptor</span>
+          <div class="cmd-card-title">1. Automatic Terminal Shield (secretguard hook)</div>
           <div class="cmd-card-desc">
             Attaches a 0.016ms line hook to your shell (Zsh, Bash, PowerShell). The instant you press Enter, SecretGuard scans the command: if it has an OpenAI key, AWS token, or database password, it redacts it before saving to <code>~/.zsh_history</code>.
           </div>
         </div>
         <div class="cmd-terminal-box">
-<span style="color: #38bdf8;">$ eval "$(secretguard hook zsh)"</span>
-<span style="color: #34d399;">✅ SecretGuard live interceptor attached to Zsh!</span>
+<span style="color: #60a5fa;">$ eval "$(secretguard hook zsh)"</span>
+<span style="color: #34d399;">✓ SecretGuard live interceptor attached to Zsh</span>
 
-<span style="color: #38bdf8;">$ curl -H "Authorization: Bearer sk-proj-98a7sdf987asdf" https://api.openai.com</span>
-<span style="color: #f87171;">⚠️  [SecretGuard] Intercepted exposed OpenAI API Key!</span>
-<span style="color: #94a3b8;">🔒 Line saved to ~/.zsh_history as:</span>
-   <span style="color: #60a5fa;">curl -H "Authorization: Bearer sk-p[REDACTED]" https://api.openai.com</span>
+<span style="color: #60a5fa;">$ curl -H "Authorization: Bearer sk-proj-98a7sdf987asdf" https://api.openai.com</span>
+<span style="color: #f87171;">[SecretGuard] Intercepted exposed OpenAI API Key</span>
+<span style="color: #8b949e;">Line saved to ~/.zsh_history as:</span>
+   <span style="color: #93c5fd;">curl -H "Authorization: Bearer sk-p[REDACTED]" https://api.openai.com</span>
         </div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-hook">eval "$(secretguard hook zsh)"</span>
@@ -833,19 +828,19 @@
       <!-- Command 2: audit -->
       <div class="cmd-card">
         <div class="cmd-card-header">
-          <span class="cmd-badge badge-amber">🔍 History Scan • 0.05s</span>
-          <div class="cmd-card-title">2. Scan History Leaks (`audit`)</div>
+          <span class="cmd-badge">History Scanner</span>
+          <div class="cmd-card-title">2. Scan History Leaks (secretguard audit)</div>
           <div class="cmd-card-desc">
-            Scans your entire shell history file (thousands of past commands) in milliseconds and shows you every secret already exposed on your laptop.
+            Scans your entire shell history file (thousands of past commands) in milliseconds and reports every credential already sitting on disk.
           </div>
         </div>
         <div class="cmd-terminal-box">
-<span style="color: #38bdf8;">$ secretguard audit</span>
-🔍 Scanning ~/.zsh_history (4,820 commands)...
-<span style="color: #f87171;">⚠️  [Line 142] AWS Access Key (AKIA...)</span>
-<span style="color: #f87171;">⚠️  [Line 891] Database Password URI (postgres://...)</span>
+<span style="color: #60a5fa;">$ secretguard audit</span>
+Scanning ~/.zsh_history (4,820 commands)...
+<span style="color: #f87171;">Line 142: AWS Access Key (AKIA...)</span>
+<span style="color: #f87171;">Line 891: Database Password URI (postgres://...)</span>
 ────────────────────────────────────────
-Found: <span style="color: #f87171; font-weight: bold;">2 exposed secrets in your history</span>
+Total Leaks Found: <span style="color: #f87171; font-weight: 600;">2 exposed secrets</span>
         </div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-audit">secretguard audit</span>
@@ -856,18 +851,18 @@ Found: <span style="color: #f87171; font-weight: bold;">2 exposed secrets in you
       <!-- Command 3: clean-history -->
       <div class="cmd-card">
         <div class="cmd-card-header">
-          <span class="cmd-badge badge-green">🧹 Safe Atomic Clean</span>
-          <div class="cmd-card-title">3. Clean History Safely (`clean-history`)</div>
+          <span class="cmd-badge">Safe Sanitizer</span>
+          <div class="cmd-card-title">3. Clean History Safely (secretguard clean-history)</div>
           <div class="cmd-card-desc">
-            Safely scrubs leaked credentials from your history file. Automatically creates a timestamped backup (<code>.zsh_history.bak</code>) before touching anything.
+            Safely scrubs leaked credentials from your history file. Automatically creates a timestamped backup before touching anything.
           </div>
         </div>
         <div class="cmd-terminal-box">
-<span style="color: #38bdf8;">$ secretguard clean-history</span>
+<span style="color: #60a5fa;">$ secretguard clean-history</span>
 Found 2 exposed secrets.
-<span style="color: #fbbf24;">⚠️  Safely sanitize 2 secrets in history? (y/N): y</span>
-<span style="color: #34d399;">📦 Safe backup created: ~/.zsh_history.backup.174</span>
-<span style="color: #34d399;">✨ Successfully sanitized 2 commands!</span>
+<span style="color: #eab308;">Safely sanitize 2 secrets in history? (y/N): y</span>
+<span style="color: #34d399;">Backup created: ~/.zsh_history.backup.174</span>
+<span style="color: #34d399;">✓ Successfully sanitized 2 commands</span>
         </div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-clean">secretguard clean-history</span>
@@ -878,18 +873,18 @@ Found 2 exposed secrets.
       <!-- Command 4: protect-agent -->
       <div class="cmd-card">
         <div class="cmd-card-header">
-          <span class="cmd-badge badge-purple">🤖 AI Agent Protection</span>
-          <div class="cmd-card-title">4. Shield AI Coding Agents (`protect-agent`)</div>
+          <span class="cmd-badge">AI Agent Shield</span>
+          <div class="cmd-card-title">4. Shield AI Coding Agents (secretguard protect-agent)</div>
           <div class="cmd-card-desc">
             Protects Claude Code, Cursor, and MCP caches in <code>.claude/settings.local.json</code> so local AI credentials never get pushed to public GitHub repos.
           </div>
         </div>
         <div class="cmd-terminal-box">
-<span style="color: #38bdf8;">$ secretguard protect-agent</span>
-🤖 Inspecting AI agent configs in '.'...
-<span style="color: #f87171;">⚠️  .claude/settings.local.json contains unmasked key!</span>
-<span style="color: #34d399;">🔒 Added '.claude/' to .gitignore automatically.</span>
-<span style="color: #34d399;">✅ Workspace shielded from accidental Git pushes!</span>
+<span style="color: #60a5fa;">$ secretguard protect-agent</span>
+Inspecting AI agent configs in '.'...
+<span style="color: #f87171;">.claude/settings.local.json contains unmasked key</span>
+<span style="color: #34d399;">Added '.claude/' to .gitignore automatically</span>
+<span style="color: #34d399;">✓ Workspace shielded from accidental Git pushes</span>
         </div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-agent">secretguard protect-agent</span>
@@ -900,18 +895,18 @@ Found 2 exposed secrets.
       <!-- Command 5: wrap -->
       <div class="cmd-card">
         <div class="cmd-card-header">
-          <span class="cmd-badge badge-cyan">👁️ Screen Share Cloak</span>
-          <div class="cmd-card-title">5. Cloak Screen Shares (`wrap`)</div>
+          <span class="cmd-badge">Live Output Cloak</span>
+          <div class="cmd-card-title">5. Cloak Screen Shares (secretguard wrap)</div>
           <div class="cmd-card-desc">
             Prefix any command with <code>secretguard wrap</code> to mask tokens, passwords, and database URLs from ever displaying on your screen during Zoom or demo calls.
           </div>
         </div>
         <div class="cmd-terminal-box">
-<span style="color: #38bdf8;">$ secretguard wrap npm run dev</span>
+<span style="color: #60a5fa;">$ secretguard wrap npm run dev</span>
 [dotenv] Loaded environment variables:
   DATABASE_URL="postgres://user:<span style="color: #34d399;">[REDACTED]</span>@db:5432/main"
   OPENAI_API_KEY="sk-proj-<span style="color: #34d399;">[REDACTED]</span>"
-<span style="color: #34d399;">🔒 Safe for screen sharing: tokens masked on stdout.</span>
+<span style="color: #34d399;">✓ Screen share protected: tokens masked on stdout</span>
         </div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-wrap">secretguard wrap npm run dev</span>
@@ -921,12 +916,10 @@ Found 2 exposed secrets.
     </div>
   </section>
 
-  <!-- ======================================================== -->
-  <!-- Live Interactive Sandbox + Shannon Entropy Gauge -->
-  <!-- ======================================================== -->
+  <!-- Live Interactive Sandbox -->
   <section class="container" id="playground">
-    <h2 class="section-headline">Test Live In Your Browser 🧪</h2>
-    <p class="section-subhead">Type any command below or click a preset to see SecretGuard detect and redact tokens in real time.</p>
+    <h2 class="section-headline">Interactive Live Sandbox</h2>
+    <p class="section-subhead">Test any command line or select a preset to evaluate detection latency and redaction.</p>
 
     <div class="sandbox-wrap">
       <div class="sandbox-window">
@@ -936,13 +929,13 @@ Found 2 exposed secrets.
             <span class="mac-dot"></span>
             <span class="mac-dot"></span>
           </div>
-          <span style="font-family: var(--code-font); font-size: 0.78rem; color: var(--text-tertiary);">live dual-engine verification</span>
-          <span style="font-family: var(--code-font); font-size: 0.74rem; color: var(--mint); font-weight: 700;">LATENCY: 0.016ms</span>
+          <span style="font-family: var(--code-font); font-size: 0.78rem; color: var(--text-tertiary);">dual-engine verification</span>
+          <span style="font-family: var(--code-font); font-size: 0.74rem; color: var(--mint); font-weight: 600;">LATENCY: 0.016ms</span>
         </div>
 
         <div class="sandbox-main">
           <div class="sandbox-subhead">
-            <span>Type any custom command or select a preset:</span>
+            <span>Type any command or select a preset:</span>
             <span class="kbd-hint">Hotkeys: 1, 2, 3, 4, 5</span>
           </div>
           <input 
@@ -953,18 +946,18 @@ Found 2 exposed secrets.
           />
 
           <div class="preset-row">
-            <button class="preset-chip" onclick="setPreset('openai')">1. 🔑 OpenAI Key</button>
-            <button class="preset-chip" onclick="setPreset('aws')">2. ☁️ AWS Access Key</button>
-            <button class="preset-chip" onclick="setPreset('postgres')">3. 🐘 Postgres Password URI</button>
-            <button class="preset-chip" onclick="setPreset('github')">4. 🐙 GitHub Token (ghp_)</button>
-            <button class="preset-chip" onclick="setPreset('clean')">5. ✅ Clean Git Command</button>
+            <button class="preset-chip" onclick="setPreset('openai')">1. OpenAI Key</button>
+            <button class="preset-chip" onclick="setPreset('aws')">2. AWS Key</button>
+            <button class="preset-chip" onclick="setPreset('postgres')">3. Postgres URI</button>
+            <button class="preset-chip" onclick="setPreset('github')">4. GitHub Token</button>
+            <button class="preset-chip" onclick="setPreset('clean')">5. Clean Git Command</button>
           </div>
 
-          <!-- Real-Time Shannon Entropy Gauge -->
+          <!-- Shannon Entropy Gauge -->
           <div class="entropy-bar-wrap">
             <div class="entropy-header">
               <span>Shannon Entropy Analysis:</span>
-              <span id="entropyScore" style="color: var(--mint); font-weight: 700;">H = 3.84 bits/symbol (High Entropy Secret Detected)</span>
+              <span id="entropyScore" style="color: var(--mint); font-weight: 600;">H = 3.84 bits/symbol (High Entropy Secret Detected)</span>
             </div>
             <div class="entropy-track">
               <div id="entropyBar" class="entropy-fill" style="width: 78%; background: var(--danger);"></div>
@@ -973,18 +966,18 @@ Found 2 exposed secrets.
 
           <div class="telemetry-card">
             <div class="telemetry-row">
-              <span class="telemetry-label">Detection Status</span>
-              <span id="liveStatus" class="badge-danger">🚨 Secret Intercepted</span>
+              <span class="telemetry-label">Status</span>
+              <span id="liveStatus" class="badge-danger">Secret Intercepted</span>
             </div>
             <div class="telemetry-row">
-              <span class="telemetry-label">Matched Signature</span>
-              <span id="liveProvider" style="color: var(--text-main); font-weight: 700;">OpenAI API Key</span>
+              <span class="telemetry-label">Signature</span>
+              <span id="liveProvider" style="color: var(--text-main); font-weight: 600;">OpenAI API Key</span>
             </div>
             <div class="telemetry-row">
-              <span class="telemetry-label">Execution Latency</span>
-              <span style="color: var(--mint); font-weight: 700;">15.68 µs (0.016 ms) — Zero typing lag</span>
+              <span class="telemetry-label">Latency</span>
+              <span style="color: var(--mint); font-weight: 600;">15.68 µs (0.016 ms)</span>
             </div>
-            <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.05);">
+            <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.04);">
               <div class="telemetry-label" style="margin-bottom: 5px;">Line Saved to ~/.zsh_history:</div>
               <div id="liveOutput" style="color: #93c5fd; word-break: break-all; line-height: 1.45;">
                 curl -H 'Authorization: Bearer sk-p[REDACTED]' https://api.openai.com
@@ -996,12 +989,10 @@ Found 2 exposed secrets.
     </div>
   </section>
 
-  <!-- ======================================================== -->
-  <!-- UPGRADED: Comparison Table with Tick Boxes, Crosses & Emojis -->
-  <!-- ======================================================== -->
+  <!-- Comparison Table -->
   <section class="container" id="comparison">
-    <h2 class="section-headline">Why Developers Switch to SecretGuard 📊</h2>
-    <p class="section-subhead">See how SecretGuard compares to traditional pre-commit scanners and heavy password managers.</p>
+    <h2 class="section-headline">Comparison &amp; Architecture</h2>
+    <p class="section-subhead">How SecretGuard compares to traditional pre-commit scanners and secret managers.</p>
 
     <div class="comparison-wrap">
       <table>
@@ -1010,57 +1001,57 @@ Found 2 exposed secrets.
             <th class="col-feature">FEATURE</th>
             <th class="col-competitor">GITGUARDIAN / TRUFFLEHOG</th>
             <th class="col-competitor">1PASSWORD CLI / DOPPLER</th>
-            <th class="col-target">⚡ SECRETGUARD (NATIVE RUST)</th>
+            <th class="col-target">SECRETGUARD (NATIVE RUST)</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td class="col-feature">🎯 When It Protects You</td>
-            <td class="col-competitor"><span class="badge-cross">❌ Too late</span> (Git commit / CI only)</td>
-            <td class="col-competitor"><span class="badge-warn">⚠️ Manual wrapper</span> (Must type <code>op run --</code>)</td>
-            <td class="col-target"><span class="badge-check">✅ Real-Time Line Hook</span> (Millisecond you press Enter)</td>
+            <td class="col-feature">Interception Timing</td>
+            <td class="col-competitor"><span class="text-cross">✕ Too late</span> (Git commit / CI only)</td>
+            <td class="col-competitor"><span class="text-warn">⚠ Manual wrapper</span> (Requires <code>op run --</code>)</td>
+            <td class="col-target"><span class="text-check">✓ Real-Time Line Hook</span> (Millisecond you press Enter)</td>
           </tr>
           <tr>
-            <td class="col-feature">📜 Stops <code>.zsh_history</code> Leaks</td>
-            <td class="col-competitor"><span class="badge-cross">❌ No</span> (History gets poisoned)</td>
-            <td class="col-competitor"><span class="badge-cross">❌ No</span> (Forget <code>op run</code> and it leaks)</td>
-            <td class="col-target"><span class="badge-check">✅ 100% Protected</span> (Native Zsh/Bash/PWSH hook)</td>
+            <td class="col-feature">Stops .zsh_history Leaks</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span> (History gets poisoned)</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span> (If wrapper is omitted)</td>
+            <td class="col-target"><span class="text-check">✓ 100% Protected</span> (Native Zsh/Bash/PWSH hook)</td>
           </tr>
           <tr>
-            <td class="col-feature">🤖 AI Coding Agent Shield</td>
-            <td class="col-competitor"><span class="badge-cross">❌ No</span> (Ignores agent caches)</td>
-            <td class="col-competitor"><span class="badge-cross">❌ No</span> (Doesn't protect local agent files)</td>
-            <td class="col-target"><span class="badge-check">✅ Built-In</span> (Protects Claude Code &amp; MCP configs)</td>
+            <td class="col-feature">AI Agent Cache Shield</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span> (Ignores agent caches)</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span></td>
+            <td class="col-target"><span class="text-check">✓ Built-In</span> (Protects Claude Code &amp; MCP configs)</td>
           </tr>
           <tr>
-            <td class="col-feature">🧹 In-Place History Cleanup</td>
-            <td class="col-competitor"><span class="badge-cross">❌ No</span> (Read-only scanner)</td>
-            <td class="col-competitor"><span class="badge-cross">❌ No</span></td>
-            <td class="col-target"><span class="badge-check">✅ Atomic Clean</span> (<code>secretguard clean-history</code> w/ backups)</td>
+            <td class="col-feature">In-Place History Cleanup</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span> (Read-only scanner)</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span></td>
+            <td class="col-target"><span class="text-check">✓ Atomic Clean</span> (<code>secretguard clean-history</code> w/ backups)</td>
           </tr>
           <tr>
-            <td class="col-feature">👁️ Live Screen Share Cloak</td>
-            <td class="col-competitor"><span class="badge-cross">❌ No</span></td>
-            <td class="col-competitor"><span class="badge-cross">❌ No</span></td>
-            <td class="col-target"><span class="badge-check">✅ Built-In</span> (<code>secretguard wrap</code> masks live stdout)</td>
+            <td class="col-feature">Live Screen Share Cloaking</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span></td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span></td>
+            <td class="col-target"><span class="text-check">✓ Built-In</span> (<code>secretguard wrap</code> masks live stdout)</td>
           </tr>
           <tr>
-            <td class="col-feature">⚡ Typing Latency</td>
-            <td class="col-competitor"><span class="badge-cross">❌ 450ms+</span> (Heavy CI scan)</td>
-            <td class="col-competitor"><span class="badge-warn">⚠️ 80ms+</span> (IPC daemon)</td>
-            <td class="col-target"><span class="badge-check">✅ 0.016ms (15µs)</span> (Zero typing stutter)</td>
+            <td class="col-feature">Typing Latency</td>
+            <td class="col-competitor"><span class="text-cross">✕ 450ms+</span> (CI / Python runtime)</td>
+            <td class="col-competitor"><span class="text-warn">⚠ 80ms+</span> (IPC daemon)</td>
+            <td class="col-target"><span class="text-check">✓ 0.016ms (15µs)</span> (Zero typing stutter)</td>
           </tr>
           <tr>
-            <td class="col-feature">📦 App Footprint &amp; Memory</td>
-            <td class="col-competitor"><span class="badge-cross">❌ Heavy</span> (Python/Go/Docker runtimes)</td>
-            <td class="col-competitor"><span class="badge-warn">⚠️ Heavy</span> (Electron app + daemon)</td>
-            <td class="col-target"><span class="badge-check">✅ Ultra-Light</span> (1.56 MB single binary, 0 background CPU)</td>
+            <td class="col-feature">App Footprint &amp; Memory</td>
+            <td class="col-competitor"><span class="text-cross">✕ Heavy</span> (Python/Go/Docker runtimes)</td>
+            <td class="col-competitor"><span class="text-warn">⚠ Heavy</span> (Electron app + daemon)</td>
+            <td class="col-target"><span class="text-check">✓ Ultra-Light</span> (1.56 MB single binary, 0 background CPU)</td>
           </tr>
           <tr>
-            <td class="col-feature">🔒 Privacy &amp; Offline Guarantee</td>
-            <td class="col-competitor"><span class="badge-warn">⚠️ Cloud-dependent</span> (Sends tokens to API)</td>
-            <td class="col-competitor"><span class="badge-warn">⚠️ Cloud account required</span></td>
-            <td class="col-target"><span class="badge-check">✅ 100% Offline</span> (Zero telemetry, zero network calls)</td>
+            <td class="col-feature">Privacy &amp; Offline Guarantee</td>
+            <td class="col-competitor"><span class="text-warn">⚠ Cloud-dependent</span> (Sends tokens to API)</td>
+            <td class="col-competitor"><span class="text-warn">⚠ Cloud account required</span></td>
+            <td class="col-target"><span class="text-check">✓ 100% Offline</span> (Zero telemetry, zero network calls)</td>
           </tr>
         </tbody>
       </table>
@@ -1069,14 +1060,14 @@ Found 2 exposed secrets.
 
   <!-- Speed Comparison Chart -->
   <section class="container" id="benchmarks" style="margin-bottom: 96px;">
-    <h2 class="section-headline">Speed Benchmarks: Why Rust Matters ⚡</h2>
-    <p class="section-subhead">Any terminal hook slower than 50ms causes noticeable typing lag. SecretGuard runs in 15 microseconds.</p>
+    <h2 class="section-headline">Speed Benchmarks: Why Native Rust Matters</h2>
+    <p class="section-subhead">Terminal hooks slower than 50ms cause noticeable typing lag. SecretGuard runs in 15 microseconds.</p>
 
     <div class="perf-chart">
       <div class="perf-row">
         <div class="perf-label">
-          <span style="color: var(--mint); font-weight: 700;">⚡ SecretGuard (Native Rust)</span>
-          <span style="color: var(--mint); font-weight: 700;">0.016 ms (15.68 µs) — Instant</span>
+          <span style="color: var(--mint); font-weight: 600;">SecretGuard (Native Rust)</span>
+          <span style="color: var(--mint); font-weight: 600;">0.016 ms (15.68 µs) — Instant</span>
         </div>
         <div class="perf-track">
           <div class="perf-bar" style="width: 3%; background: var(--mint);"></div>
@@ -1085,7 +1076,7 @@ Found 2 exposed secrets.
 
       <div class="perf-row">
         <div class="perf-label">
-          <span>🐢 Python / Node Hook</span>
+          <span>Python / Node Shell Hook</span>
           <span style="color: var(--text-tertiary);">45.0 ms (Noticeable stutter)</span>
         </div>
         <div class="perf-track">
@@ -1095,11 +1086,11 @@ Found 2 exposed secrets.
 
       <div class="perf-row">
         <div class="perf-label">
-          <span>⏳ Pre-Commit Hook (GitGuardian / TruffleHog)</span>
+          <span>Pre-Commit Hook (GitGuardian / TruffleHog)</span>
           <span style="color: var(--text-tertiary);">480.0 ms (30,000x slower)</span>
         </div>
         <div class="perf-track">
-          <div class="perf-bar" style="width: 85%; background: var(--warning);"></div>
+          <div class="perf-bar" style="width: 85%; background: #eab308;"></div>
         </div>
       </div>
     </div>
@@ -1107,47 +1098,51 @@ Found 2 exposed secrets.
 
   <!-- FAQ Section -->
   <section class="container" id="faq">
-    <h2 class="section-headline">Frequently Asked Questions ❓</h2>
+    <h2 class="section-headline">Frequently Asked Questions</h2>
     <p class="section-subhead">Simple answers to common questions about shell integration, privacy, and safety.</p>
 
     <div class="faq-grid">
       <div class="faq-card">
-        <div class="faq-q">⚡ Will SecretGuard slow down my terminal?</div>
+        <div class="faq-q">Will SecretGuard slow down my terminal?</div>
         <div class="faq-a">No. Humans cannot perceive lag under 50 milliseconds. SecretGuard runs in 0.016 milliseconds (15.68 microseconds)—over 3,000 times faster than human perception. It feels completely instantaneous.</div>
       </div>
 
       <div class="faq-card">
-        <div class="faq-q">🔒 Does SecretGuard send my data anywhere?</div>
+        <div class="faq-q">Does SecretGuard send my data anywhere?</div>
         <div class="faq-a">Never. SecretGuard has zero telemetry, zero analytics, and zero network calls. It is a 100% offline compiled binary running solely on your local CPU.</div>
       </div>
 
       <div class="faq-card">
-        <div class="faq-q">💾 Can 'clean-history' corrupt my shell history file?</div>
+        <div class="faq-q">Can 'clean-history' corrupt my shell history file?</div>
         <div class="faq-a">No. SecretGuard uses atomic file replacement: it writes the cleaned history to a temporary file, verifies it, creates a timestamped copy (e.g. <code>.zsh_history.backup.&lt;time&gt;</code>), and renames atomically. Your original file is always backed up.</div>
       </div>
 
       <div class="faq-card">
-        <div class="faq-q">🤖 How does it protect Claude Code and Cursor?</div>
+        <div class="faq-q">How does it protect Claude Code and Cursor?</div>
         <div class="faq-a">AI coding assistants often save approved shell commands in <code>.claude/settings.local.json</code>. Running <code>secretguard protect-agent</code> audits these files and automatically makes sure they are excluded in your <code>.gitignore</code>.</div>
       </div>
     </div>
   </section>
 
-  <!-- Final CTA Card -->
+  <!-- Final CTA Card (Matches user screenshot: clean, no scrollbars) -->
   <section class="container">
     <div class="cta-card">
-      <h2 style="font-size: clamp(2rem, 3.8vw, 2.8rem); font-weight: 900; margin-bottom: 14px;">
-        Zero Leaks. Zero Lag. 100% Free &amp; Open Source. 🚀
+      <h2 style="font-size: clamp(2rem, 3.6vw, 2.7rem); font-weight: 900; margin-bottom: 12px; letter-spacing: -0.03em;">
+        Zero Leaks. Zero Lag. 100% Free &amp; Open Source.
       </h2>
-      <p style="color: var(--text-secondary); max-width: 540px; margin: 0 auto 32px; font-size: 1.05rem;">
+      <p style="color: var(--text-secondary); max-width: 520px; margin: 0 auto 28px; font-size: 0.96rem;">
         Install via Homebrew or standard curl installer in 5 seconds. Dual-licensed under MIT and Apache-2.0.
       </p>
-      <div style="display: flex; justify-content: center; gap: 12px; flex-wrap: wrap;">
-        <button class="copy-btn-sm" style="padding: 12px 24px; font-size: 0.92rem; background: #3b82f6; border-color: #60a5fa;" onclick="copySnippet('cmd-brew')">
-          🍺 Copy Homebrew Install
-        </button>
-        <a href="https://github.com/hemanathk636/secretguard" target="_blank" class="btn-nav" style="padding: 12px 24px; font-size: 0.92rem;">
-          ⭐ Star on GitHub
+      
+      <!-- Clean, responsive code box with no horizontal scrollbar -->
+      <div class="cta-install-box">
+        <span class="cta-cmd-text" id="cta-cmd">brew tap hemanathk636/tap &amp;&amp; brew install secretguard</span>
+        <button class="copy-pill" onclick="copySnippet('cta-cmd')">Copy</button>
+      </div>
+
+      <div style="margin-top: 20px;">
+        <a href="https://github.com/hemanathk636/secretguard" target="_blank" style="color: var(--text-secondary); text-decoration: none; font-size: 0.85rem; font-weight: 500;">
+          View source on GitHub →
         </a>
       </div>
     </div>
@@ -1159,7 +1154,7 @@ Found 2 exposed secrets.
   <!-- Footer -->
   <footer>
     <div class="container">
-      <p>Built with ❤️ and Rust for developers everywhere. Dual licensed under MIT &amp; Apache-2.0.</p>
+      <p>Built with Rust for developers everywhere. Dual licensed under MIT &amp; Apache-2.0.</p>
       <p style="margin-top: 10px;">
         <a href="https://github.com/hemanathk636/secretguard" target="_blank">GitHub Repository</a> • 
         <a href="https://github.com/hemanathk636/homebrew-tap" target="_blank">Homebrew Tap</a> • 
@@ -1247,12 +1242,12 @@ Found 2 exposed secrets.
 
       if (matched || entropy >= 4.0) {
         status.className = 'badge-danger';
-        status.innerText = '🚨 Secret Intercepted';
+        status.innerText = 'Secret Intercepted';
         provider.innerText = matched || 'High-Entropy Password / Secret Token';
         output.innerText = sanitized;
       } else {
         status.className = 'badge-mint';
-        status.innerText = '✅ Clean Command (Pass-Through)';
+        status.innerText = 'Clean (Pass-Through)';
         provider.innerText = 'None (Safe to execute)';
         output.innerText = val;
       }
