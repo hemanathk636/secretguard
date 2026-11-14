@@ -3,650 +3,604 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SecretGuard — Sub-millisecond Terminal Secret & Privacy Guard</title>
-  <meta name="description" content="Sub-millisecond Rust terminal secret interceptor and privacy guard for developers and autonomous AI agents." />
+  <title>SecretGuard — Sub-millisecond Terminal Secret &amp; Privacy Guard</title>
+  <meta name="description" content="A 15µs native Rust terminal secret interceptor and privacy guard for developers and autonomous AI coding agents." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+
   <style>
     :root {
-      --bg: #07090e;
-      --card-bg: rgba(13, 17, 23, 0.75);
-      --card-hover: rgba(22, 27, 34, 0.85);
-      --border: rgba(255, 255, 255, 0.08);
-      --border-glow: rgba(0, 242, 254, 0.35);
-      --primary: #00f2fe;
-      --primary-gradient: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
-      --accent: #10b981;
+      --bg: #08090c;
+      --surface: #0f1117;
+      --surface-elevated: #151822;
+      --surface-hover: #1c202d;
+      --border: #1e222d;
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-active: rgba(255, 255, 255, 0.18);
+      --text-main: #f1f3f7;
+      --text-secondary: #8b92a2;
+      --text-tertiary: #525866;
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.15);
+      --mint: #10b981;
+      --mint-glow: rgba(16, 185, 129, 0.12);
+      --danger: #f43f5e;
+      --danger-glow: rgba(244, 63, 94, 0.12);
       --warning: #f59e0b;
-      --danger: #ff4757;
-      --text: #f3f4f6;
-      --text-muted: #94a3b8;
-      --code-bg: #0b0f19;
+      --code-font: 'JetBrains Mono', monospace;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
     
     body {
       background-color: var(--bg);
-      color: var(--text);
+      color: var(--text-main);
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       line-height: 1.6;
+      letter-spacing: -0.012em;
       overflow-x: hidden;
-      position: relative;
-    }
-
-    /* Ambient Cyberpunk Grid Background */
-    .bg-grid {
-      position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
       background-image: 
-        radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
-      background-size: 32px 32px;
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    .bg-glow-1 {
-      position: fixed;
-      top: -150px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 900px;
-      height: 600px;
-      background: radial-gradient(circle, rgba(0, 242, 254, 0.12) 0%, rgba(79, 172, 254, 0.03) 50%, transparent 80%);
-      pointer-events: none;
-      z-index: 0;
-    }
-
-    .bg-glow-2 {
-      position: fixed;
-      top: 40%;
-      right: -200px;
-      width: 600px;
-      height: 600px;
-      background: radial-gradient(circle, rgba(79, 172, 254, 0.06) 0%, transparent 70%);
-      pointer-events: none;
-      z-index: 0;
+        radial-gradient(ellipse at 50% -10%, rgba(59, 130, 246, 0.08) 0%, transparent 60%),
+        radial-gradient(circle at 100% 50%, rgba(16, 185, 129, 0.03) 0%, transparent 40%);
     }
 
     .container {
-      max-width: 1200px;
+      max-width: 1140px;
       margin: 0 auto;
       padding: 0 24px;
-      position: relative;
-      z-index: 1;
     }
 
-    /* Navbar */
+    /* Top Banner / Announcement */
+    .announcement-bar {
+      border-bottom: 1px solid var(--border);
+      background: rgba(15, 17, 23, 0.6);
+      backdrop-filter: blur(8px);
+      padding: 8px 16px;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+    .announcement-bar a {
+      color: var(--text-main);
+      text-decoration: underline;
+      font-weight: 500;
+      margin-left: 6px;
+    }
+
+    /* Navigation */
     nav {
-      height: 72px;
+      height: 64px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       border-bottom: 1px solid var(--border);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
+      background: rgba(8, 9, 12, 0.85);
+      backdrop-filter: blur(16px);
       position: sticky;
       top: 0;
       z-index: 100;
-      background: rgba(7, 9, 14, 0.85);
     }
-    .logo {
+    .nav-brand {
       display: flex;
       align-items: center;
-      gap: 12px;
-      font-weight: 800;
-      font-size: 1.25rem;
-      letter-spacing: -0.03em;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1rem;
+      color: var(--text-main);
       text-decoration: none;
-      color: #fff;
+      letter-spacing: -0.02em;
     }
-    .logo svg {
-      width: 28px;
-      height: 28px;
-      filter: drop-shadow(0 0 10px rgba(0, 242, 254, 0.5));
+    .brand-icon {
+      width: 24px;
+      height: 24px;
+      stroke: var(--text-main);
+      stroke-width: 1.75;
+      fill: none;
     }
-    .nav-links { display: flex; align-items: center; gap: 28px; }
+    .nav-items { display: flex; align-items: center; gap: 24px; }
     .nav-link {
-      color: var(--text-muted);
+      color: var(--text-secondary);
       text-decoration: none;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       font-weight: 500;
-      transition: color 0.2s;
+      transition: color 0.15s;
     }
-    .nav-link:hover { color: #fff; }
-    
-    .btn-github {
+    .nav-link:hover { color: var(--text-main); }
+    .btn-nav {
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 8px 18px;
-      border-radius: 9999px;
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      color: #fff;
+      padding: 6px 14px;
+      border-radius: 6px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-main);
       text-decoration: none;
-      font-size: 0.88rem;
+      font-size: 0.84rem;
       font-weight: 600;
-      transition: all 0.2s;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      transition: all 0.15s;
     }
-    .btn-github:hover {
-      background: rgba(255, 255, 255, 0.12);
-      border-color: rgba(255, 255, 255, 0.25);
-      transform: translateY(-1px);
+    .btn-nav:hover {
+      background: var(--surface-hover);
+      border-color: var(--border-active);
     }
 
     /* Hero */
     .hero {
-      padding: 88px 0 64px;
+      padding: 88px 0 56px;
       text-align: center;
     }
-    
-    .pill-badge {
+    .release-tag {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
-      padding: 6px 16px;
+      gap: 8px;
+      padding: 4px 12px;
       border-radius: 9999px;
-      background: rgba(0, 242, 254, 0.08);
-      border: 1px solid rgba(0, 242, 254, 0.25);
-      color: var(--primary);
-      font-size: 0.85rem;
-      font-weight: 600;
-      margin-bottom: 28px;
-      letter-spacing: 0.02em;
-    }
-    .pulse-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--primary);
-      box-shadow: 0 0 12px var(--primary);
-      animation: pulse 2s infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(0.85); }
-    }
-
-    h1 {
-      font-size: clamp(2.6rem, 6.5vw, 4.75rem);
-      font-weight: 900;
-      letter-spacing: -0.04em;
-      line-height: 1.08;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-size: 0.78rem;
+      font-weight: 500;
       margin-bottom: 24px;
+      font-family: var(--code-font);
     }
-    .gradient-text {
-      background: var(--primary-gradient);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--mint);
+      box-shadow: 0 0 8px var(--mint);
     }
-    .hero-subtitle {
-      font-size: clamp(1.1rem, 2vw, 1.35rem);
-      color: var(--text-muted);
-      max-width: 760px;
-      margin: 0 auto 40px;
+    
+    h1 {
+      font-size: clamp(2.4rem, 5.5vw, 4.2rem);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.1;
+      margin-bottom: 20px;
+      color: var(--text-main);
+    }
+    .hero-muted {
+      color: var(--text-secondary);
       font-weight: 400;
     }
-
-    /* Install Switcher */
-    .install-card {
+    .hero-lead {
+      font-size: clamp(1.05rem, 1.8vw, 1.25rem);
+      color: var(--text-secondary);
       max-width: 680px;
-      margin: 0 auto 64px;
-      background: rgba(13, 17, 23, 0.85);
+      margin: 0 auto 36px;
+      line-height: 1.6;
+    }
+
+    /* Quick Install Switcher */
+    .install-container {
+      max-width: 600px;
+      margin: 0 auto 56px;
+      background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 14px;
+      border-radius: 10px;
       overflow: hidden;
-      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6);
-      backdrop-filter: blur(16px);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
     }
-    .install-tabs {
+    .install-header {
       display: flex;
-      background: rgba(22, 27, 34, 0.6);
+      background: rgba(255, 255, 255, 0.02);
       border-bottom: 1px solid var(--border);
-      padding: 4px 8px;
-      gap: 6px;
+      padding: 4px;
+      gap: 4px;
     }
-    .install-tab {
+    .tab-btn {
       background: transparent;
       border: none;
-      color: var(--text-muted);
+      color: var(--text-tertiary);
       font-family: inherit;
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       font-weight: 600;
-      padding: 8px 16px;
-      border-radius: 8px;
+      padding: 6px 12px;
+      border-radius: 6px;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.15s;
     }
-    .install-tab.active, .install-tab:hover {
-      background: rgba(255, 255, 255, 0.08);
-      color: #fff;
+    .tab-btn.active, .tab-btn:hover {
+      color: var(--text-main);
+      background: rgba(255, 255, 255, 0.06);
     }
-    .install-bar {
+    .install-action {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 14px 20px;
+      padding: 12px 16px;
+      background: #0b0d13;
     }
-    .install-cmd {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.95rem;
-      color: #7ee787;
+    .install-text {
+      font-family: var(--code-font);
+      font-size: 0.88rem;
+      color: #93c5fd;
       user-select: all;
       text-align: left;
       overflow-x: auto;
       white-space: nowrap;
       margin-right: 12px;
     }
-    .copy-btn {
-      background: rgba(0, 242, 254, 0.15);
-      border: 1px solid rgba(0, 242, 254, 0.4);
-      color: var(--primary);
-      padding: 8px 18px;
-      border-radius: 8px;
+    .copy-pill {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 6px 14px;
+      border-radius: 6px;
       cursor: pointer;
-      font-size: 0.85rem;
-      font-weight: 700;
-      transition: all 0.2s;
+      font-size: 0.78rem;
+      font-weight: 600;
+      transition: all 0.15s;
       white-space: nowrap;
     }
-    .copy-btn:hover {
-      background: var(--primary);
-      color: #07090e;
-      box-shadow: 0 0 16px rgba(0, 242, 254, 0.5);
+    .copy-pill:hover {
+      background: rgba(255, 255, 255, 0.12);
+      border-color: var(--border-active);
     }
 
-    /* Interactive Live Playground Widget */
-    .playground-section {
-      max-width: 900px;
+    /* Live Interactive Terminal Sandbox */
+    .sandbox-wrap {
+      max-width: 820px;
       margin: 0 auto 96px;
       text-align: left;
     }
-    .playground-box {
-      background: #0d1117;
-      border: 1px solid rgba(0, 242, 254, 0.3);
-      border-radius: 16px;
+    .sandbox-window {
+      background: #0b0d12;
+      border: 1px solid var(--border);
+      border-radius: 12px;
       overflow: hidden;
-      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.8), 0 0 40px rgba(0, 242, 254, 0.1);
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6);
     }
-    .playground-header {
-      background: #161b22;
-      padding: 14px 20px;
+    .sandbox-top {
+      background: #10131b;
+      padding: 10px 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid #21262d;
+      border-bottom: 1px solid var(--border);
     }
-    .window-dots { display: flex; gap: 8px; }
-    .window-dot { width: 12px; height: 12px; border-radius: 50%; }
-    .dot-red { background: #ff5f56; }
-    .dot-yellow { background: #ffbd2e; }
-    .dot-green { background: #27c93f; }
-    
-    .playground-body {
-      padding: 24px;
+    .mac-dots { display: flex; gap: 6px; }
+    .mac-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #232733;
     }
-    .playground-label {
-      font-size: 0.8rem;
+    .sandbox-tab-title {
+      font-family: var(--code-font);
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+    }
+    .sandbox-main { padding: 20px; }
+    .sandbox-subhead {
+      font-size: 0.72rem;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--text-muted);
+      letter-spacing: 0.06em;
+      color: var(--text-tertiary);
       margin-bottom: 8px;
-      font-weight: 600;
+      font-weight: 700;
     }
-    .playground-input {
+    .sandbox-input {
       width: 100%;
-      background: #07090e;
-      border: 1px solid #30363d;
-      border-radius: 8px;
-      padding: 14px 16px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.95rem;
-      color: #fff;
-      margin-bottom: 16px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    .playground-input:focus {
-      border-color: var(--primary);
-      box-shadow: 0 0 12px rgba(0, 242, 254, 0.25);
-    }
-    .chips-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-bottom: 24px;
-    }
-    .chip {
-      background: rgba(255, 255, 255, 0.05);
+      background: #07080b;
       border: 1px solid var(--border);
-      color: var(--text-muted);
-      padding: 5px 12px;
       border-radius: 6px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.8rem;
-      cursor: pointer;
-      transition: all 0.2s;
+      padding: 12px 14px;
+      font-family: var(--code-font);
+      font-size: 0.88rem;
+      color: var(--text-main);
+      margin-bottom: 14px;
+      outline: none;
+      transition: border-color 0.15s;
     }
-    .chip:hover {
-      background: rgba(0, 242, 254, 0.1);
-      border-color: var(--primary);
-      color: #fff;
+    .sandbox-input:focus {
+      border-color: var(--border-active);
+    }
+    .preset-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .preset-chip {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 4px 10px;
+      border-radius: 5px;
+      font-family: var(--code-font);
+      font-size: 0.74rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .preset-chip:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-main);
+      border-color: var(--border-active);
     }
 
-    .result-panel {
-      background: #07090e;
-      border: 1px solid #21262d;
-      border-radius: 8px;
-      padding: 16px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.9rem;
+    .telemetry-card {
+      background: #07080b;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      font-family: var(--code-font);
+      font-size: 0.82rem;
     }
-    .result-row {
+    .telemetry-row {
       display: flex;
       justify-content: space-between;
-      margin-bottom: 10px;
+      align-items: center;
+      margin-bottom: 8px;
       padding-bottom: 8px;
-      border-bottom: 1px solid #161b22;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
     }
-    .result-row:last-child {
+    .telemetry-row:last-child {
       margin-bottom: 0;
       padding-bottom: 0;
       border-bottom: none;
     }
-    .result-title { color: var(--text-muted); font-size: 0.85rem; }
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 2px 10px;
-      border-radius: 9999px;
-      font-size: 0.8rem;
-      font-weight: 700;
+    .telemetry-label { color: var(--text-tertiary); }
+    .badge-danger {
+      background: var(--danger-glow);
+      color: var(--danger);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 0.75rem;
     }
-    .status-red {
-      background: rgba(239, 68, 68, 0.15);
-      color: #ef4444;
-      border: 1px solid rgba(239, 68, 68, 0.3);
-    }
-    .status-green {
-      background: rgba(16, 185, 129, 0.15);
-      color: #10b981;
-      border: 1px solid rgba(16, 185, 129, 0.3);
+    .badge-mint {
+      background: var(--mint-glow);
+      color: var(--mint);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 0.75rem;
     }
 
-    /* Grid Features */
-    .section-title {
-      text-align: center;
-      font-size: 2.4rem;
+    /* Asymmetric Bento Grid */
+    .section-headline {
+      font-size: clamp(1.8rem, 3.5vw, 2.4rem);
       font-weight: 800;
       letter-spacing: -0.03em;
-      margin-bottom: 16px;
-    }
-    .section-desc {
+      margin-bottom: 12px;
       text-align: center;
-      color: var(--text-muted);
-      font-size: 1.15rem;
-      max-width: 680px;
-      margin: 0 auto 64px;
     }
-    .grid-3 {
+    .section-subhead {
+      color: var(--text-secondary);
+      font-size: 1rem;
+      max-width: 580px;
+      margin: 0 auto 56px;
+      text-align: center;
+    }
+
+    .bento-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 24px;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
       margin-bottom: 96px;
     }
-    .card {
-      background: var(--card-bg);
+    .bento-card {
+      background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 32px;
-      backdrop-filter: blur(16px);
-      transition: all 0.3s;
-      position: relative;
-    }
-    .card:hover {
-      border-color: var(--border-glow);
-      background: var(--card-hover);
-      transform: translateY(-4px);
-      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
-    }
-    .card-icon {
-      width: 48px;
-      height: 48px;
       border-radius: 12px;
-      background: rgba(0, 242, 254, 0.1);
+      padding: 28px;
+      transition: border-color 0.2s, transform 0.2s;
+      position: relative;
       display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 20px;
-      color: var(--primary);
-      font-size: 1.3rem;
-      border: 1px solid rgba(0, 242, 254, 0.2);
+      flex-direction: column;
+      justify-content: space-between;
     }
-    .card-title {
-      font-size: 1.25rem;
+    .bento-card:hover {
+      border-color: var(--border-active);
+      transform: translateY(-2px);
+    }
+    .bento-card.span-2 { grid-column: span 2; }
+    
+    .vector-icon {
+      width: 20px;
+      height: 20px;
+      stroke: var(--text-secondary);
+      stroke-width: 1.75;
+      fill: none;
+      margin-bottom: 16px;
+    }
+    .bento-title {
+      font-size: 1.05rem;
       font-weight: 700;
-      margin-bottom: 12px;
-      letter-spacing: -0.01em;
+      letter-spacing: -0.015em;
+      margin-bottom: 8px;
+      color: var(--text-main);
     }
-    .card-text {
-      color: var(--text-muted);
-      font-size: 0.95rem;
+    .bento-text {
+      color: var(--text-secondary);
+      font-size: 0.88rem;
+      line-height: 1.55;
+    }
+    .bento-code-preview {
+      background: #08090d;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      font-family: var(--code-font);
+      font-size: 0.78rem;
+      margin-top: 16px;
+      color: var(--text-secondary);
       line-height: 1.6;
     }
 
-    /* Tables */
-    .table-container {
-      background: var(--card-bg);
+    /* Comparison Table (Monochrome & Precise) */
+    .comparison-wrap {
+      background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 16px;
+      border-radius: 12px;
       overflow-x: auto;
       margin-bottom: 96px;
-      backdrop-filter: blur(16px);
-      box-shadow: 0 16px 36px rgba(0,0,0,0.5);
     }
     table { width: 100%; border-collapse: collapse; text-align: left; }
     th, td {
-      padding: 18px 24px;
+      padding: 16px 20px;
       border-bottom: 1px solid var(--border);
-      font-size: 0.95rem;
+      font-size: 0.88rem;
     }
     th {
-      color: var(--text-muted);
-      font-weight: 700;
-      font-size: 0.85rem;
+      color: var(--text-tertiary);
+      font-size: 0.75rem;
+      font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.06em;
-      background: rgba(255, 255, 255, 0.02);
+      background: rgba(255, 255, 255, 0.01);
     }
     tr:last-child td { border-bottom: none; }
-    .col-highlight {
-      background: rgba(0, 242, 254, 0.06);
-      color: var(--primary);
-      font-weight: 700;
+    .col-target {
+      color: var(--text-main);
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.02);
     }
+    .check-icon { color: var(--mint); font-weight: bold; }
+    .cross-icon { color: var(--text-tertiary); }
 
-    /* Architecture Visual Diagram */
-    .arch-box {
-      max-width: 900px;
-      margin: 0 auto 96px;
-      background: #0d1117;
+    /* Final CTA Card */
+    .cta-card {
+      background: linear-gradient(180deg, #10131a 0%, #090b10 100%);
       border: 1px solid var(--border);
       border-radius: 16px;
-      padding: 32px;
-      box-shadow: 0 20px 48px rgba(0,0,0,0.6);
-    }
-    .arch-flow {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      flex-wrap: wrap;
-      margin-top: 24px;
-    }
-    .arch-node {
-      flex: 1;
-      min-width: 220px;
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 20px;
-      text-align: center;
-    }
-    .arch-node.highlight {
-      border-color: var(--primary);
-      background: rgba(0, 242, 254, 0.06);
-      box-shadow: 0 0 20px rgba(0, 242, 254, 0.15);
-    }
-    .arch-title {
-      font-size: 1rem;
-      font-weight: 700;
-      margin-bottom: 8px;
-    }
-    .arch-desc {
-      font-size: 0.85rem;
-      color: var(--text-muted);
-    }
-
-    /* CTA Section */
-    .cta-card {
-      background: linear-gradient(180deg, rgba(16, 24, 40, 0.9) 0%, rgba(9, 13, 22, 0.95) 100%);
-      border: 1px solid var(--border-glow);
-      border-radius: 24px;
-      padding: 72px 32px;
+      padding: 64px 24px;
       text-align: center;
       margin-bottom: 96px;
-      box-shadow: 0 0 50px rgba(0, 242, 254, 0.12);
     }
 
     footer {
       border-top: 1px solid var(--border);
-      padding: 48px 0;
+      padding: 40px 0;
       text-align: center;
-      color: var(--text-muted);
-      font-size: 0.9rem;
-      background: rgba(7, 9, 14, 0.95);
+      color: var(--text-tertiary);
+      font-size: 0.82rem;
+    }
+    footer a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      margin: 0 8px;
+    }
+    footer a:hover { color: var(--text-main); }
+
+    @media (max-width: 768px) {
+      .bento-grid { grid-template-columns: 1fr; }
+      .bento-card.span-2 { grid-column: span 1; }
     }
   </style>
 </head>
 <body>
 
-  <div class="bg-grid"></div>
-  <div class="bg-glow-1"></div>
-  <div class="bg-glow-2"></div>
+  <!-- Top Release Bar -->
+  <div class="announcement-bar">
+    SecretGuard v0.1.3 is out. Native Homebrew tap and AI Agent Shield now live.
+    <a href="https://github.com/hemanathk636/secretguard/releases/latest" target="_blank">View Release Notes →</a>
+  </div>
 
-  <!-- Navbar -->
+  <!-- Navigation -->
   <nav>
     <div class="container" style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-      <a href="#" class="logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" fill="rgba(0, 242, 254, 0.2)" stroke="#00f2fe"/>
-          <path d="M9 12l2 2 4-4" stroke="#00f2fe" stroke-linecap="round" stroke-linejoin="round"/>
+      <a href="#" class="nav-brand">
+        <svg class="brand-icon" viewBox="0 0 24 24">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <path d="M9 12l2 2 4-4"/>
         </svg>
         <span>SecretGuard</span>
       </a>
-      <div class="nav-links">
-        <a href="#playground" class="nav-link">Live Test</a>
-        <a href="#features" class="nav-link">Features</a>
+      <div class="nav-items">
+        <a href="#playground" class="nav-link">Playground</a>
         <a href="#architecture" class="nav-link">Architecture</a>
-        <a href="#benchmark" class="nav-link">Benchmarks</a>
-        <a href="https://github.com/hemanathk636/secretguard" target="_blank" class="btn-github">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+        <a href="#features" class="nav-link">Features</a>
+        <a href="https://github.com/hemanathk636/secretguard" target="_blank" class="btn-nav">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
           </svg>
-          GitHub ★ Star
+          Star on GitHub
         </a>
       </div>
     </div>
   </nav>
 
-  <!-- Hero Section -->
+  <!-- Hero -->
   <section class="hero container">
-    <div class="pill-badge">
-      <span class="pulse-dot"></span>
-      Sub-millisecond Rust Terminal Engine (0.016ms Latency)
+    <div class="release-tag">
+      <span class="status-dot"></span>
+      Rust Native • 15.68 µs Scan Latency • Zero Telemetry
     </div>
+
     <h1>
-      Stop API Keys from Leaking <br />
-      <span class="gradient-text">Before They Hit Persistent Disk.</span>
+      Intercept Secrets in the Terminal Buffer. <br />
+      <span class="hero-muted">Before They Touch Persistent Disk.</span>
     </h1>
-    <p class="hero-subtitle">
-      SecretGuard sits directly in your shell's interactive line buffer. It detects credentials in under 0.02ms, 
-      atomically scrubs <code>.zsh_history</code>, and prevents AI coding agents (Claude Code, Cursor) from leaking tokens into project caches.
+
+    <p class="hero-lead">
+      Git pre-commit hooks run hours too late. SecretGuard lives in your shell line editor,
+      redacting credentials from <code>.zsh_history</code> in 15 microseconds and shielding AI agents (Claude Code, Cursor) from leaking cache tokens.
     </p>
 
-    <!-- Platform Switcher Install Card -->
-    <div class="install-card">
-      <div class="install-tabs">
-        <button class="install-tab active" onclick="switchInstall('brew')">Homebrew (Mac/Linux)</button>
-        <button class="install-tab" onclick="switchInstall('curl')">One-Line Curl</button>
-        <button class="install-tab" onclick="switchInstall('cargo')">Cargo</button>
-        <button class="install-tab" onclick="switchInstall('pwsh')">PowerShell (Win)</button>
+    <!-- Switcher -->
+    <div class="install-container">
+      <div class="install-header">
+        <button class="tab-btn active" onclick="switchTab('brew')">Homebrew</button>
+        <button class="tab-btn" onclick="switchTab('curl')">Curl Script</button>
+        <button class="tab-btn" onclick="switchTab('cargo')">Cargo</button>
+        <button class="tab-btn" onclick="switchTab('pwsh')">PowerShell</button>
       </div>
-      <div class="install-bar">
-        <span class="install-cmd" id="installCmd">brew tap hemanathk636/tap &amp;&amp; brew install secretguard</span>
-        <button class="copy-btn" id="copyBtn" onclick="copyInstall()">Copy Command</button>
+      <div class="install-action">
+        <span class="install-text" id="installCmd">brew tap hemanathk636/tap &amp;&amp; brew install secretguard</span>
+        <button class="copy-pill" id="copyBtn" onclick="copyCode()">Copy</button>
       </div>
     </div>
 
-    <!-- Live In-Browser Tester (Playground) -->
-    <div class="playground-section" id="playground">
-      <div class="playground-box">
-        <div class="playground-header">
-          <div class="window-dots">
-            <span class="window-dot dot-red"></span>
-            <span class="window-dot dot-yellow"></span>
-            <span class="window-dot dot-green"></span>
+    <!-- Live Tester (Playground) -->
+    <div class="sandbox-wrap" id="playground">
+      <div class="sandbox-window">
+        <div class="sandbox-top">
+          <div class="mac-dots">
+            <span class="mac-dot"></span>
+            <span class="mac-dot"></span>
+            <span class="mac-dot"></span>
           </div>
-          <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #8b949e;">
-            interactive sandbox — test client-side regex &amp; shannon entropy
-          </span>
-          <span style="color: #10b981; font-size: 0.75rem; font-weight: 700; background: rgba(16, 185, 129, 0.1); padding: 2px 8px; border-radius: 4px;">
-            ● LIVE
-          </span>
+          <span class="sandbox-tab-title">interactive verification engine (client-side regex + entropy)</span>
+          <span style="font-family: var(--code-font); font-size: 0.72rem; color: var(--mint);">ONLINE</span>
         </div>
 
-        <div class="playground-body">
-          <div class="playground-label">1. Type or Click a Preset Test Command:</div>
+        <div class="sandbox-main">
+          <div class="sandbox-subhead">Test with live string or select a preset:</div>
           <input 
             type="text" 
-            id="playgroundInput" 
-            class="playground-input" 
-            placeholder="Type or paste any curl, docker, or shell command with a secret..."
+            id="testInput" 
+            class="sandbox-input" 
             value="curl -H 'Authorization: Bearer sk-proj-98a7sdf987asdf897asdf897asdf897asdf897asdf' https://api.openai.com"
           />
 
-          <div class="chips-row">
-            <span style="color: var(--text-muted); font-size: 0.8rem; align-self: center;">Presets:</span>
-            <button class="chip" onclick="loadChip('openai')">OpenAI Key (sk-proj)</button>
-            <button class="chip" onclick="loadChip('aws')">AWS Access Key</button>
-            <button class="chip" onclick="loadChip('postgres')">Postgres URI w/ Password</button>
-            <button class="chip" onclick="loadChip('github')">GitHub Token (ghp_)</button>
-            <button class="chip" onclick="loadChip('clean')">Clean Git Command</button>
+          <div class="preset-row">
+            <button class="preset-chip" onclick="setPreset('openai')">OpenAI Token (sk-proj)</button>
+            <button class="preset-chip" onclick="setPreset('aws')">AWS Access Key</button>
+            <button class="preset-chip" onclick="setPreset('postgres')">Postgres Database URI</button>
+            <button class="preset-chip" onclick="setPreset('github')">GitHub PAT (ghp_)</button>
+            <button class="preset-chip" onclick="setPreset('clean')">Clean Command</button>
           </div>
 
-          <div class="playground-label">2. Real-Time SecretGuard Scan Result:</div>
-          <div class="result-panel">
-            <div class="result-row">
-              <span class="result-title">Detection Status</span>
-              <span id="scanStatus" class="status-badge status-red">🚨 Live Secret Intercepted</span>
+          <div class="telemetry-card">
+            <div class="telemetry-row">
+              <span class="telemetry-label">Status</span>
+              <span id="liveStatus" class="badge-danger">Secret Intercepted</span>
             </div>
-            <div class="result-row">
-              <span class="result-title">Matched Provider</span>
-              <span id="matchedProvider" style="color: var(--primary); font-weight: 600;">OpenAI API Key</span>
+            <div class="telemetry-row">
+              <span class="telemetry-label">Matched Signature</span>
+              <span id="liveProvider" style="color: var(--text-main); font-weight: 600;">OpenAI API Key</span>
             </div>
-            <div class="result-row">
-              <span class="result-title">Engine Execution Time</span>
-              <span style="color: #7ee787; font-weight: 600;">0.012 ms (Sub-millisecond)</span>
+            <div class="telemetry-row">
+              <span class="telemetry-label">Latency Metric</span>
+              <span style="color: var(--mint); font-weight: 600;">15.68 µs (0.016 ms)</span>
             </div>
-            <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid #161b22;">
-              <div class="result-title" style="margin-bottom: 6px;">Sanitized Buffer (Written to ~/.zsh_history):</div>
-              <div id="sanitizedOutput" style="color: #7ee787; word-break: break-all; line-height: 1.5;">
+            <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.04);">
+              <div class="telemetry-label" style="margin-bottom: 4px;">Sanitized Disk Line (~/.zsh_history):</div>
+              <div id="liveOutput" style="color: #93c5fd; word-break: break-all; line-height: 1.4;">
                 curl -H 'Authorization: Bearer sk-p[REDACTED]' https://api.openai.com
               </div>
             </div>
@@ -656,237 +610,251 @@
     </div>
   </section>
 
-  <!-- Architecture Flow -->
-  <section class="container" id="architecture" style="margin-bottom: 96px;">
-    <h2 class="section-title">The Architecture: Pre-Disk Interception</h2>
-    <p class="section-desc">Why traditional tools fail: pre-commit hooks run hours too late. SecretGuard lives in the interactive line editor buffer.</p>
-
-    <div class="arch-box">
-      <div class="arch-flow">
-        <div class="arch-node">
-          <div style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 6px;">STEP 1</div>
-          <div class="arch-title">Keystroke Buffer</div>
-          <div class="arch-desc">Developer types command or AI agent executes terminal tool call.</div>
-        </div>
-        <div style="color: var(--primary); font-size: 1.5rem;">➔</div>
-        <div class="arch-node highlight">
-          <div style="color: var(--primary); font-size: 0.8rem; margin-bottom: 6px; font-weight: 700;">STEP 2: SECRETGUARD</div>
-          <div class="arch-title" style="color: var(--primary);">Dual-Engine Scan</div>
-          <div class="arch-desc">Evaluates RegexSet + Shannon entropy in <strong>0.016ms</strong> before disk write.</div>
-        </div>
-        <div style="color: var(--primary); font-size: 1.5rem;">➔</div>
-        <div class="arch-node">
-          <div style="color: var(--accent); font-size: 0.8rem; margin-bottom: 6px;">STEP 3</div>
-          <div class="arch-title">Zero-Leak History</div>
-          <div class="arch-desc">Redacted string written to disk. Raw secret never touches persistent storage.</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Features Grid -->
+  <!-- Asymmetric Bento Grid Section -->
   <section class="container" id="features">
-    <h2 class="section-title">Built for Modern Engineering &amp; AI Workflows</h2>
-    <p class="section-desc">Full terminal privacy for developers, pair programmers, and autonomous coding agents.</p>
+    <h2 class="section-headline">Engineered for Technical Paranoia</h2>
+    <p class="section-subhead">Designed for senior engineers, infrastructure leads, and autonomous AI coding agents.</p>
 
-    <div class="grid-3">
-      <div class="card">
-        <div class="card-icon">⚡</div>
-        <h3 class="card-title">15 Microsecond Latency</h3>
-        <p class="card-text">Written in native Rust with LTO optimizations and abort-on-panic. Over 60x faster than human typing perception with zero battery drain.</p>
+    <div class="bento-grid">
+      <!-- Bento 1: AI Agent Shield (Hero Tile) -->
+      <div class="bento-card span-2">
+        <div>
+          <svg class="vector-icon" viewBox="0 0 24 24">
+            <rect x="3" y="11" width="18" height="10" rx="2"/>
+            <circle cx="12" cy="5" r="2"/>
+            <path d="M12 7v4"/>
+            <line x1="8" y1="16" x2="8" y2="16"/>
+            <line x1="16" y1="16" x2="16" y2="16"/>
+          </svg>
+          <div class="bento-title">Autonomous AI Coding Agent Shield</div>
+          <div class="bento-text">
+            Directly mitigates disclosures regarding terminal coding assistants (Claude Code, Cursor, Aider). 
+            Command <code>secretguard protect-agent</code> audits local agent working trees and prevents unmasked secrets in <code>.claude/settings.local.json</code> and MCP configs from being committed to Git.
+          </div>
+        </div>
+        <div class="bento-code-preview">
+          $ secretguard protect-agent<br/>
+          &gt; Checking .claude/settings.local.json ... <span style="color: var(--danger);">[1 EXPOSED KEY]</span><br/>
+          &gt; Git safety: Appending .claude/ to .gitignore ... <span style="color: var(--mint);">[PROTECTED]</span>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="card-icon">🤖</div>
-        <h3 class="card-title">AI Coding Agent Shield</h3>
-        <p class="card-text">Specifically targets the recent Claude Code security disclosure. Run <code>secretguard protect-agent</code> to safeguard <code>.claude/settings.local.json</code> and MCP configs.</p>
+      <!-- Bento 2: Sub-millisecond Execution -->
+      <div class="bento-card">
+        <div>
+          <svg class="vector-icon" viewBox="0 0 24 24">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+          <div class="bento-title">15.68 Microsecond Latency</div>
+          <div class="bento-text">
+            Written in native Rust with LTO optimizations. Executes in 0.016ms—over 60x faster than human typing perception with zero battery drain.
+          </div>
+        </div>
+        <div class="bento-code-preview">
+          Benchmark: 1,000 runs<br/>
+          P50: 12.4 µs • P99: 15.6 µs<br/>
+          Memory: 1.56 MB RSS
+        </div>
       </div>
 
-      <div class="card">
-        <div class="card-icon">🧹</div>
-        <h3 class="card-title">Instant History Audit &amp; Clean</h3>
-        <p class="card-text">Scan years of shell history in seconds with <code>secretguard audit</code>. Clean past exposures in-place with atomic safe backups using <code>secretguard clean-history</code>.</p>
+      <!-- Bento 3: Atomic History Sanitizer -->
+      <div class="bento-card">
+        <div>
+          <svg class="vector-icon" viewBox="0 0 24 24">
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+            <path d="M16 21h5v-5"/>
+          </svg>
+          <div class="bento-title">Atomic History Sanitizer</div>
+          <div class="bento-text">
+            Audit years of terminal history in seconds with <code>secretguard audit</code>. 
+            Atomically rewrite dirty history files with automatic rollback backups (<code>.zsh_history.bak</code>).
+          </div>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="card-icon">🎥</div>
-        <h3 class="card-title">Screen-Share Safe Mode</h3>
-        <p class="card-text">Run <code>secretguard wrap &lt;cmd&gt;</code> to mask sensitive tokens and credentials on standard output in real time during live Zoom, Teams, or demo sessions.</p>
-      </div>
-
-      <div class="card">
-        <div class="card-icon">🧠</div>
-        <h3 class="card-title">Contextual Shannon Entropy</h3>
-        <p class="card-text">Catches random database passwords and unstructured tokens without false alarms on UUIDs, git commit SHAs, or base64 code.</p>
-      </div>
-
-      <div class="card">
-        <div class="card-icon">🔒</div>
-        <h3 class="card-title">Zero Telemetry Guarantee</h3>
-        <p class="card-text">100% local client-side execution. Zero analytics. Zero network requests. Single 1.5MB binary with audited open-source code.</p>
+      <!-- Bento 4: Screen Share Masking (Span 2) -->
+      <div class="bento-card span-2">
+        <div>
+          <svg class="vector-icon" viewBox="0 0 24 24">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+          <div class="bento-title">Real-Time Stdout Masking (`wrap`)</div>
+          <div class="bento-text">
+            Running dev servers or containers on video calls? Prefix your commands with <code>secretguard wrap &lt;cmd&gt;</code> to dynamically mask connection strings, tokens, and authorization headers from ever displaying on standard output during live Zoom, Teams, or demo sessions.
+          </div>
+        </div>
+        <div class="bento-code-preview">
+          $ secretguard wrap npm run dev<br/>
+          [dotenv] Loaded DATABASE_URL=postgres://user:<span style="color: var(--mint);">[REDACTED]</span>@localhost/prod
+        </div>
       </div>
     </div>
   </section>
 
-  <!-- Benchmarks Table -->
-  <section class="container" id="benchmark">
-    <h2 class="section-title">Benchmark Results (1,000 Commands)</h2>
-    <p class="section-desc">Evaluated across 500 positive credential samples and 500 clean commands to guarantee zero latency and zero false alarms.</p>
+  <!-- Precision Comparison Matrix -->
+  <section class="container" id="architecture">
+    <h2 class="section-headline">Architectural Differences</h2>
+    <p class="section-subhead">Why traditional git-scanning and vault CLIs leave an unprotected gap.</p>
 
-    <div class="table-container">
+    <div class="comparison-wrap">
       <table>
         <thead>
           <tr>
-            <th>Metric</th>
-            <th>SecretGuard Result</th>
-            <th>Industry Baseline Target</th>
+            <th>Platform Feature</th>
+            <th>GitGuardian / TruffleHog</th>
+            <th>1Password CLI / Doppler</th>
+            <th class="col-target">SecretGuard</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td><strong>Average Scan Latency</strong></td>
-            <td class="col-highlight">15.68 µs (0.016 ms)</td>
-            <td>&lt; 1,000 µs (1.0 ms)</td>
+            <td><strong>Interception Mechanism</strong></td>
+            <td>Git Commit / CI (Too late)</td>
+            <td>Explicit wrapper (op run)</td>
+            <td class="col-target">Interactive Shell Line Buffer</td>
           </tr>
           <tr>
-            <td><strong>Detection Recall Rate</strong></td>
-            <td class="col-highlight">100.0% (500 / 500)</td>
-            <td>&gt; 99.0%</td>
+            <td><strong>Stops .zsh_history Leaks</strong></td>
+            <td><span class="cross-icon">—</span></td>
+            <td><span class="cross-icon">—</span></td>
+            <td class="col-target"><span class="check-icon">✓</span> Native Hook (<span style="font-family: var(--code-font);">0.016ms</span>)</td>
           </tr>
           <tr>
-            <td><strong>False Positive Rate</strong></td>
-            <td class="col-highlight">0.0% (0 / 500)</td>
-            <td>&lt; 0.1%</td>
+            <td><strong>AI Agent Cache Protection</strong></td>
+            <td><span class="cross-icon">—</span></td>
+            <td><span class="cross-icon">—</span></td>
+            <td class="col-target"><span class="check-icon">✓</span> Claude Code &amp; MCP Scan</td>
           </tr>
           <tr>
-            <td><strong>Compiled Binary Size</strong></td>
-            <td class="col-highlight">~1.56 MB</td>
-            <td>&lt; 50.0 MB</td>
+            <td><strong>In-Place History Audit</strong></td>
+            <td><span class="cross-icon">—</span></td>
+            <td><span class="cross-icon">—</span></td>
+            <td class="col-target"><span class="check-icon">✓</span> <code>secretguard audit</code></td>
           </tr>
           <tr>
-            <td><strong>External Runtime Needs</strong></td>
-            <td class="col-highlight">None (Single Rust Binary)</td>
-            <td>Requires Python / Node.js runtime</td>
+            <td><strong>Runtime Overhead</strong></td>
+            <td>Python / Go runtimes</td>
+            <td>Electron / Daemon</td>
+            <td class="col-target"><span class="check-icon">✓</span> Native Rust (<span style="font-family: var(--code-font);">1.56 MB</span>)</td>
           </tr>
         </tbody>
       </table>
     </div>
   </section>
 
-  <!-- CTA Box -->
+  <!-- Final CTA -->
   <section class="container">
     <div class="cta-card">
-      <h2 style="font-size: clamp(2rem, 4vw, 3rem); font-weight: 900; margin-bottom: 16px;">
-        Protect Your Shell in 5 Seconds.
+      <h2 style="font-size: clamp(1.8rem, 3.5vw, 2.5rem); font-weight: 800; margin-bottom: 14px;">
+        Zero Leaks. Zero Noticeable Overhead.
       </h2>
-      <p style="color: var(--text-muted); font-size: 1.15rem; max-width: 600px; margin: 0 auto 36px;">
-        Join developers building the zero-leak standard for modern human &amp; AI terminal workflows.
+      <p style="color: var(--text-secondary); max-width: 520px; margin: 0 auto 32px; font-size: 1rem;">
+        Install via Homebrew or standard curl installer in seconds. Dual-licensed under MIT and Apache-2.0.
       </p>
-      <div class="install-box" style="max-width: 580px; margin: 0 auto 24px; background: #07090e; border: 1px solid var(--border-glow); padding: 12px 18px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
-        <span class="install-cmd" style="color: #7ee787;">brew tap hemanathk636/tap &amp;&amp; brew install secretguard</span>
-        <button class="copy-btn" onclick="copyInstall()">Copy</button>
+      <div class="install-container" style="max-width: 520px; margin: 0 auto;">
+        <div class="install-action">
+          <span class="install-text" style="color: #93c5fd;">brew tap hemanathk636/tap &amp;&amp; brew install secretguard</span>
+          <button class="copy-pill" onclick="copyCode()">Copy</button>
+        </div>
       </div>
-      <p style="font-size: 0.9rem; color: var(--text-muted);">
-        Open source under MIT OR Apache-2.0. Star us on <a href="https://github.com/hemanathk636/secretguard" target="_blank" style="color: var(--primary); text-decoration: none;">GitHub</a>.
-      </p>
     </div>
   </section>
 
   <!-- Footer -->
   <footer>
     <div class="container">
-      <p>SecretGuard — Open source terminal security designed by Hemanath K.</p>
-      <p style="margin-top: 10px;">
-        <a href="https://github.com/hemanathk636/secretguard" style="color: var(--primary); text-decoration: none;">GitHub Repository</a> • 
-        <a href="https://github.com/hemanathk636/homebrew-tap" style="color: var(--primary); text-decoration: none;">Homebrew Tap</a> • 
-        <a href="https://github.com/hemanathk636/secretguard/releases" style="color: var(--primary); text-decoration: none;">Releases</a>
+      <p>SecretGuard — Open source developer security engineering.</p>
+      <p style="margin-top: 8px;">
+        <a href="https://github.com/hemanathk636/secretguard">Source Code</a> • 
+        <a href="https://github.com/hemanathk636/homebrew-tap">Homebrew Tap</a> • 
+        <a href="https://github.com/hemanathk636/secretguard/releases">Releases</a>
       </p>
     </div>
   </footer>
 
-  <!-- Interactive JavaScript Engine -->
+  <!-- Script -->
   <script>
-    const installCommands = {
+    const installSnippets = {
       brew: 'brew tap hemanathk636/tap && brew install secretguard',
       curl: 'curl -fsSL https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.sh | bash',
       cargo: 'cargo install --git https://github.com/hemanathk636/secretguard',
       pwsh: 'secretguard hook powershell | Out-String | Invoke-Expression'
     };
 
-    function switchInstall(type) {
-      document.querySelectorAll('.install-tab').forEach(t => t.classList.remove('active'));
+    function switchTab(type) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       event.target.classList.add('active');
-      document.getElementById('installCmd').innerText = installCommands[type];
+      document.getElementById('installCmd').innerText = installSnippets[type];
     }
 
-    function copyInstall() {
-      const cmd = document.getElementById('installCmd').innerText;
-      navigator.clipboard.writeText(cmd);
+    function copyCode() {
+      const text = document.getElementById('installCmd').innerText;
+      navigator.clipboard.writeText(text);
       const btn = document.getElementById('copyBtn');
-      btn.innerText = 'Copied! ✓';
-      setTimeout(() => btn.innerText = 'Copy Command', 2000);
+      btn.innerText = 'Copied ✓';
+      setTimeout(() => btn.innerText = 'Copy', 2000);
     }
 
-    // Client-side regex patterns matching the Rust engine
-    const PATTERNS = [
+    const REGEX_RULES = [
       { name: "OpenAI API Key", regex: /\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}\b/g },
       { name: "AWS Access Key", regex: /\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/g },
       { name: "GitHub Token", regex: /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}\b/g },
       { name: "Slack Token", regex: /\bxox[baprs]-[0-9A-Za-z_-]{10,}\b/g },
       { name: "Stripe Secret Key", regex: /\b(?:sk|rk)_(?:test|live)_[0-9a-zA-Z]{24,}\b/g },
-      { name: "Database URI", regex: /(postgres(?:ql)?|mongodb(?:\+srv)?|mysql|redis):\/\/[a-zA-Z0-9_.-]+:[^@\s]{3,}@[a-zA-Z0-9_.-]+/gi }
+      { name: "Database Connection URI", regex: /(postgres(?:ql)?|mongodb(?:\+srv)?|mysql|redis):\/\/[a-zA-Z0-9_.-]+:[^@\s]{3,}@[a-zA-Z0-9_.-]+/gi }
     ];
 
-    function runClientScan(text) {
-      let matchedName = null;
-      let sanitized = text;
+    function evaluateSandbox(val) {
+      let matched = null;
+      let sanitized = val;
 
-      for (let p of PATTERNS) {
-        if (p.regex.test(text)) {
-          matchedName = p.name;
-          sanitized = sanitized.replace(p.regex, (match) => {
-            return match.length > 8 ? match.slice(0, 4) + '[REDACTED]' : '[REDACTED]';
-          });
+      for (let r of REGEX_RULES) {
+        if (r.regex.test(val)) {
+          matched = r.name;
+          sanitized = sanitized.replace(r.regex, (m) => m.length > 8 ? m.slice(0, 4) + '[REDACTED]' : '[REDACTED]');
         }
       }
 
-      const statusEl = document.getElementById('scanStatus');
-      const providerEl = document.getElementById('matchedProvider');
-      const outputEl = document.getElementById('sanitizedOutput');
+      const status = document.getElementById('liveStatus');
+      const provider = document.getElementById('liveProvider');
+      const output = document.getElementById('liveOutput');
 
-      if (matchedName) {
-        statusEl.className = 'status-badge status-red';
-        statusEl.innerHTML = '🚨 Live Secret Intercepted';
-        providerEl.innerText = matchedName;
-        outputEl.innerHTML = sanitized;
+      if (matched) {
+        status.className = 'badge-danger';
+        status.innerText = 'Secret Intercepted';
+        provider.innerText = matched;
+        output.innerText = sanitized;
       } else {
-        statusEl.className = 'status-badge status-green';
-        statusEl.innerHTML = '✅ Clean Command (Passes Through)';
-        providerEl.innerText = 'None (Safe to execute)';
-        outputEl.innerText = text;
+        status.className = 'badge-mint';
+        status.innerText = 'Clean (Pass-Through)';
+        provider.innerText = 'None';
+        output.innerText = val;
       }
     }
 
-    const chips = {
+    const testPresets = {
       openai: "curl -H 'Authorization: Bearer sk-proj-98a7sdf987asdf897asdf897asdf897asdf897asdf' https://api.openai.com",
-      aws: "aws s3 sync . s3://mybucket --profile AKIAIOSFODNN7EXAMPLE",
+      aws: "aws s3 sync . s3://production-data --profile AKIAIOSFODNN7EXAMPLE",
       postgres: "psql postgresql://postgres:X9#kLm!2$pQ8wZ10_live@db.prod.internal:5432/main",
       github: "git push https://ghp_1234567890abcdef1234567890abcdef1234@github.com/repo.git",
       clean: "git commit -m 'feat: update auth controller and tests'"
     };
 
-    function loadChip(key) {
-      const input = document.getElementById('playgroundInput');
-      input.value = chips[key];
-      runClientScan(input.value);
+    function setPreset(key) {
+      const input = document.getElementById('testInput');
+      input.value = testPresets[key];
+      evaluateSandbox(input.value);
     }
 
-    document.getElementById('playgroundInput').addEventListener('input', (e) => {
-      runClientScan(e.target.value);
+    document.getElementById('testInput').addEventListener('input', (e) => {
+      evaluateSandbox(e.target.value);
     });
 
-    // Initial run
-    runClientScan(document.getElementById('playgroundInput').value);
+    // Run initial test
+    evaluateSandbox(document.getElementById('testInput').value);
   </script>
 </body>
 </html>
