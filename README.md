@@ -5,6 +5,7 @@
 **Sub-millisecond Terminal Secret & Privacy Guard for Developers and AI Agents**
 
 [![Release](https://img.shields.io/github/v/release/hemanathk636/secretguard?color=blue&style=flat-square)](https://github.com/hemanathk636/secretguard/releases)
+[![Website](https://img.shields.io/badge/Website-Interactive%20Sandbox-blue?style=flat-square)](https://hemanathk636.github.io/secretguard/)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/hemanathk636/secretguard/release.yml?style=flat-square)](https://github.com/hemanathk636/secretguard/actions)
 [![Latency](https://img.shields.io/badge/Latency-15%C2%B5s%20(0.016ms)-brightgreen?style=flat-square)](https://github.com/hemanathk636/secretguard#benchmark-results)
 [![License](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-orange?style=flat-square)](LICENSE)
@@ -80,6 +81,29 @@ secretguard audit
 ────────────────────────────────────────────
 Total Commands Scanned: 4,120
 🚨 Found 1 exposed credential in your history file!
+```
+
+---
+
+## 🧹 Safe Atomic History Cleaning (`clean-history`)
+
+Safely scrub exposed credentials from your history file with automatic timestamped `.bak` backups:
+
+```bash
+secretguard clean-history
+```
+
+```
+🧹 SecretGuard History Sanitizer: ~/.zsh_history
+⚠️  [Line 482] Found ["OpenAI API Key"]
+
+Total Commands Scanned: 4,120
+Exposed Secrets Found:  1
+
+⚠️  Safely sanitize 1 exposed secret in ~/.zsh_history? (y/N): y
+📦 Safe backup created at: ~/.zsh_history.backup.174129482
+✨ Successfully sanitized 1 command!
+🔒 Your history file is now safe and clean.
 ```
 
 ---
