@@ -362,14 +362,27 @@
       color: var(--text-secondary);
       line-height: 1.55;
     }
-    .cmd-terminal-box {
-      background: #06070a;
+    .cmd-terminal-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: rgba(255, 255, 255, 0.02);
       border-top: 1px solid var(--border);
-      padding: 14px 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+      font-size: 0.72rem;
+      color: var(--text-tertiary);
       font-family: var(--code-font);
-      font-size: 0.8rem;
-      line-height: 1.6;
+    }
+    .cmd-terminal-box {
+      background: #050608;
+      padding: 16px 18px;
+      font-family: var(--code-font);
+      font-size: 0.82rem;
+      line-height: 1.7;
       color: #8b949e;
+      white-space: pre-wrap;
+      word-break: break-word;
       overflow-x: auto;
     }
     .cmd-terminal-action {
@@ -804,21 +817,23 @@
       <!-- Command 1: hook (Featured Card) -->
       <div class="cmd-card featured">
         <div class="cmd-card-header">
-          <span class="cmd-badge">Terminal Interceptor</span>
-          <div class="cmd-card-title">1. Automatic Terminal Shield (secretguard hook)</div>
+          <span class="cmd-badge">Live Interceptor • Set &amp; Forget</span>
+          <div class="cmd-card-title">1. Protect Terminal Automatically (`secretguard hook`)</div>
           <div class="cmd-card-desc">
-            Attaches a 0.016ms line hook to your shell (Zsh, Bash, PowerShell). The instant you press Enter, SecretGuard scans the command: if it has an OpenAI key, AWS token, or database password, it redacts it before saving to <code>~/.zsh_history</code>.
+            Installs a 0.016ms hook into your shell (Zsh, Bash, PowerShell). When you press Enter on any command containing an OpenAI key, AWS token, or database password, SecretGuard redacts it before it ever reaches <code>~/.zsh_history</code>.
           </div>
         </div>
-        <div class="cmd-terminal-box">
-<span style="color: #60a5fa;">$ eval "$(secretguard hook zsh)"</span>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>terminal simulation</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ eval "$(secretguard hook zsh)"</span>
 <span style="color: #34d399;">✓ SecretGuard live interceptor attached to Zsh</span>
 
 <span style="color: #60a5fa;">$ curl -H "Authorization: Bearer sk-proj-98a7sdf987asdf" https://api.openai.com</span>
-<span style="color: #f87171;">[SecretGuard] Intercepted exposed OpenAI API Key</span>
-<span style="color: #8b949e;">Line saved to ~/.zsh_history as:</span>
-   <span style="color: #93c5fd;">curl -H "Authorization: Bearer sk-p[REDACTED]" https://api.openai.com</span>
-        </div>
+<span style="color: #f87171;">⚠️  [SecretGuard] Intercepted exposed OpenAI API Key!</span>
+<span style="color: #8b949e;">🔒 Line safely saved to ~/.zsh_history as:</span>
+   <span style="color: #93c5fd;">curl -H "Authorization: Bearer sk-p[REDACTED]" https://api.openai.com</span></div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-hook">eval "$(secretguard hook zsh)"</span>
           <button class="copy-btn-sm" onclick="copySnippet('syntax-hook')">Copy Command</button>
@@ -829,19 +844,21 @@
       <div class="cmd-card">
         <div class="cmd-card-header">
           <span class="cmd-badge">History Scanner</span>
-          <div class="cmd-card-title">2. Scan History Leaks (secretguard audit)</div>
+          <div class="cmd-card-title">2. Find Past Leaks (`secretguard audit`)</div>
           <div class="cmd-card-desc">
-            Scans your entire shell history file (thousands of past commands) in milliseconds and reports every credential already sitting on disk.
+            Scans thousands of commands in your existing shell history in milliseconds and shows you every secret currently saved on your disk with exact line numbers.
           </div>
         </div>
-        <div class="cmd-terminal-box">
-<span style="color: #60a5fa;">$ secretguard audit</span>
-Scanning ~/.zsh_history (4,820 commands)...
-<span style="color: #f87171;">Line 142: AWS Access Key (AKIA...)</span>
-<span style="color: #f87171;">Line 891: Database Password URI (postgres://...)</span>
-────────────────────────────────────────
-Total Leaks Found: <span style="color: #f87171; font-weight: 600;">2 exposed secrets</span>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>history audit</span>
         </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard audit</span>
+Scanning ~/.zsh_history (4,820 commands)...
+<span style="color: #f87171;">⚠️  Line 142: AWS Access Key (AKIA...)</span>
+<span style="color: #f87171;">⚠️  Line 891: Database Password (postgres://admin:P@ss...)</span>
+────────────────────────────────────────
+Found: <span style="color: #f87171; font-weight: 600;">2 exposed secrets in your history</span></div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-audit">secretguard audit</span>
           <button class="copy-btn-sm" onclick="copySnippet('syntax-audit')">Copy Command</button>
@@ -851,19 +868,21 @@ Total Leaks Found: <span style="color: #f87171; font-weight: 600;">2 exposed sec
       <!-- Command 3: clean-history -->
       <div class="cmd-card">
         <div class="cmd-card-header">
-          <span class="cmd-badge">Safe Sanitizer</span>
-          <div class="cmd-card-title">3. Clean History Safely (secretguard clean-history)</div>
+          <span class="cmd-badge">Safe Cleaner</span>
+          <div class="cmd-card-title">3. Clean History Safely (`secretguard clean-history`)</div>
           <div class="cmd-card-desc">
-            Safely scrubs leaked credentials from your history file. Automatically creates a timestamped backup before touching anything.
+            Scans and scrubs exposed secrets from your history. Automatically creates a timestamped backup before touching anything so your history is never lost or corrupted.
           </div>
         </div>
-        <div class="cmd-terminal-box">
-<span style="color: #60a5fa;">$ secretguard clean-history</span>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>history cleanup</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard clean-history</span>
 Found 2 exposed secrets.
 <span style="color: #eab308;">Safely sanitize 2 secrets in history? (y/N): y</span>
-<span style="color: #34d399;">Backup created: ~/.zsh_history.backup.174</span>
-<span style="color: #34d399;">✓ Successfully sanitized 2 commands</span>
-        </div>
+<span style="color: #34d399;">📦 Safe backup created: ~/.zsh_history.backup.1741</span>
+<span style="color: #34d399;">✓ Successfully sanitized 2 commands!</span></div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-clean">secretguard clean-history</span>
           <button class="copy-btn-sm" onclick="copySnippet('syntax-clean')">Copy Command</button>
@@ -874,18 +893,20 @@ Found 2 exposed secrets.
       <div class="cmd-card">
         <div class="cmd-card-header">
           <span class="cmd-badge">AI Agent Shield</span>
-          <div class="cmd-card-title">4. Shield AI Coding Agents (secretguard protect-agent)</div>
+          <div class="cmd-card-title">4. Shield AI Coding Agents (`secretguard protect-agent`)</div>
           <div class="cmd-card-desc">
-            Protects Claude Code, Cursor, and MCP caches in <code>.claude/settings.local.json</code> so local AI credentials never get pushed to public GitHub repos.
+            AI coding agents (Claude Code, Cursor, Aider) often cache approved commands in working files like <code>.claude/settings.local.json</code>. This command scans local agent files and protects them from accidental Git pushes.
           </div>
         </div>
-        <div class="cmd-terminal-box">
-<span style="color: #60a5fa;">$ secretguard protect-agent</span>
-Inspecting AI agent configs in '.'...
-<span style="color: #f87171;">.claude/settings.local.json contains unmasked key</span>
-<span style="color: #34d399;">Added '.claude/' to .gitignore automatically</span>
-<span style="color: #34d399;">✓ Workspace shielded from accidental Git pushes</span>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>agent protection</span>
         </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard protect-agent</span>
+Checking local AI agent configs in '.'...
+<span style="color: #f87171;">⚠️  Found unmasked API key in .claude/settings.local.json</span>
+<span style="color: #34d399;">🔒 Added '.claude/' to .gitignore automatically</span>
+<span style="color: #34d399;">✓ Agent workspace shielded from Git push</span></div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-agent">secretguard protect-agent</span>
           <button class="copy-btn-sm" onclick="copySnippet('syntax-agent')">Copy Command</button>
@@ -895,19 +916,21 @@ Inspecting AI agent configs in '.'...
       <!-- Command 5: wrap -->
       <div class="cmd-card">
         <div class="cmd-card-header">
-          <span class="cmd-badge">Live Output Cloak</span>
-          <div class="cmd-card-title">5. Cloak Screen Shares (secretguard wrap)</div>
+          <span class="cmd-badge">Screen Share Cloak</span>
+          <div class="cmd-card-title">5. Cloak Screen Shares (`secretguard wrap`)</div>
           <div class="cmd-card-desc">
-            Prefix any command with <code>secretguard wrap</code> to mask tokens, passwords, and database URLs from ever displaying on your screen during Zoom or demo calls.
+            Prefix any command or dev server with <code>secretguard wrap</code> to dynamically mask database passwords, authorization tokens, and API keys from ever showing on your screen during Zoom calls or live demos.
           </div>
         </div>
-        <div class="cmd-terminal-box">
-<span style="color: #60a5fa;">$ secretguard wrap npm run dev</span>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>stdout cloaking</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard wrap npm run dev</span>
 [dotenv] Loaded environment variables:
   DATABASE_URL="postgres://user:<span style="color: #34d399;">[REDACTED]</span>@db:5432/main"
   OPENAI_API_KEY="sk-proj-<span style="color: #34d399;">[REDACTED]</span>"
-<span style="color: #34d399;">✓ Screen share protected: tokens masked on stdout</span>
-        </div>
+<span style="color: #34d399;">✓ Safe for screen sharing: sensitive output cloaked</span></div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-wrap">secretguard wrap npm run dev</span>
           <button class="copy-btn-sm" onclick="copySnippet('syntax-wrap')">Copy Command</button>
