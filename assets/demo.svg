@@ -1,0 +1,111 @@
+<svg fill="none" viewBox="0 0 800 400" width="800" height="400" xmlns="http://www.w3.org/2000/svg">
+  <foreignObject width="100%" height="100%">
+    <div xmlns="http://www.w3.org/1999/xhtml">
+      <style>
+        .terminal {
+          background-color: #0d1117;
+          border: 1px solid #30363d;
+          border-radius: 12px;
+          padding: 20px 24px;
+          font-family: 'SF Mono', Monaco, Menlo, 'Courier New', monospace;
+          color: #c9d1d9;
+          font-size: 14px;
+          line-height: 1.6;
+          box-shadow: 0 16px 36px rgba(0,0,0,0.4);
+          height: 350px;
+          box-sizing: border-box;
+        }
+        .header {
+          display: flex;
+          align-items: center;
+          margin-bottom: 20px;
+          padding-bottom: 12px;
+          border-bottom: 1px solid #21262d;
+        }
+        .dot {
+          width: 12px;
+          height: 12px;
+          border-radius: 50%;
+          margin-right: 8px;
+          display: inline-block;
+        }
+        .dot-red { background: #ff5f56; }
+        .dot-yellow { background: #ffbd2e; }
+        .dot-green { background: #27c93f; }
+        .title {
+          color: #8b949e;
+          font-size: 13px;
+          margin-left: auto;
+          margin-right: auto;
+        }
+        .prompt { color: #58a6ff; font-weight: bold; }
+        .cmd { color: #f0883e; }
+        .secret { color: #ff7b72; font-weight: bold; }
+        .alert {
+          color: #f2cc60;
+          font-weight: bold;
+          margin: 12px 0 6px 0;
+          display: flex;
+          align-items: center;
+        }
+        .redacted {
+          color: #7ee787;
+          background: rgba(46, 160, 67, 0.15);
+          padding: 2px 6px;
+          border-radius: 4px;
+          font-weight: bold;
+        }
+        .history-tag {
+          color: #8b949e;
+          font-size: 12px;
+          margin-top: 4px;
+        }
+        .cursor {
+          display: inline-block;
+          width: 8px;
+          height: 16px;
+          background: #58a6ff;
+          vertical-align: middle;
+          animation: blink 1s infinite;
+        }
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0; }
+        }
+      </style>
+      <div class="terminal">
+        <div class="header">
+          <span class="dot dot-red"></span>
+          <span class="dot dot-yellow"></span>
+          <span class="dot dot-green"></span>
+          <span class="title">zsh — secretguard (0.016ms interceptor)</span>
+        </div>
+        <div>
+          <span class="prompt">➜  workspace </span>
+          <span class="cmd">curl -H "Authorization: Bearer <span class="secret">sk-proj-98a7sdf987asdf89...</span>" https://api.openai.com</span>
+        </div>
+        <div class="alert">
+          [secretguard] 🚨 OpenAI API Key intercepted before execution!
+        </div>
+        <div>
+          <span class="history-tag">↳ Saved to history: </span>
+          <span>curl -H "Authorization: Bearer <span class="redacted">sk-p[REDACTED]</span>" https://api.openai.com</span>
+        </div>
+        <div style="margin-top: 24px;">
+          <span class="prompt">➜  workspace </span>
+          <span class="cmd">secretguard audit</span>
+        </div>
+        <div style="color: #58a6ff; margin-top: 4px;">
+          🔍 Auditing ~/.zsh_history (4,120 commands)...
+        </div>
+        <div style="color: #7ee787; margin-top: 4px;">
+          ✅ Zero unmasked secrets stored on disk. System protected.
+        </div>
+        <div style="margin-top: 14px;">
+          <span class="prompt">➜  workspace </span>
+          <span class="cursor"></span>
+        </div>
+      </div>
+    </div>
+  </foreignObject>
+</svg>

@@ -11,6 +11,10 @@
 
 *Intercepts command buffers and stdout streams in real time, preventing API keys, credentials, and database passwords from ever hitting `.zsh_history`, screen shares, or AI assistant logs.*
 
+<br/>
+<img src="assets/demo.svg" alt="SecretGuard Terminal Demo" width="750"/>
+<br/>
+
 </div>
 
 ---
@@ -96,17 +100,23 @@ Benchmarked across a synthetic test suite of **1,000 commands** (500 positive cr
 
 ## 🚀 Quick Install
 
-### 1. One-Line Installer (macOS & Linux)
+### 1. Homebrew (macOS & Linux - Recommended)
+```bash
+brew tap hemanathk636/tap
+brew install secretguard
+```
+
+### 2. One-Line Script Installer
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.sh | bash
 ```
 
-### 2. Using Cargo (Any Platform)
+### 3. Using Cargo (Any Platform)
 ```bash
 cargo install --git https://github.com/hemanathk636/secretguard
 ```
 
-### 3. Precompiled Standalone Binaries
+### 4. Precompiled Standalone Binaries
 Download the compiled binary directly from [**GitHub Releases**](https://github.com/hemanathk636/secretguard/releases/latest):
 * **macOS Apple Silicon:** `secretguard-aarch64-apple-darwin.tar.gz`
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
