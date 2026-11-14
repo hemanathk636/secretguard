@@ -84,6 +84,29 @@ Total Commands Scanned: 4,120
 
 ---
 
+## 🤖 AI Coding Agent Shield (`protect-agent`)
+
+Security research (such as disclosures regarding Claude Code) revealed that terminal AI coding assistants frequently cache plaintext credentials inside local workspace files like `.claude/settings.local.json`, `.mcp.json`, and `.aider.conf.yml`, which developers then accidentally commit to GitHub.
+
+Run `protect-agent` inside any workspace to audit and safeguard agent configuration files:
+
+```bash
+secretguard protect-agent
+```
+
+```
+🤖 SecretGuard AI Agent Shield: Inspecting '.'...
+
+📄 Checking: .claude/settings.local.json
+   🚨 Live secrets detected: ["AWS Access Key", "OpenAI API Key"]
+⚠️  Git Leak Risk: Your .gitignore is missing protection for:
+   • .claude/
+   • .env*
+💡 Tip: Add them to .gitignore to prevent AI agents from pushing credentials!
+```
+
+---
+
 ## 📊 Benchmark Results
 
 Benchmarked across a synthetic test suite of **1,000 commands** (500 positive credential samples + 500 clean commands):

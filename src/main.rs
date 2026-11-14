@@ -17,6 +17,7 @@ SUBCOMMANDS:
     sanitize <STRING>   Prints sanitized string; exits with 1 if redacted, 0 if clean.
     wrap <COMMAND...>   Executes command and sanitizes stdout stream in real time.
     audit [FILE]        Scans local shell history (.zsh_history / .bash_history) for historical leaks.
+    protect-agent [DIR] Shields workspace from AI coding agent (Claude Code, Cursor, MCP) leaks.
     hook <SHELL>        Prints the integration hook for (zsh | bash | fish | powershell).
 "#
     );
@@ -77,6 +78,70 @@ fn run_audit(target_path: Option<&str>, engine: &SecretGuardEngine) {
         println!("✅ Clean! Zero unmasked secrets found in history.");
     } else {
         println!("🚨 Found {} exposed credentials in your history file!", leaks);
+    }
+}
+
+fn run_protect_agent(target_dir: Option<&str>, engine: &SecretGuardEngine) {
+    let base = Path::new(target_dir.unwrap_or("."));
+    println!("🤖 SecretGuard AI Agent Shield: Inspecting '{}'...\n", base.display());
+
+    let agent_targets = [
+        ".claude/settings.local.json",
+        ".claude/settings.json",
+        ".mcp.json",
+        "claude_desktop_config.json",
+        ".aider.conf.yml",
+        ".env",
+        ".env.local",
+    ];
+
+    let mut found_issues = 0;
+
+    for target in &agent_targets {
+        let p = base.join(target);
+        if p.exists() {
+            println!("📄 Checking: {}", target);
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                let res = engine.scan_and_sanitize(&content);
+                if res.has_secret {
+                    found_issues += 1;
+                    println!("   🚨 Live secrets detected in {}: {:?}", target, res.matched_rules);
+                } else {
+                    println!("   ✅ No unmasked secrets detected.");
+                }
+            }
+        }
+    }
+
+    let gitignore = base.join(".gitignore");
+    if gitignore.exists() {
+        if let Ok(gi_content) = std::fs::read_to_string(&gitignore) {
+            let mut missing = Vec::new();
+            if !gi_content.contains(".claude") {
+                missing.push(".claude/");
+            }
+            if !gi_content.contains(".env") {
+                missing.push(".env*");
+            }
+            if !missing.is_empty() {
+                println!("\n⚠️  Git Leak Risk: Your .gitignore is missing protection for:");
+                for m in &missing {
+                    println!("   • {}", m);
+                }
+                println!("💡 Tip: Add them to .gitignore to prevent AI agents from pushing credentials!");
+            } else {
+                println!("\n✅ .gitignore protects .claude/ and .env* files.");
+            }
+        }
+    } else {
+        println!("\n⚠️  Warning: No .gitignore found in this directory.");
+    }
+
+    println!("\n────────────────────────────────────────────");
+    if found_issues == 0 {
+        println!("🛡️  Agent Shield: Workspace is safe from AI agent credential leaks!");
+    } else {
+        println!("🚨 Found {} AI agent files containing exposed credentials!", found_issues);
     }
 }
 
@@ -194,6 +259,10 @@ fn main() {
         "audit" => {
             let target = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
             run_audit(target, &engine);
+        }
+        "protect-agent" => {
+            let target = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
+            run_protect_agent(target, &engine);
         }
         "wrap" => {
             if args.len() < 3 {
