@@ -131,6 +131,30 @@ secretguard protect-agent
 
 ---
 
+## 🩺 System Diagnostics & Health Check (`doctor`)
+
+Run an instant diagnostic checkup to verify your engine latency, shell integration, history health, and AI agent shield:
+
+```bash
+secretguard doctor
+```
+
+```
+🩺 SecretGuard System Diagnostics & Health Check
+────────────────────────────────────────────────────
+✓ Dual-Tier Engine: Active (RegexSet + Shannon Entropy H >= 3.6)
+✓ Live Latency:     15.68 µs (0.016 ms) — Sub-millisecond verified
+✓ Shell Support:   Ready (Zsh, Bash, PowerShell supported)
+✓ History Storage:  Clean (No exposed default history files)
+✓ AI Agent Shield:  Active (Claude Code, Cursor, MCP configurations checked)
+✓ Binary Footprint: ~1.56 MB (Optimized native Rust with LTO)
+✓ Privacy Status:   100% Offline (Zero telemetry, zero network calls)
+────────────────────────────────────────────────────
+✨ Status: SecretGuard is operational and ready to protect your terminal!
+```
+
+---
+
 ## 📊 Benchmark Results
 
 Benchmarked across a synthetic test suite of **1,000 commands** (500 positive credential samples + 500 clean commands):
