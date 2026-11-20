@@ -7,7 +7,7 @@ use std::process::{self, Command, Stdio};
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.1.5) - Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.1.6) - Sub-millisecond Terminal Secret & Privacy Guard
 
 USAGE:
     secretguard <SUBCOMMAND> [OPTIONS]
@@ -16,8 +16,7 @@ SUBCOMMANDS:
     check <STRING>            Scans input string; exits with 1 if secret detected, 0 if clean.
     sanitize <STRING>         Prints sanitized string; exits with 1 if redacted, 0 if clean.
     mock <STRING>             Prints format-preserving synthetic mock string for AI agents/tests.
-    scan [PATH]               Scans files, directories, or .env files for exposed secrets.
-    install-pre-commit [DIR]  Installs instant (<0.02ms) git pre-commit secret interceptor.
+    vault <SUBCOMMAND>        Zero-knowledge encrypted AES-256-GCM memory keystore & runner.
     agent-firewall <CMD...>   AI Agent Terminal & Egress Firewall (Claude, Cursor, Devin).
     wrap <COMMAND...>         Executes command and sanitizes stdout stream in real time.
     audit [FILE]              Scans local shell history (.zsh_history / .bash_history) for leaks.
@@ -772,6 +771,14 @@ fn main() {
                 Vec::new()
             };
             secretguard::firewall::run_agent_firewall(&target_args, &engine);
+        }
+        "vault" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::vault::run_vault_cli(&target_args, &engine);
         }
         _ => {
             print_usage();

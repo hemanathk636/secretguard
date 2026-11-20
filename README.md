@@ -158,6 +158,36 @@ Exposed Secrets Found:  1
 
 ---
 
+## 🔐 Zero-Knowledge Encrypted Memory Vault (`vault`)
+
+Instead of storing unencrypted API keys in plaintext `.env` files or exporting them into shell history, SecretGuard provides an encrypted **AES-256-GCM** local memory vault.
+
+### 1. Store Secrets Encrypted Locally:
+```bash
+secretguard vault set OPENAI_API_KEY "sk-proj-super-secret-key"
+```
+
+### 2. Inject Secrets in Memory (Zero Disk / Zero Shell History):
+Inject vault secrets ephemerally into a process without writing them to disk:
+```bash
+secretguard vault run OPENAI_API_KEY -- python script.py
+```
+
+### 3. Safely Import Plaintext `.env` Files:
+Migrates all plaintext credentials into your encrypted vault and auto-generates a clean `.env.example` template:
+```bash
+secretguard vault import-env .env
+```
+
+```
+📥 Importing secrets from '.env' into encrypted vault...
+✨ Successfully imported 3 secret(s) into encrypted vault!
+📄 Created clean template: .env.example
+🔒 Your secrets are now safe from git commits and shell leaks.
+```
+
+---
+
 ## 🤖 AI Coding Agent Shield (`protect-agent`)
 
 Security research (such as disclosures regarding Claude Code) revealed that terminal AI coding assistants frequently cache plaintext credentials inside local workspace files like `.claude/settings.local.json`, `.mcp.json`, and `.aider.conf.yml`, which developers then accidentally commit to GitHub.

@@ -3,6 +3,7 @@ pub mod firewall;
 pub mod mcp;
 pub mod patterns;
 pub mod synthetic;
+pub mod vault;
 
 use entropy::scan_contextual_entropy;
 use patterns::{get_high_confidence_patterns, SecretPattern};
