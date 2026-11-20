@@ -1,12 +1,19 @@
+pub mod blastradius;
+pub mod canary;
+pub mod clipboard;
+pub mod compliance;
 pub mod entropy;
 pub mod firewall;
 pub mod mcp;
 pub mod mesh;
 pub mod panic;
 pub mod patterns;
+pub mod radar;
+pub mod swapper;
 pub mod synthetic;
 pub mod timemachine;
 pub mod vault;
+pub mod verifier;
 
 use entropy::scan_contextual_entropy;
 use patterns::{get_high_confidence_patterns, SecretPattern};

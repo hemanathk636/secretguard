@@ -7,26 +7,36 @@ use std::process::{self, Command, Stdio};
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.1.9) - Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.2.0) - Sub-millisecond Terminal Secret & Privacy Guard
+The Autonomous Developer Security & AI Agent Firewall Platform
 
 USAGE:
-    secretguard <SUBCOMMAND> [OPTIONS]
+    secretguard <COMMAND> [OPTIONS]
 
-SUBCOMMANDS:
-    check <STRING>            Scans input string; exits with 1 if secret detected, 0 if clean.
-    sanitize <STRING>         Prints sanitized string; exits with 1 if redacted, 0 if clean.
-    mock <STRING>             Prints format-preserving synthetic mock string for AI agents/tests.
-    panic [KEY]               Emergency panic button: revokes keys, amends git, and purges history.
+🛡️ 1. AMBIENT SHIELD & RUNTIME DEFENSE:
+    hook <SHELL>              Prints instant shell hook (zsh | bash | fish | nushell | powershell).
+    wrap <COMMAND...>         Executes command and masks leaked stdout/stderr in real time.
+    agent-firewall <CMD...>   AI Agent Terminal & Egress Firewall (Blocks rm -rf, curl @.env).
+    tun <SUBCOMMAND>          Zero-Knowledge TLS Secret Swapper (in-flight network token injection).
+    clipboard <SUBCOMMAND>    OS clipboard secret interceptor & auto-destruct timer (watch/clean).
+    radar [DIR]               Trojan Source (CVE-2021-42574) & invisible prompt injection radar.
+
+📦 2. ZERO-KNOWLEDGE KEYSTORE & TEAM MESH:
+    vault <SUBCOMMAND>        Zero-knowledge AES-256-GCM memory keystore (import-env / run).
+    mesh <SUBCOMMAND>         Serverless P2P team secret sharing mesh (.secretguard/mesh.vault).
+    canary <SUBCOMMAND>       Generates & plants honeytoken tripwires (AWS, OpenAI, GitHub, Stripe).
+
+🔍 3. REPOSITORY AUDITING & REMEDIATION:
+    scan [PATH]               Fast multi-threaded codebase and environment secret scanner.
+    verify <TOKEN...>         Live key status, privilege & risk verifier (OpenAI, AWS, Stripe).
+    blast-radius <KEY> [DIR]  Maps dependency footprint & exposure risk of any secret token.
     time-machine <SUBCOMMAND> Cryptographic Git history scanner & surgical history scrubber.
-    mesh <SUBCOMMAND>         Zero-knowledge P2P team secret mesh (.secretguard/mesh.vault).
-    vault <SUBCOMMAND>        Zero-knowledge encrypted AES-256-GCM memory keystore & runner.
-    agent-firewall <CMD...>   AI Agent Terminal & Egress Firewall (Claude, Cursor, Devin).
-    wrap <COMMAND...>         Executes command and sanitizes stdout stream in real time.
+    panic [KEY]               Emergency panic button: revokes keys, amends git, and purges history.
+    report [DIR]              Generates SOC 2, HIPAA & GDPR compliance audit certificates.
     audit [FILE]              Scans local shell history (.zsh_history / .bash_history) for leaks.
     clean-history             Safely scrubs exposed secrets from shell history with atomic backups.
-    protect-agent [DIR]       Shields workspace from AI coding agent (Claude Code, Cursor, MCP) leaks.
+    protect-agent [DIR]       Shields workspace context files from AI agent exfiltration.
     doctor                    Runs system health check, latency verification, and diagnostics.
-    hook <SHELL>              Prints hook for (zsh | bash | fish | nushell | powershell).
     mcp                       Runs native Model Context Protocol (MCP) server for AI agents.
 "#
     );
@@ -806,6 +816,62 @@ fn main() {
                 Vec::new()
             };
             secretguard::mesh::MeshManager::run_cli(&target_args);
+        }
+        "tun" | "swapper" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::swapper::SecretSwapper::run_cli(&target_args);
+        }
+        "verify" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::verifier::KeyVerifier::run_cli(&target_args);
+        }
+        "blast-radius" | "blastradius" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::blastradius::BlastRadiusScanner::run_cli(&target_args);
+        }
+        "radar" | "trojan-radar" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::radar::UnicodeRadar::run_cli(&target_args);
+        }
+        "clipboard" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::clipboard::ClipboardGuardian::run_cli(&target_args, &engine);
+        }
+        "canary" | "honeytoken" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::canary::CanaryManager::run_cli(&target_args);
+        }
+        "report" | "compliance" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::compliance::ComplianceAuditor::run_cli(&target_args, &engine);
         }
         _ => {
             print_usage();
