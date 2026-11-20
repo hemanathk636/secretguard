@@ -4,6 +4,7 @@
 
 **Sub-millisecond Terminal Secret & Privacy Guard for Developers and AI Agents**
 
+[![Crates.io](https://img.shields.io/crates/v/secretguard.svg?style=flat-square&color=e37602)](https://crates.io/crates/secretguard)
 [![Release](https://img.shields.io/github/v/release/hemanathk636/secretguard?color=blue&style=flat-square)](https://github.com/hemanathk636/secretguard/releases)
 [![Website](https://img.shields.io/badge/Website-Interactive%20Sandbox-blue?style=flat-square)](https://hemanathk636.github.io/secretguard/)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/hemanathk636/secretguard/release.yml?style=flat-square)](https://github.com/hemanathk636/secretguard/actions)
@@ -231,9 +232,9 @@ brew install secretguard
 curl -fsSL https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.sh | bash
 ```
 
-### 3. Using Cargo (Any Platform)
+### 3. Using Cargo (crates.io)
 ```bash
-cargo install --git https://github.com/hemanathk636/secretguard
+cargo install secretguard
 ```
 
 ### 4. Precompiled Standalone Binaries
