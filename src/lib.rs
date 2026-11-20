@@ -1,6 +1,7 @@
 pub mod entropy;
 pub mod firewall;
 pub mod mcp;
+pub mod panic;
 pub mod patterns;
 pub mod synthetic;
 pub mod vault;
