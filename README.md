@@ -181,6 +181,29 @@ secretguard protect-agent
 
 ---
 
+## ⚡ Native MCP Server for AI Agents (`secretguard mcp`)
+
+SecretGuard includes a built-in **Model Context Protocol (MCP)** server, enabling autonomous AI coding agents (Claude Desktop, Cursor, Windsurf, Claude Code, Cline) to scan and redact credentials before ingesting text into LLM prompts.
+
+### 1. Add to Claude Desktop (`claude_desktop_config.json`) or Cursor / Windsurf:
+```json
+{
+  "mcpServers": {
+    "secretguard": {
+      "command": "secretguard",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### 2. Built-in MCP Tools:
+* **`scan_secrets`**: Scans text or code snippets for exposed credentials in <15 µs and returns detection telemetry.
+* **`redact_secrets`**: Automatically masks discovered secrets with safe placeholders before prompt context logging.
+* **`scan_path`**: Audits a local file or directory for leaked tokens and `.env` exposures.
+
+---
+
 ## 🩺 System Diagnostics & Health Check (`doctor`)
 
 Run an instant diagnostic checkup to verify your engine latency, shell integration, history health, and AI agent shield:

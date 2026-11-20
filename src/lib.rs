@@ -1,4 +1,5 @@
 pub mod entropy;
+pub mod mcp;
 pub mod patterns;
 
 use entropy::scan_contextual_entropy;

@@ -7,7 +7,7 @@ use std::process::{self, Command, Stdio};
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.1.2) - Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.1.3) - Sub-millisecond Terminal Secret & Privacy Guard
 
 USAGE:
     secretguard <SUBCOMMAND> [OPTIONS]
@@ -23,6 +23,7 @@ SUBCOMMANDS:
     protect-agent [DIR]       Shields workspace from AI coding agent (Claude Code, Cursor, MCP) leaks.
     doctor                    Runs system health check, latency verification, and diagnostics.
     hook <SHELL>              Prints hook for (zsh | bash | fish | nushell | powershell).
+    mcp                       Runs native Model Context Protocol (MCP) server for AI agents.
 "#
     );
 }
@@ -740,6 +741,9 @@ fn main() {
 
             let status = child.wait().expect("Child process wasn't running");
             process::exit(status.code().unwrap_or(0));
+        }
+        "mcp" => {
+            secretguard::mcp::run_mcp_server(&engine);
         }
         _ => {
             print_usage();
