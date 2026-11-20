@@ -5,6 +5,12 @@ edition = "2021"
 authors = ["SecretGuard Team"]
 description = "Sub-millisecond terminal secret interceptor and privacy guard for developers and AI agents"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/hemanathk636/secretguard"
+homepage = "https://hemanathk636.github.io/secretguard/"
+documentation = "https://docs.rs/secretguard"
+readme = "README.md"
+keywords = ["security", "cli", "terminal", "secret-scanner", "privacy"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 regex = "1.10"
