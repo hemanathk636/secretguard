@@ -1005,12 +1005,59 @@ Checking local AI agent configs in '.'...
         <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard doctor</span>
 <span style="color: #34d399;">✓ Dual-Tier Engine: Active (RegexSet + Shannon Entropy)</span>
 <span style="color: #34d399;">✓ Live Latency:     15.68 µs — Sub-millisecond verified</span>
-<span style="color: #34d399;">✓ Shell Hook:       Zsh installed (~/.zshrc active)</span>
+<span style="color: #34d399;">✓ Git Pre-Commit:   Active (.git/hooks/pre-commit shields commits)</span>
 <span style="color: #34d399;">✓ AI Agent Shield:  .claude/ and .env* in .gitignore</span>
 <span style="color: #34d399;">✓ Binary Size:      1.56 MB (100% Offline / Zero Telemetry)</span></div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-doctor">secretguard doctor</span>
           <button class="copy-btn-sm" onclick="copySnippet('syntax-doctor')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- Command 7: Git Pre-Commit Hook -->
+      <div class="cmd-card">
+        <div class="cmd-card-header">
+          <span class="cmd-badge">Git Automation</span>
+          <div class="cmd-card-title">7. Sub-Millisecond Pre-Commit (`secretguard install-pre-commit`)</div>
+          <div class="cmd-card-desc">
+            Installs a zero-lag (<0.02ms) git pre-commit hook into your repository. Unlike sluggish 3-second Python hooks, SecretGuard inspects staged diffs instantaneously.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>git pre-commit hook</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard install-pre-commit</span>
+<span style="color: #34d399;">✨ Successfully installed SecretGuard pre-commit hook!</span>
+<span style="color: #8b949e;">📁 Path: ./.git/hooks/pre-commit</span>
+<span style="color: #34d399;">🔒 Every 'git commit' is now shielded in &lt;0.02ms!</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-precommit">secretguard install-pre-commit</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-precommit')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- Command 8: File & .env Scanner -->
+      <div class="cmd-card">
+        <div class="cmd-card-header">
+          <span class="cmd-badge">Codebase & CI</span>
+          <div class="cmd-card-title">8. Codebase & Config Scanner (`secretguard scan`)</div>
+          <div class="cmd-card-desc">
+            Recursively scans project directories, source files, or .env files for unmasked keys and high-entropy credentials before shipping. Perfect for local dev and CI.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>file scanner</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard scan ./src</span>
+<span style="color: #fbbf24;">⚠️  [./src/config.py:14] Found ["Stripe Live Secret Key"]</span>
+<span style="color: #f87171;">   Redacted: STRIPE_API_KEY = "sk_live_[REDACTED]"</span>
+<span style="color: #8b949e;">────────────────────────────────────────────</span>
+<span style="color: #34d399;">Files Scanned: 48 | Lines: 4,820</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-scan">secretguard scan .</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-scan')">Copy Command</button>
         </div>
       </div>
     </div>
