@@ -7,7 +7,7 @@ use std::process::{self, Command, Stdio};
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.1.4) - Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.1.5) - Sub-millisecond Terminal Secret & Privacy Guard
 
 USAGE:
     secretguard <SUBCOMMAND> [OPTIONS]
@@ -18,6 +18,7 @@ SUBCOMMANDS:
     mock <STRING>             Prints format-preserving synthetic mock string for AI agents/tests.
     scan [PATH]               Scans files, directories, or .env files for exposed secrets.
     install-pre-commit [DIR]  Installs instant (<0.02ms) git pre-commit secret interceptor.
+    agent-firewall <CMD...>   AI Agent Terminal & Egress Firewall (Claude, Cursor, Devin).
     wrap <COMMAND...>         Executes command and sanitizes stdout stream in real time.
     audit [FILE]              Scans local shell history (.zsh_history / .bash_history) for leaks.
     clean-history             Safely scrubs exposed secrets from shell history with atomic backups.
@@ -763,6 +764,14 @@ fn main() {
         }
         "mcp" => {
             secretguard::mcp::run_mcp_server(&engine);
+        }
+        "agent-firewall" | "firewall" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::firewall::run_agent_firewall(&target_args, &engine);
         }
         _ => {
             print_usage();

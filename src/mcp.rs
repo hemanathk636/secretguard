@@ -157,6 +157,20 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                 },
                                 "required": ["path"]
                             }
+                        },
+                        {
+                            "name": "eval_firewall_policy",
+                            "description": "Evaluates proposed agent commands against security firewall policies (blocks destructive operations like rm -rf, unauthorized credential egress of .env/ssh keys, and prompt injections).",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "command": {
+                                        "type": "string",
+                                        "description": "The command line string the AI agent intends to execute"
+                                    }
+                                },
+                                "required": ["command"]
+                            }
                         }
                     ]
                 });
@@ -258,6 +272,24 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                 }
                             ],
                             "isError": false
+                        })
+                    }
+                    "eval_firewall_policy" => {
+                        let cmd = arguments.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                        let verdict = crate::firewall::evaluate_firewall_command(cmd);
+                        json!({
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": serde_json::to_string_pretty(&json!({
+                                        "command": cmd,
+                                        "allowed": verdict.allowed,
+                                        "risk_level": format!("{:?}", verdict.risk_level),
+                                        "reasons": verdict.reasons
+                                    })).unwrap()
+                                }
+                            ],
+                            "isError": !verdict.allowed
                         })
                     }
                     _ => {
