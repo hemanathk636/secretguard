@@ -4,6 +4,7 @@ pub mod mcp;
 pub mod panic;
 pub mod patterns;
 pub mod synthetic;
+pub mod timemachine;
 pub mod vault;
 
 use entropy::scan_contextual_entropy;
