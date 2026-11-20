@@ -7,7 +7,7 @@ use std::process::{self, Command, Stdio};
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.1.3) - Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.1.4) - Sub-millisecond Terminal Secret & Privacy Guard
 
 USAGE:
     secretguard <SUBCOMMAND> [OPTIONS]
@@ -15,6 +15,7 @@ USAGE:
 SUBCOMMANDS:
     check <STRING>            Scans input string; exits with 1 if secret detected, 0 if clean.
     sanitize <STRING>         Prints sanitized string; exits with 1 if redacted, 0 if clean.
+    mock <STRING>             Prints format-preserving synthetic mock string for AI agents/tests.
     scan [PATH]               Scans files, directories, or .env files for exposed secrets.
     install-pre-commit [DIR]  Installs instant (<0.02ms) git pre-commit secret interceptor.
     wrap <COMMAND...>         Executes command and sanitizes stdout stream in real time.
@@ -670,6 +671,24 @@ fn main() {
 
             let result = engine.scan_and_sanitize(&input);
             print!("{}", result.sanitized_text);
+
+            if result.has_secret {
+                process::exit(1);
+            } else {
+                process::exit(0);
+            }
+        }
+        "mock" => {
+            let input = if args.len() >= 3 {
+                args[2..].join(" ")
+            } else {
+                let mut buffer = String::new();
+                io::stdin().read_to_string(&mut buffer).unwrap_or(0);
+                buffer
+            };
+
+            let result = engine.scan_and_sanitize(&input);
+            print!("{}", result.synthetic_text);
 
             if result.has_secret {
                 process::exit(1);

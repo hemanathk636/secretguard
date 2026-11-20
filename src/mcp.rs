@@ -131,6 +131,20 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                             }
                         },
                         {
+                            "name": "mock_secrets",
+                            "description": "Replaces detected secrets with format-preserving synthetic dummy tokens matching the exact length and prefix, preventing crashes in AI agent test suites.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "text": {
+                                        "type": "string",
+                                        "description": "The code, script, or configuration text to mock"
+                                    }
+                                },
+                                "required": ["text"]
+                            }
+                        },
+                        {
                             "name": "scan_path",
                             "description": "Scans a local file or directory path for leaked secrets, tokens, and exposed environment variables.",
                             "inputSchema": {
@@ -187,6 +201,19 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                 {
                                     "type": "text",
                                     "text": res.sanitized_text
+                                }
+                            ],
+                            "isError": false
+                        })
+                    }
+                    "mock_secrets" => {
+                        let text = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                        let res = engine.scan_and_sanitize(text);
+                        json!({
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": res.synthetic_text
                                 }
                             ],
                             "isError": false

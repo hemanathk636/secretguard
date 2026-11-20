@@ -200,7 +200,29 @@ SecretGuard includes a built-in **Model Context Protocol (MCP)** server, enablin
 ### 2. Built-in MCP Tools:
 * **`scan_secrets`**: Scans text or code snippets for exposed credentials in <15 µs and returns detection telemetry.
 * **`redact_secrets`**: Automatically masks discovered secrets with safe placeholders before prompt context logging.
+* **`mock_secrets`**: Replaces secrets with format-preserving synthetic dummy tokens matching the exact length and prefix for AI test execution.
 * **`scan_path`**: Audits a local file or directory for leaked tokens and `.env` exposures.
+
+---
+
+## 🎭 Format-Preserving Synthetic Mocks (`mock`)
+
+Traditional redactions (e.g. `[REDACTED]`) often break automated test suites, scripts, or AI agents that perform strict regex or length validation on tokens.
+
+SecretGuard generates **format-preserving synthetic mock tokens** that preserve the exact prefix, character set, and string length:
+
+```bash
+# Generate format-preserving synthetic mock
+secretguard mock "export OPENAI_API_KEY=sk-proj-98a7df8a7sdf8a7sdf..."
+```
+
+```
+export OPENAI_API_KEY=sk-proj-TESTDUMMYMOCK00000000000000000000000000000000
+```
+
+* **AWS Access Key:** `AKIAIOSFODNN7EXAMPLE` ➔ `AKIAFAKE000000000000` *(exactly 20 characters)*
+* **GitHub Token:** `ghp_1234567890abcdef...` ➔ `ghp_TESTDUMMYMOCK00...` *(exactly 40 characters)*
+* **OpenAI Project Key:** `sk-proj-1234...` ➔ `sk-proj-TESTDUMMY...` *(exact length preserved)*
 
 ---
 

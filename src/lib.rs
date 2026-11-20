@@ -1,14 +1,17 @@
 pub mod entropy;
 pub mod mcp;
 pub mod patterns;
+pub mod synthetic;
 
 use entropy::scan_contextual_entropy;
 use patterns::{get_high_confidence_patterns, SecretPattern};
+use synthetic::generate_synthetic_token;
 
 #[derive(Debug, Clone)]
 pub struct ScanResult {
     pub has_secret: bool,
     pub sanitized_text: String,
+    pub synthetic_text: String,
     pub matched_rules: Vec<String>,
 }
 
@@ -23,9 +26,10 @@ impl SecretGuardEngine {
         }
     }
 
-    /// Fast scan and sanitize. Runs Tier 1 (Regex) + Tier 2 (Entropy)
+    /// Fast scan, sanitize (with redaction masks), and generate format-preserving synthetic mocks.
     pub fn scan_and_sanitize(&self, input: &str) -> ScanResult {
         let mut sanitized = input.to_string();
+        let mut synthetic = input.to_string();
         let mut matched_rules = Vec::new();
 
         // Tier 1: High-confidence structured patterns
@@ -43,6 +47,14 @@ impl SecretGuardEngine {
                         }
                     })
                     .to_string();
+
+                synthetic = p
+                    .regex
+                    .replace_all(&synthetic, |caps: &regex::Captures| {
+                        let matched = &caps[0];
+                        generate_synthetic_token(p.name, matched)
+                    })
+                    .to_string();
             }
         }
 
@@ -51,12 +63,14 @@ impl SecretGuardEngine {
         if !entropy_hits.is_empty() {
             matched_rules.push("Contextual Entropy Password/Token".to_string());
             for (secret_val, _, _) in entropy_hits {
+                let mock_val = generate_synthetic_token("Entropy", &secret_val);
                 if secret_val.len() > 8 {
                     let masked = format!("{}[REDACTED]", &secret_val[..3]);
                     sanitized = sanitized.replace(&secret_val, &masked);
                 } else {
                     sanitized = sanitized.replace(&secret_val, "[REDACTED]");
                 }
+                synthetic = synthetic.replace(&secret_val, &mock_val);
             }
         }
 
@@ -65,6 +79,7 @@ impl SecretGuardEngine {
         ScanResult {
             has_secret,
             sanitized_text: sanitized,
+            synthetic_text: synthetic,
             matched_rules,
         }
     }
