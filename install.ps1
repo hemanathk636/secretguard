@@ -15,7 +15,7 @@ if (-not (Test-Path $InstallDir)) {
 }
 
 # Determine release tag
-$Tag = "v0.2.0"
+$Tag = "v0.2.2"
 try {
     $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 5
     if ($Release.tag_name) {

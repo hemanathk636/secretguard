@@ -7,41 +7,102 @@ use std::process::{self, Command, Stdio};
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.2.0) - Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.2.2) — Sub-millisecond Terminal Secret & Privacy Guard
 The Autonomous Developer Security & AI Agent Firewall Platform
 
 USAGE:
+    secretguard <PILLAR> [SUBCOMMAND]
     secretguard <COMMAND> [OPTIONS]
 
-🛡️ 1. AMBIENT SHIELD & RUNTIME DEFENSE:
-    hook <SHELL>              Prints instant shell hook (zsh | bash | fish | nushell | powershell).
-    wrap <COMMAND...>         Executes command and masks leaked stdout/stderr in real time.
-    agent-firewall <CMD...>   AI Agent Terminal & Egress Firewall (Blocks rm -rf, curl @.env).
-    shield <SUBCOMMAND>       Live screen-share privacy shield (auto-masks output during Zoom/Meet).
-    tun <SUBCOMMAND>          Zero-Knowledge TLS Secret Swapper (in-flight network token injection).
-    clipboard <SUBCOMMAND>    OS clipboard secret interceptor & auto-destruct timer (watch/clean).
-    radar [DIR]               Trojan Source (CVE-2021-42574) & invisible prompt injection radar.
-    docker [DOCKERFILE]       Docker & container image layer X-Ray (baked-in ENV/ARG leaks).
-    proxy [PORT]              Offline Mock API server (mock OpenAI & Stripe responses locally).
-    scrub-pii "<TEXT>"        Sanitizes Credit Cards, SSNs, and IBANs before prompting LLMs.
+THE 3 SECURITY PILLARS:
+  🛡️ 1. shield     [Ambient Shield & Runtime Defense]
+     Live terminal line hook, in-flight TLS swapper, screen cloaker & clipboard guard.
+     Run 'secretguard shield --help' for all runtime defense commands.
 
-📦 2. ZERO-KNOWLEDGE KEYSTORE & TEAM MESH:
-    vault <SUBCOMMAND>        Zero-knowledge AES-256-GCM memory keystore (import-env / run).
-    mesh <SUBCOMMAND>         Serverless P2P team secret sharing mesh (.secretguard/mesh.vault).
-    canary <SUBCOMMAND>       Generates & plants honeytoken tripwires (AWS, OpenAI, GitHub, Stripe).
+  🔐 2. vault      [Zero-Knowledge Keystore & Team Mesh]
+     Hardware keystore (AES-256-GCM), serverless P2P team sync & decoy honeytokens.
+     Run 'secretguard vault --help' for all keystore and mesh commands.
 
-🔍 3. REPOSITORY AUDITING & REMEDIATION:
-    scan [PATH]               Fast multi-threaded codebase and environment secret scanner.
-    verify <TOKEN...>         Live key status, privilege & risk verifier (OpenAI, AWS, Stripe).
-    blast-radius <KEY> [DIR]  Maps dependency footprint & exposure risk of any secret token.
-    time-machine <SUBCOMMAND> Cryptographic Git history scanner & surgical history scrubber.
-    panic [KEY]               Emergency panic button: revokes keys, amends git, and purges history.
-    report [DIR]              Generates SOC 2, HIPAA & GDPR compliance audit certificates.
-    audit [FILE]              Scans local shell history (.zsh_history / .bash_history) for leaks.
-    clean-history             Safely scrubs exposed secrets from shell history with atomic backups.
-    protect-agent [DIR]       Shields workspace context files from AI agent exfiltration.
-    doctor                    Runs system health check, latency verification, and diagnostics.
-    mcp                       Runs native Model Context Protocol (MCP) server for AI agents.
+  ⚡ 3. audit      [Repository Auditing & Remediation]
+     Codebase scanner, git time-machine, Dockerfile X-Ray & compliance certificates.
+     Run 'secretguard audit --help' for all scanning and remediation commands.
+
+POPULAR SHORTCUTS (Fast Direct Access):
+    hook <SHELL>              Fast alias for 'shield hook' (Attach to zsh, bash, pwsh)
+    scan [PATH] [--json]      Fast alias for 'audit scan' (Scan codebase at 2.4M lines/sec)
+    vault [SUBCOMMAND]        Fast alias for 'vault <cmd>' (init, set, get, run)
+    mesh [SUBCOMMAND]         Fast alias for 'vault mesh' (P2P team sync)
+    time-machine [SUBCOMMAND] Fast alias for 'audit git' (Surgical git history scrubber)
+    docker [DOCKERFILE]       Fast alias for 'audit docker' (Container image layer X-Ray)
+    verify <TOKENS...>        Fast alias for 'audit verify' (Key privilege & scope inspector)
+    panic [KEY]               Fast alias for 'audit panic' (Emergency lockdown kill-switch)
+    doctor                    Runs instant diagnostics, latency benchmarks & health checks
+"#
+    );
+}
+
+fn print_pillar_shield_help() {
+    eprintln!(
+        r#"SecretGuard Shield — Pillar 1: Ambient Shield & Runtime Defense
+Protect active terminals, network requests, screen shares, and clipboards in real-time.
+
+USAGE:
+    secretguard shield <SUBCOMMAND> [OPTIONS]
+
+SUBCOMMANDS:
+    hook <SHELL>              Install sub-millisecond pre-exec hook (zsh | bash | fish | nu | pwsh)
+    tun [start|swap]          Zero-knowledge TLS secret swapper (replaces mock tokens in-flight)
+    wrap <COMMAND...>         Execute command and dynamically cloak sensitive stdout/stderr
+    screen [status|auto|run]  Detect active Zoom/Teams/Meet conferences & blur terminal output
+    clipboard [watch|clean]   OS clipboard guardian with automatic self-destruct timer
+    radar [DIR]               Trojan Source (CVE-2021-42574) & invisible prompt injection radar
+    agent [DIR]               AI agent workspace shield (Claude Code, Cursor, Aider)
+    firewall <COMMAND...>     AI Agent terminal & network egress firewall
+"#
+    );
+}
+
+fn print_pillar_vault_help() {
+    eprintln!(
+        r#"SecretGuard Vault — Pillar 2: Zero-Knowledge Keystore & Team Mesh
+Manage encrypted credentials, P2P team sync, and decoy honeytokens without plaintext .env files.
+
+USAGE:
+    secretguard vault <SUBCOMMAND> [OPTIONS]
+
+SUBCOMMANDS:
+    init                      Initialize local AES-256-GCM + Argon2id encrypted vault
+    set <KEY> [VALUE]         Store an encrypted secret in hardware-isolated keystore
+    get <KEY>                 Retrieve a decrypted secret on demand
+    run <KEYS...> -- <CMD...> Launch child process with decrypted secrets piped into memory
+    import-env [PATH]         Import existing .env file into encrypted vault and remove plaintext
+    list                      List all stored secret keys without revealing plaintext values
+    mesh [init|add|sync]      Serverless P2P team secret sharing mesh (.secretguard/mesh.vault)
+    canary [generate|plant]   Generate & plant decoy honeytoken tripwires (AWS, OpenAI, Stripe)
+"#
+    );
+}
+
+fn print_pillar_audit_help() {
+    eprintln!(
+        r#"SecretGuard Audit — Pillar 3: Repository Auditing & Remediation
+Inspect codebases, scrub git histories, audit Dockerfiles, and generate compliance certificates.
+
+USAGE:
+    secretguard audit <SUBCOMMAND> [OPTIONS]
+
+SUBCOMMANDS:
+    scan [PATH] [--json]      High-speed codebase scanner (2.4M lines/sec) with CI/CD metrics
+    git [scan|scrub]          Cryptographic Git Time-Machine surgical commit history scrubber
+    history [PATH]            Scan shell history (.zsh_history / .bash_history) for past leaks
+    clean-history [--dry-run] Safely scrub credentials from shell history with atomic backup
+    docker [DOCKERFILE]       Multi-stage Dockerfile and container layer secret X-Ray
+    verify <TOKENS...>        Zero-privilege live key status, privilege & risk inspector
+    blast <KEY> [DIR]         Map dependency footprint and blast radius across cloud services
+    pii "<TEXT>"              Scrub customer PII, credit cards & SSNs before LLM prompting
+    report [DIR]              Generate SOC 2, HIPAA, and GDPR compliance audit certificates
+    proxy [PORT]              Offline Mock API server (mock OpenAI & Stripe responses locally)
+    panic [KEY]               Emergency lockdown kill-switch: revoke keys & purge buffers
 "#
     );
 }
@@ -683,6 +744,29 @@ function Invoke-SecretGuard {
     }
 }
 
+fn run_wrapped_command(child_cmd: &str, child_args: &[String], engine: &SecretGuardEngine) {
+    let mut child = Command::new(child_cmd)
+        .args(child_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("Failed to start child process");
+
+    if let Some(stdout) = child.stdout.take() {
+        let reader = io::BufReader::new(stdout);
+        let stdout_handle = io::stdout();
+        let mut handle = stdout_handle.lock();
+
+        for line in reader.lines().flatten() {
+            let res = engine.scan_and_sanitize(&line);
+            writeln!(handle, "{}", res.sanitized_text).unwrap();
+        }
+    }
+
+    let status = child.wait().expect("Child process wasn't running");
+    process::exit(status.code().unwrap_or(0));
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -693,7 +777,179 @@ fn main() {
     let subcommand = args[1].as_str();
     let engine = SecretGuardEngine::new();
 
+    // Global flags
+    if subcommand == "--help" || subcommand == "-h" || subcommand == "help" {
+        print_usage();
+        process::exit(0);
+    }
+    if subcommand == "--version" || subcommand == "-V" || subcommand == "version" {
+        println!("SecretGuard v0.2.2 (sub-millisecond terminal secret interceptor & AI firewall)");
+        process::exit(0);
+    }
+
     match subcommand {
+        // ==========================================
+        // 🛡️ PILLAR 1: AMBIENT SHIELD & RUNTIME DEFENSE
+        // ==========================================
+        "shield" => {
+            if args.len() < 3 || args[2] == "--help" || args[2] == "-h" {
+                print_pillar_shield_help();
+                process::exit(0);
+            }
+            let sub = args[2].as_str();
+            match sub {
+                "hook" => {
+                    let shell = if args.len() >= 4 { &args[3] } else { "zsh" };
+                    print_hook(shell);
+                }
+                "tun" | "swapper" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::swapper::SecretSwapper::run_cli(&target_args);
+                }
+                "wrap" => {
+                    if args.len() < 4 {
+                        eprintln!("Usage: secretguard shield wrap <command> [args...]");
+                        process::exit(2);
+                    }
+                    let child_cmd = &args[3];
+                    let child_args = &args[4..];
+                    run_wrapped_command(child_cmd, child_args, &engine);
+                }
+                "screen" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::shield::ScreenShield::run_cli(&target_args, &engine);
+                }
+                "status" | "auto" | "run" => {
+                    let target_args = args[2..].to_vec();
+                    secretguard::shield::ScreenShield::run_cli(&target_args, &engine);
+                }
+                "clipboard" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::clipboard::ClipboardGuardian::run_cli(&target_args, &engine);
+                }
+                "radar" | "trojan-radar" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::radar::UnicodeRadar::run_cli(&target_args);
+                }
+                "agent" | "protect-agent" => {
+                    let target = if args.len() >= 4 { Some(args[3].as_str()) } else { None };
+                    run_protect_agent(target, &engine);
+                }
+                "firewall" | "agent-firewall" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::firewall::run_agent_firewall(&target_args, &engine);
+                }
+                _ => {
+                    print_pillar_shield_help();
+                    process::exit(2);
+                }
+            }
+        }
+
+        // ==========================================
+        // 🔐 PILLAR 2: ZERO-KNOWLEDGE KEYSTORE & TEAM MESH
+        // ==========================================
+        "vault" => {
+            if args.len() < 3 || args[2] == "--help" || args[2] == "-h" {
+                print_pillar_vault_help();
+                process::exit(0);
+            }
+            let sub = args[2].as_str();
+            match sub {
+                "mesh" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::mesh::MeshManager::run_cli(&target_args);
+                }
+                "canary" | "honeytoken" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::canary::CanaryManager::run_cli(&target_args);
+                }
+                _ => {
+                    let target_args = args[2..].to_vec();
+                    secretguard::vault::run_vault_cli(&target_args, &engine);
+                }
+            }
+        }
+
+        // ==========================================
+        // ⚡ PILLAR 3: REPOSITORY AUDITING & REMEDIATION
+        // ==========================================
+        "audit" => {
+            if args.len() < 3 || args[2] == "--help" || args[2] == "-h" {
+                print_pillar_audit_help();
+                process::exit(0);
+            }
+            let sub = args[2].as_str();
+            match sub {
+                "scan" => {
+                    let json_mode = args.iter().any(|a| a == "--json");
+                    let mut target = None;
+                    for arg in &args[3..] {
+                        if arg != "--json" {
+                            target = Some(arg.as_str());
+                            break;
+                        }
+                    }
+                    run_scan(target, &engine, json_mode);
+                }
+                "git" | "time-machine" | "timemachine" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::timemachine::TimeMachine::run_cli(&target_args, &engine);
+                }
+                "history" => {
+                    let target = if args.len() >= 4 { Some(args[3].as_str()) } else { None };
+                    run_audit(target, &engine);
+                }
+                "clean-history" | "clean" => {
+                    let mut dry_run = false;
+                    let mut target = None;
+                    for arg in &args[3..] {
+                        if arg == "--dry-run" {
+                            dry_run = true;
+                        } else if target.is_none() {
+                            target = Some(arg.as_str());
+                        }
+                    }
+                    run_clean_history(target, dry_run, &engine);
+                }
+                "docker" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::docker::DockerScanner::run_cli(&target_args, &engine);
+                }
+                "verify" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::verifier::KeyVerifier::run_cli(&target_args);
+                }
+                "blast" | "blast-radius" | "blastradius" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::blastradius::BlastRadiusScanner::run_cli(&target_args);
+                }
+                "pii" | "scrub-pii" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::pii::PiiScrubber::run_cli(&target_args, &engine);
+                }
+                "report" | "compliance" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::compliance::ComplianceAuditor::run_cli(&target_args, &engine);
+                }
+                "proxy" | "mock-proxy" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::proxy::MockProxyServer::run_cli(&target_args);
+                }
+                "panic" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::panic::run_panic_emergency(&target_args, &engine);
+                }
+                _ => {
+                    let target = Some(sub);
+                    run_audit(target, &engine);
+                }
+            }
+        }
+
+        // ==========================================
+        // 🚀 POPULAR SHORTCUT ALIASES (Direct Access)
+        // ==========================================
         "check" => {
             let input = if args.len() >= 3 {
                 args[2..].join(" ")
@@ -751,9 +1007,14 @@ fn main() {
             let shell = if args.len() >= 3 { &args[2] } else { "zsh" };
             print_hook(shell);
         }
-        "audit" => {
-            let target = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
-            run_audit(target, &engine);
+        "wrap" => {
+            if args.len() < 3 {
+                eprintln!("Usage: secretguard wrap <command> [args...]");
+                process::exit(2);
+            }
+            let child_cmd = &args[2];
+            let child_args = &args[3..];
+            run_wrapped_command(child_cmd, child_args, &engine);
         }
         "clean-history" => {
             let mut dry_run = false;
@@ -789,36 +1050,6 @@ fn main() {
             let target = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
             run_install_pre_commit(target);
         }
-        "wrap" => {
-            if args.len() < 3 {
-                eprintln!("Usage: secretguard wrap <command> [args...]");
-                process::exit(2);
-            }
-
-            let child_cmd = &args[2];
-            let child_args = &args[3..];
-
-            let mut child = Command::new(child_cmd)
-                .args(child_args)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .expect("Failed to start child process");
-
-            if let Some(stdout) = child.stdout.take() {
-                let reader = io::BufReader::new(stdout);
-                let stdout_handle = io::stdout();
-                let mut handle = stdout_handle.lock();
-
-                for line in reader.lines().flatten() {
-                    let res = engine.scan_and_sanitize(&line);
-                    writeln!(handle, "{}", res.sanitized_text).unwrap();
-                }
-            }
-
-            let status = child.wait().expect("Child process wasn't running");
-            process::exit(status.code().unwrap_or(0));
-        }
         "mcp" => {
             secretguard::mcp::run_mcp_server(&engine);
         }
@@ -829,14 +1060,6 @@ fn main() {
                 Vec::new()
             };
             secretguard::firewall::run_agent_firewall(&target_args, &engine);
-        }
-        "vault" => {
-            let target_args = if args.len() >= 3 {
-                args[2..].to_vec()
-            } else {
-                Vec::new()
-            };
-            secretguard::vault::run_vault_cli(&target_args, &engine);
         }
         "panic" => {
             let target_args = if args.len() >= 3 {
@@ -941,14 +1164,6 @@ fn main() {
                 Vec::new()
             };
             secretguard::pii::PiiScrubber::run_cli(&target_args, &engine);
-        }
-        "shield" => {
-            let target_args = if args.len() >= 3 {
-                args[2..].to_vec()
-            } else {
-                Vec::new()
-            };
-            secretguard::shield::ScreenShield::run_cli(&target_args, &engine);
         }
         _ => {
             print_usage();

@@ -24,7 +24,7 @@ runs:
       run: |
         OS="$(uname -s)"
         ARCH="$(uname -m)"
-        VERSION="v0.2.1"
+        VERSION="v0.2.2"
         
         if [ "$OS" = "Linux" ]; then
           TARBALL="secretguard-x86_64-unknown-linux-gnu.tar.gz"
