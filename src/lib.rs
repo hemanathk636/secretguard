@@ -3,6 +3,7 @@ pub mod canary;
 pub mod clipboard;
 pub mod compliance;
 pub mod completions;
+pub mod dashboard;
 pub mod docker;
 pub mod encoding;
 pub mod entropy;

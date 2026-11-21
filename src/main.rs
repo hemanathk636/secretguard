@@ -4,10 +4,11 @@ use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
+use std::thread;
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.3.0) — Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.3.1) — Sub-millisecond Terminal Secret & Privacy Guard
 The Autonomous Developer Security & AI Agent Firewall Platform
 
 USAGE:
@@ -41,6 +42,7 @@ POPULAR SHORTCUTS (Fast Direct Access):
     verify <TOKENS...>        Fast alias for 'audit verify' (Key privilege & scope inspector)
     panic [KEY]               Fast alias for 'audit panic' (Emergency lockdown kill-switch)
     doctor                    Runs instant diagnostics, latency benchmarks & health checks
+    dashboard [--port 3737]   Launch live in-memory web security dashboard & sandbox
 "#
     );
 }
@@ -55,6 +57,7 @@ USAGE:
 
 SUBCOMMANDS:
     hook <SHELL>              Install sub-millisecond pre-exec hook (zsh | bash | fish | nu | pwsh)
+    dashboard [--port 3737]   Launch live in-memory web security dashboard & sandbox
     ghost [virtualize|inspect] Zero-Knowledge LLM Context Virtualization (Polymorphic Ghost Tokens)
     tun [start|swap]          Zero-knowledge TLS secret swapper (replaces mock tokens in-flight)
     wrap <COMMAND...>         Execute command and dynamically cloak sensitive stdout/stderr
@@ -685,19 +688,21 @@ zshaddhistory() {
         ),
         "bash" => print!(
             "{}",
-            r#"# SecretGuard Bash Hook
-# Append to ~/.bashrc
+            r#"# SecretGuard Bash Hook (Zero-History Interceptor)
+# Add to ~/.bashrc: eval "$(secretguard hook bash)"
+export HISTCONTROL=ignorespace:erasedups
 _secretguard_bash_preexec() {
     local last_hist
     last_hist=$(history 1 | sed 's/^[ ]*[0-9]*[ ]*//')
-    if secretguard check "$last_hist" 2>/dev/null; then
-        : # clean
-    else
+    if [ -n "$last_hist" ] && ! secretguard check "$last_hist" >/dev/null 2>&1; then
         history -d $(history 1 | awk '{print $1}')
-        echo "[secretguard] 🚨 Secret detected and removed from bash history." >&2
+        echo -e "\033[1;33m[secretguard]\033[0m 🚨 Secret intercepted! Automatically purged from Bash history." >&2
     fi
 }
-PROMPT_COMMAND="_secretguard_bash_preexec; $PROMPT_COMMAND"
+case "$PROMPT_COMMAND" in
+    *_secretguard_bash_preexec*) ;;
+    *) PROMPT_COMMAND="_secretguard_bash_preexec; ${PROMPT_COMMAND:-}" ;;
+esac
 "#
         ),
         "fish" => print!(
@@ -733,15 +738,20 @@ $env.config.hooks.pre_execution = ($env.config.hooks.pre_execution | default [] 
         ),
         "powershell" | "pwsh" => print!(
             "{}",
-            r#"# SecretGuard PowerShell Hook
-# Add to $PROFILE
-Set-PSReadLineOption -HistorySaveStyle SaveNothing -ErrorAction SilentlyContinue
-function Invoke-SecretGuard {
-    param([string]$Line)
-    if (secretguard check "$Line") {
-        # clean
-    } else {
-        Write-Warning "[secretguard] 🚨 Secret intercepted!"
+            r#"# SecretGuard PowerShell Zero-History Hook
+# Add to $PROFILE: secretguard hook pwsh | Out-String | Invoke-Expression
+if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) {
+    Set-PSReadLineOption -AddToHistoryHandler {
+        param([string]$line)
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.Length -lt 15) { return $true }
+        $check = secretguard check "$line" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            [Console]::ForegroundColor = [ConsoleColor]::Yellow
+            [Console]::Error.WriteLine("`n[secretguard] 🚨 Secret intercepted! Excluded from PowerShell history file.")
+            [Console]::ResetColor()
+            return $false
+        }
+        return $true
     }
 }
 "#
@@ -754,21 +764,38 @@ fn run_wrapped_command(child_cmd: &str, child_args: &[String], engine: &SecretGu
     let mut child = Command::new(child_cmd)
         .args(child_args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to start child process");
 
-    if let Some(stdout) = child.stdout.take() {
+    let stdout_opt = child.stdout.take();
+    let stderr_opt = child.stderr.take();
+
+    let engine_clone = SecretGuardEngine::new();
+    let stderr_thread = thread::spawn(move || {
+        if let Some(stderr) = stderr_opt {
+            let reader = io::BufReader::new(stderr);
+            let stderr_handle = io::stderr();
+            let mut handle = stderr_handle.lock();
+            for line in reader.lines().flatten() {
+                let res = engine_clone.scan_and_sanitize(&line);
+                let _ = writeln!(handle, "{}", res.sanitized_text);
+            }
+        }
+    });
+
+    if let Some(stdout) = stdout_opt {
         let reader = io::BufReader::new(stdout);
         let stdout_handle = io::stdout();
         let mut handle = stdout_handle.lock();
 
         for line in reader.lines().flatten() {
             let res = engine.scan_and_sanitize(&line);
-            writeln!(handle, "{}", res.sanitized_text).unwrap();
+            let _ = writeln!(handle, "{}", res.sanitized_text);
         }
     }
 
+    let _ = stderr_thread.join();
     let status = child.wait().expect("Child process wasn't running");
     process::exit(status.code().unwrap_or(0));
 }
@@ -807,6 +834,10 @@ fn main() {
                 "hook" => {
                     let shell = if args.len() >= 4 { &args[3] } else { "zsh" };
                     print_hook(shell);
+                }
+                "dashboard" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::dashboard::DashboardServer::run_cli(&target_args, &engine);
                 }
                 "ghost" => {
                     let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
@@ -1064,6 +1095,10 @@ fn main() {
         }
         "doctor" => {
             run_doctor(&engine);
+        }
+        "dashboard" => {
+            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            secretguard::dashboard::DashboardServer::run_cli(&target_args, &engine);
         }
         "scan" => {
             let json_mode = args.iter().any(|a| a == "--json");
