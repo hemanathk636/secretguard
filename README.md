@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.3)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.4)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.3
+    rev: v0.3.4
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -501,9 +501,14 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 
 ---
 
-## 📦 What's New in v0.3.3 (Milestone Release)
+## 📦 What's New in v0.3.4 (Hardened Release)
 
-SecretGuard v0.3.3 introduces hardened security architecture, zero-dependency RFC 5869 HKDF-SHA256 master key derivation, in-memory Base64/percent-encoding inspection, native Bash `extdebug` pre-execution trap blocking, and deep repository history sanitization:
+SecretGuard v0.3.4 delivers complete security hardening across local keystore persistence and terminal defense:
+* **Concurrency-Safe Master Key Storage:** Multi-process `create_new(true)` atomic key initialization preventing truncation or overwrite races.
+* **Corrupt Vault & Key Protection:** Strict fail-closed semantics that reject corrupt vaults or keys without ever overwriting existing encrypted secrets.
+* **CLI Argument Exposure Defense:** Security warning and interactive/stdin secret prompting in `vault set` to prevent secrets leaking to `ps aux` and shell history.
+* **Unpredictable Temporary Vault Swaps:** Cryptographically unique process-randomized temporary files with atomic rename.
+* **ANSI Escape Sequence Evasion Shield:** Transparent de-obfuscation and detection of secrets fragmented with terminal ANSI color/styling codes.
 
 ### 🛡️ 1. Ambient Shield & Runtime Defense
 * **`secretguard hook bash`**: Native Bash `shopt -s extdebug` with `trap ... DEBUG` line interceptor that stops leaked credentials before execution while preserving normal terminal operation.

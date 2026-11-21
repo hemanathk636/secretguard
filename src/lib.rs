@@ -48,6 +48,34 @@ fn safe_prefix(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// Strips standard ANSI terminal control and color sequences (e.g., \x1b[31m, \x1b[0m)
+/// to prevent evasion of pattern detection via terminal styling artifacts.
+pub fn strip_ansi_escapes(s: &str) -> String {
+    if !s.contains('\x1b') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if let Some(&next) = chars.peek() {
+                if next == '[' {
+                    chars.next();
+                    while let Some(&seq_char) = chars.peek() {
+                        chars.next();
+                        if (seq_char >= '@' && seq_char <= '~') || seq_char.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
 impl SecretGuardEngine {
     pub fn new() -> Self {
         let cfg = config::SecretGuardConfig::load();
@@ -158,6 +186,19 @@ impl SecretGuardEngine {
                 };
                 sanitized = sanitized.replace(&encoded_str, &mask);
                 synthetic = synthetic.replace(&encoded_str, "[SYNTHETIC_MOCK_ENCODED_TOKEN]");
+            }
+        }
+
+        // Tier 4: ANSI Terminal Escape Sequence Evasion Inspection
+        if input.contains('\x1b') {
+            let stripped_ansi = strip_ansi_escapes(input);
+            for p in &self.patterns {
+                if p.regex.is_match(&stripped_ansi) && !matched_rules.iter().any(|r| r.contains(p.name)) {
+                    matched_rules.push(format!("ANSI-Obfuscated ({})", p.name));
+                    sanitized = "[REDACTED_ANSI_SECRET]".to_string();
+                    synthetic = "[SYNTHETIC_MOCK_ANSI_TOKEN]".to_string();
+                    break;
+                }
             }
         }
 

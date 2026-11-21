@@ -8,7 +8,7 @@ use std::thread;
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.3.3) — Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.3.4) — Sub-millisecond Terminal Secret & Privacy Guard
 The Autonomous Developer Security & AI Agent Firewall Platform
 
 USAGE:
@@ -822,7 +822,7 @@ fn main() {
         process::exit(0);
     }
     if subcommand == "--version" || subcommand == "-V" || subcommand == "version" {
-        println!("SecretGuard v0.3.3 (sub-millisecond terminal secret interceptor & AI firewall)");
+        println!("SecretGuard v0.3.4 (sub-millisecond terminal secret interceptor & AI firewall)");
         process::exit(0);
     }
 

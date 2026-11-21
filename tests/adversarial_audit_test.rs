@@ -92,12 +92,12 @@ fn test_deep_git_history_scrubbing_across_all_commits() {
 
 #[test]
 fn test_csprng_master_key_generation() {
-    let key1 = secretguard::vault::get_or_generate_master_key();
+    let key1 = secretguard::vault::get_or_generate_master_key().expect("Failed to get or generate master key");
     assert_eq!(key1.len(), 32);
     // Verify non-zero entropy
     assert!(key1.iter().any(|&b| b != 0));
 
-    let key2 = secretguard::vault::get_or_generate_master_key();
+    let key2 = secretguard::vault::get_or_generate_master_key().expect("Failed to get master key");
     assert_eq!(key1, key2, "Master key must be deterministically persisted on disk");
 }
 

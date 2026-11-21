@@ -33,7 +33,7 @@ impl GhostVirtualizer {
         temp.join("ghost_session.enc")
     }
 
-    fn get_encryption_key() -> [u8; 32] {
+    fn get_encryption_key() -> Result<[u8; 32], String> {
         derive_vault_key(Some("secretguard_ghost_virtualizer_entropy_key"))
     }
 
@@ -42,10 +42,11 @@ impl GhostVirtualizer {
         let path = Self::get_session_path();
         if path.exists() {
             if let Ok(encrypted_bytes) = fs::read(&path) {
-                let key = Self::get_encryption_key();
-                if let Ok(decrypted_bytes) = decrypt_vault_payload(&encrypted_bytes, &key) {
-                    if let Ok(table) = serde_json::from_slice::<GhostSessionTable>(&decrypted_bytes) {
-                        return table;
+                if let Ok(key) = Self::get_encryption_key() {
+                    if let Ok(decrypted_bytes) = decrypt_vault_payload(&encrypted_bytes, &key) {
+                        if let Ok(table) = serde_json::from_slice::<GhostSessionTable>(&decrypted_bytes) {
+                            return table;
+                        }
                     }
                 }
             }
@@ -67,7 +68,8 @@ impl GhostVirtualizer {
         }
 
         let serialized = serde_json::to_vec(table)?;
-        let key = Self::get_encryption_key();
+        let key = Self::get_encryption_key()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         let encrypted = encrypt_vault_payload(&serialized, &key)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 

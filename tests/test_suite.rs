@@ -110,3 +110,15 @@ fn test_cloud_providers_expansion() {
     assert!(res.has_secret);
     assert!(res.matched_rules.contains(&"Linear API Key".to_string()));
 }
+
+#[test]
+fn test_ansi_escape_obfuscation_detection() {
+    let engine = SecretGuardEngine::new();
+    // Injects ANSI red color and reset sequences directly inside an OpenAI API key token
+    let obfuscated_raw = "curl -H 'Authorization: Bearer sk-\x1b[31mproj-1234567890abcdef1234567890abcdef\x1b[0m' https://api.openai.com";
+    let res = engine.scan_and_sanitize(obfuscated_raw);
+
+    assert!(res.has_secret, "Engine must catch secrets even when fragmented by ANSI escape codes");
+    assert!(res.matched_rules.iter().any(|r| r.contains("ANSI-Obfuscated")));
+    assert!(res.sanitized_text.contains("[REDACTED"));
+}

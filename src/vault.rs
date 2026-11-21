@@ -50,17 +50,57 @@ pub fn get_master_key_path() -> PathBuf {
 }
 
 /// Retrieves or generates a genuine 256-bit cryptographically secure random master key via CSPRNG (OsRng)
-/// with atomic 0600 file creation on Unix.
-pub fn get_or_generate_master_key() -> [u8; 32] {
+/// with atomic, concurrency-safe 0600 file creation on Unix.
+///
+/// Returns Err if the master key file exists but is corrupted, unreadable, or a symlink,
+/// or if key generation fails to persist to disk. Never returns an unpersisted ephemeral key.
+pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
     let path = get_master_key_path();
+
     if path.exists() {
-        if let Ok(bytes) = fs::read(&path) {
-            if bytes.len() == 32 {
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&bytes);
-                return key;
+        // Prevent symlink hijacking
+        if let Ok(meta) = fs::symlink_metadata(&path) {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "Security Error: Master key at '{}' is a symbolic link. Symlinks are rejected to prevent hijacking.",
+                    path.display()
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = meta.permissions().mode();
+                if mode & 0o077 != 0 {
+                    eprintln!(
+                        "⚠️  Warning: Master key file '{}' permissions ({:o}) are overly permissive. Tightening to 0600...",
+                        path.display(),
+                        mode & 0o777
+                    );
+                    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+                }
             }
         }
+
+        let bytes = fs::read(&path).map_err(|e| {
+            format!(
+                "Permission denied or I/O error reading master key at '{}': {}. Aborting to protect vault integrity.",
+                path.display(),
+                e
+            )
+        })?;
+
+        if bytes.len() != 32 {
+            return Err(format!(
+                "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
+                 Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
+                path.display(),
+                bytes.len()
+            ));
+        }
+
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        return Ok(key);
     }
 
     // Generate genuine 256-bit cryptographically secure random key via OsRng (CSPRNG)
@@ -68,39 +108,80 @@ pub fn get_or_generate_master_key() -> [u8; 32] {
     OsRng.fill_bytes(&mut key);
 
     if let Some(parent) = path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            eprintln!("Warning: Failed to create master key directory {}: {}", parent.display(), e);
-        }
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create master key directory '{}': {}",
+                parent.display(),
+                e
+            )
+        })?;
     }
 
+    // Concurrency-safe exclusive creation: prevent race conditions and never truncate an existing key
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         match fs::OpenOptions::new()
-            .create(true)
+            .create_new(true)
             .write(true)
-            .truncate(true)
             .mode(0o600)
             .open(&path)
         {
             Ok(mut file) => {
-                if let Err(e) = file.write_all(&key) {
-                    eprintln!("Warning: Failed to write master key to {}: {}", path.display(), e);
+                if let Err(e) = file.write_all(&key).and_then(|_| file.sync_all()) {
+                    let _ = fs::remove_file(&path);
+                    return Err(format!(
+                        "Failed to persist master key to '{}': {}. Vault operations aborted.",
+                        path.display(),
+                        e
+                    ));
                 }
             }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                // Another concurrent process created the file just now; re-read and validate it
+                return get_or_generate_master_key();
+            }
             Err(e) => {
-                eprintln!("Warning: Failed to create master key file {}: {}", path.display(), e);
+                return Err(format!(
+                    "Failed to create master key file '{}' with 0600 permissions: {}",
+                    path.display(),
+                    e
+                ));
             }
         }
     }
     #[cfg(not(unix))]
     {
-        if let Err(e) = fs::write(&path, &key) {
-            eprintln!("Warning: Failed to write master key to {}: {}", path.display(), e);
+        use std::fs::OpenOptions;
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(&key).and_then(|_| file.sync_all()) {
+                    let _ = fs::remove_file(&path);
+                    return Err(format!(
+                        "Failed to persist master key to '{}': {}. Vault operations aborted.",
+                        path.display(),
+                        e
+                    ));
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                return get_or_generate_master_key();
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Failed to create master key file '{}': {}",
+                    path.display(),
+                    e
+                ));
+            }
         }
     }
 
-    key
+    Ok(key)
 }
 
 /// RFC 5869 HKDF-SHA256 (Extract and Expand) using official audited `hkdf` crate
@@ -111,8 +192,8 @@ pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], length: usize) -> Vec<u
     okm
 }
 
-pub fn derive_vault_key(passphrase: Option<&str>) -> [u8; 32] {
-    let master = get_or_generate_master_key();
+pub fn derive_vault_key(passphrase: Option<&str>) -> Result<[u8; 32], String> {
+    let master = get_or_generate_master_key()?;
     let salt = match passphrase {
         Some(pass) => pass.as_bytes(),
         None => b"secretguard_vault_rfc5869_salt_v3",
@@ -121,7 +202,7 @@ pub fn derive_vault_key(passphrase: Option<&str>) -> [u8; 32] {
     let derived = hkdf_sha256(salt, &master, info, 32);
     let mut key = [0u8; 32];
     key.copy_from_slice(&derived[..32]);
-    key
+    Ok(key)
 }
 
 pub fn encrypt_vault_payload(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
@@ -159,8 +240,8 @@ pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
         return Ok(VaultStore::default());
     }
 
-    let data = fs::read(&path).map_err(|e| format!("Failed to read vault file: {}", e))?;
-    let key = derive_vault_key(passphrase);
+    let data = fs::read(&path).map_err(|e| format!("Failed to read vault file at '{}': {}", path.display(), e))?;
+    let key = derive_vault_key(passphrase)?;
     let decrypted = decrypt_vault_payload(&data, &key)?;
     let store: VaultStore = serde_json::from_slice(&decrypted)
         .map_err(|e| format!("Failed to parse decrypted vault data: {}", e))?;
@@ -169,40 +250,58 @@ pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
 
 pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), String> {
     let path = get_vault_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create vault directory {}: {}", parent.display(), e))?;
-    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create vault directory '{}': {}", parent.display(), e))?;
+
     let json_bytes =
         serde_json::to_vec(store).map_err(|e| format!("Failed to serialize vault: {}", e))?;
-    let key = derive_vault_key(passphrase);
+    let key = derive_vault_key(passphrase)?;
     let encrypted = encrypt_vault_payload(&json_bytes, &key)?;
 
-    let tmp_path = path.with_extension("tmp");
+    // Unpredictable unique temporary file to eliminate race conditions and symlink replacement vulnerabilities
+    let pid = process::id();
+    let mut nonce = [0u8; 8];
+    OsRng.fill_bytes(&mut nonce);
+    let tmp_filename = format!(".vault.{}.{:x}.tmp", pid, u64::from_le_bytes(nonce));
+    let tmp_path = parent.join(tmp_filename);
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         let mut file = fs::OpenOptions::new()
-            .create(true)
+            .create_new(true)
             .write(true)
-            .truncate(true)
             .mode(0o600)
             .open(&tmp_path)
-            .map_err(|e| format!("Failed to create temporary vault file {} with 0600 mode: {}", tmp_path.display(), e))?;
-        file.write_all(&encrypted)
-            .map_err(|e| format!("Failed to write encrypted vault data to {}: {}", tmp_path.display(), e))?;
-        file.sync_all()
-            .map_err(|e| format!("Failed to sync temporary vault file: {}", e))?;
+            .map_err(|e| format!("Failed to create unique temporary vault file {} with 0600 mode: {}", tmp_path.display(), e))?;
+        
+        let write_res = file.write_all(&encrypted).and_then(|_| file.sync_all());
+        if let Err(e) = write_res {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(format!("Failed to write and sync encrypted vault data to {}: {}", tmp_path.display(), e));
+        }
     }
     #[cfg(not(unix))]
     {
-        fs::write(&tmp_path, &encrypted)
-            .map_err(|e| format!("Failed to write temporary vault file (path: {}): {}", tmp_path.display(), e))?;
+        use std::fs::OpenOptions;
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp_path)
+            .map_err(|e| format!("Failed to create unique temporary vault file {}: {}", tmp_path.display(), e))?;
+        
+        let write_res = file.write_all(&encrypted).and_then(|_| file.sync_all());
+        if let Err(e) = write_res {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(format!("Failed to write and sync encrypted vault data to {}: {}", tmp_path.display(), e));
+        }
     }
 
-    fs::rename(&tmp_path, &path)
-        .map_err(|e| format!("Failed to atomically replace vault file {}: {}", path.display(), e))?;
+    fs::rename(&tmp_path, &path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("Failed to atomically replace vault file {}: {}", path.display(), e)
+    })?;
 
     Ok(())
 }
@@ -210,7 +309,7 @@ pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), St
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.3)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.4)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]
@@ -231,20 +330,41 @@ SUBCOMMANDS:
         "set" => {
             if args.len() < 2 {
                 eprintln!("Usage: secretguard vault set <KEY_NAME> [VALUE]");
+                eprintln!("\nSafe Usage:");
+                eprintln!("  secretguard vault set <KEY_NAME>          (prompts interactively, preventing shell history & ps leaks)");
+                eprintln!("  cat secret.txt | secretguard vault set <KEY_NAME>  (reads secret securely from piped stdin)");
                 process::exit(2);
             }
             let key_name = &args[1];
+
+            // Finding 3: Protect secrets from leaking through command-line arguments
             let secret_val = if args.len() >= 3 {
+                eprintln!("⚠️  SECURITY WARNING: Passing secrets as CLI arguments exposes them in process listings ('ps aux')");
+                eprintln!("   and shell history files. Prefer 'secretguard vault set {}' (interactive/stdin).\n", key_name);
                 args[2].clone()
             } else {
                 eprint!("Enter secret value for '{}': ", key_name);
-                let _ = io::stdout().flush();
+                let _ = io::stderr().flush();
                 let mut buffer = String::new();
                 let _ = io::stdin().read_line(&mut buffer);
                 buffer.trim().to_string()
             };
 
-            let mut store = load_vault(None).unwrap_or_default();
+            if secret_val.is_empty() {
+                eprintln!("❌ Secret value cannot be empty.");
+                process::exit(1);
+            }
+
+            // Finding 4: Never overwrite or default on a corrupted vault! Fail loudly to prevent data loss.
+            let mut store = match load_vault(None) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("❌ FATAL: Cannot open vault: {}", e);
+                    eprintln!("🛑 Aborting operation to prevent overwriting or destroying existing vault data.");
+                    process::exit(1);
+                }
+            };
+
             store.secrets.insert(key_name.to_string(), secret_val);
             if let Err(e) = save_vault(&store, None) {
                 eprintln!("❌ Failed to save secret: {}", e);
@@ -300,7 +420,17 @@ SUBCOMMANDS:
                 process::exit(2);
             }
             let key_name = &args[1];
-            let mut store = load_vault(None).unwrap_or_default();
+
+            // Finding 4: Never overwrite corrupted vault
+            let mut store = match load_vault(None) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("❌ FATAL: Cannot open vault: {}", e);
+                    eprintln!("🛑 Aborting operation to prevent data loss.");
+                    process::exit(1);
+                }
+            };
+
             if store.secrets.remove(key_name).is_some() {
                 if let Err(e) = save_vault(&store, None) {
                     eprintln!("❌ Failed to save vault after deletion: {}", e);
@@ -383,7 +513,23 @@ SUBCOMMANDS:
 
             let _ = stderr_thread.join();
             let status = child.wait().expect("Child process was not running");
-            process::exit(status.code().unwrap_or(0));
+
+            // Finding 8: Accurate process exit status handling for Unix signals and Windows errors
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(code) = status.code() {
+                    process::exit(code);
+                } else if let Some(sig) = status.signal() {
+                    process::exit(128 + sig);
+                } else {
+                    process::exit(1);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                process::exit(status.code().unwrap_or(1));
+            }
         }
         "import-env" => {
             let target_env = if args.len() >= 2 { &args[1] } else { ".env" };
@@ -403,10 +549,21 @@ SUBCOMMANDS:
                 }
             };
             let reader = io::BufReader::new(file);
-            let mut store = load_vault(None).unwrap_or_default();
+
+            // Finding 4: Never overwrite or default on a corrupted vault
+            let mut store = match load_vault(None) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("❌ FATAL: Cannot open vault: {}", e);
+                    eprintln!("🛑 Aborting import to protect existing vault contents.");
+                    process::exit(1);
+                }
+            };
+
             let mut imported = 0;
             let mut example_lines = Vec::new();
 
+            // Finding 9: Robust .env parser handling export, quotes, inline comments, and syntax
             for line in reader.lines().flatten() {
                 let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -414,9 +571,34 @@ SUBCOMMANDS:
                     continue;
                 }
 
-                if let Some((k, v)) = trimmed.split_once('=') {
+                // Strip leading 'export ' if present (common in bash env scripts)
+                let clean_line = if trimmed.starts_with("export ") {
+                    trimmed.strip_prefix("export ").unwrap_or(trimmed).trim()
+                } else {
+                    trimmed
+                };
+
+                if let Some((k, mut v)) = clean_line.split_once('=') {
                     let key = k.trim().to_string();
-                    let val = v.trim().trim_matches('"').trim_matches('\'').to_string();
+
+                    // Validate key identifier format
+                    if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || key.is_empty() {
+                        example_lines.push(line);
+                        continue;
+                    }
+
+                    v = v.trim();
+
+                    // Strip inline comment only if outside of quotes
+                    let val = if (v.starts_with('"') && v.ends_with('"') && v.len() >= 2)
+                        || (v.starts_with('\'') && v.ends_with('\'') && v.len() >= 2)
+                    {
+                        v[1..v.len() - 1].to_string()
+                    } else if let Some((before_comment, _)) = v.split_once(" #") {
+                        before_comment.trim().trim_matches('"').trim_matches('\'').to_string()
+                    } else {
+                        v.trim_matches('"').trim_matches('\'').to_string()
+                    };
 
                     if !val.is_empty() {
                         store.secrets.insert(key.clone(), val);
