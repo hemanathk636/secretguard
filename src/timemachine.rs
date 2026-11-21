@@ -211,7 +211,7 @@ foreach ($f in $files) {
     if (Get-Command secretguard -ErrorAction SilentlyContinue) {
         $raw = Get-Content -Raw $f.FullName
         if ($raw) {
-            $sanitized = secretguard sanitize "$raw" 2>$null
+            $sanitized = $raw | secretguard sanitize 2>$null
             if ($sanitized -and $sanitized.Trim().Length -gt 0) {
                 Set-Content -NoNewline -Path $f.FullName -Value $sanitized
                 continue
@@ -231,7 +231,7 @@ foreach ($f in $files) {
 }
 "#
         } else {
-            // Unix sh filter: includes hidden files like .env, excludes .git
+            // Unix sh filter: includes hidden files like .env, excludes .git, POSIX cross-compatible
             r#"
 find . -type f -not -path './.git/*' | while read -r f; do
     if command -v secretguard >/dev/null 2>&1; then
@@ -241,13 +241,13 @@ find . -type f -not -path './.git/*' | while read -r f; do
             continue
         fi
     fi
-    sed -i 's/sk-[a-zA-Z0-9]\{20,\}/sk-proj-SCRUBBED00000000000000000/g' "$f" 2>/dev/null || true
-    sed -i 's/ghp_[a-zA-Z0-9]\{20,\}/ghp_SCRUBBED00000000000000000000/g' "$f" 2>/dev/null || true
-    sed -i 's/AKIA[0-9A-Z]\{16\}/AKIAFAKE000000000000/g' "$f" 2>/dev/null || true
-    sed -i 's/sk_live_[0-9a-zA-Z]\{24,\}/[REDACTED_STRIPE_KEY]/g' "$f" 2>/dev/null || true
-    sed -i 's/xox[baprs]-[0-9a-zA-Z]\{10,48\}/xoxb-SCRUBBED000000000000/g' "$f" 2>/dev/null || true
-    sed -i 's/SG\.[a-zA-Z0-9_-]\{22\}\.[a-zA-Z0-9_-]\{43\}/SG.SCRUBBED000000000000.000000000000/g' "$f" 2>/dev/null || true
-    sed -i 's/AIza[0-9A-Za-z_-]\{35\}/AIzaSyFAKE00000000000000000000000/g' "$f" 2>/dev/null || true
+    sed -e 's/sk-[a-zA-Z0-9]\{20,\}/sk-proj-SCRUBBED00000000000000000/g' \
+        -e 's/ghp_[a-zA-Z0-9]\{20,\}/ghp_SCRUBBED00000000000000000000/g' \
+        -e 's/AKIA[0-9A-Z]\{16\}/AKIAFAKE000000000000/g' \
+        -e 's/sk_live_[0-9a-zA-Z]\{24,\}/[REDACTED_STRIPE_KEY]/g' \
+        -e 's/xox[baprs]-[0-9a-zA-Z]\{10,48\}/xoxb-SCRUBBED000000000000/g' \
+        -e 's/SG\.[a-zA-Z0-9_-]\{22\}\.[a-zA-Z0-9_-]\{43\}/SG.SCRUBBED000000000000.000000000000/g' \
+        -e 's/AIza[0-9A-Za-z_-]\{35\}/AIzaSyFAKE00000000000000000000000/g' "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" 2>/dev/null || rm -f "$f.tmp"
 done
 "#
         };
@@ -263,10 +263,11 @@ done
             .map_err(|e| format!("Failed to write filter script: {}", e))?;
 
         // 3. Execute git filter-branch across all branches with safety override
+        let normalized_path = script_path.to_string_lossy().replace('\\', "/");
         let tree_filter_arg = if cfg!(target_os = "windows") {
-            format!("powershell -ExecutionPolicy Bypass -File \"{}\"", script_path.display())
+            format!("powershell -ExecutionPolicy Bypass -File \"{}\"", normalized_path)
         } else {
-            format!("sh \"{}\"", script_path.display())
+            format!("sh \"{}\"", normalized_path)
         };
 
         let mut fb_cmd = Command::new("git");

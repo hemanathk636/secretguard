@@ -222,8 +222,10 @@ USAGE:
             "purge" => {
                 let path = Self::get_session_path();
                 if path.exists() {
-                    // Overwrite with zeroes before deletion
-                    let _ = fs::write(&path, [0u8; 128]);
+                    // Overwrite full file length with zeroes before unlinking
+                    let len = fs::metadata(&path).map(|m| m.len() as usize).unwrap_or(256).max(256);
+                    let zeroes = vec![0u8; len];
+                    let _ = fs::write(&path, &zeroes);
                     let _ = fs::remove_file(&path);
                 }
                 println!("✨ All ghost token session mappings zeroed via multi-pass in-memory overwrite and unlinked.");

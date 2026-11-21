@@ -146,10 +146,15 @@ impl ImmuneEngine {
         let provider = Self::identify_provider(token);
         let rotation_url = Self::get_rotation_url(provider);
 
-        let token_fingerprint = if token.len() > 8 {
-            format!("{}...{}", &token[0..4], &token[token.len()-4..])
-        } else {
-            "***".to_string()
+        let token_fingerprint = {
+            let chars: Vec<char> = token.chars().collect();
+            if chars.len() > 8 {
+                let prefix: String = chars[..4].iter().collect();
+                let suffix: String = chars[chars.len() - 4..].iter().collect();
+                format!("{}...{}", prefix, suffix)
+            } else {
+                "***".to_string()
+            }
         };
 
         // 1. Dispatch genuine provider revocation / verification

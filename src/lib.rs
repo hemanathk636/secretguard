@@ -43,6 +43,11 @@ pub struct SecretGuardEngine {
     whitelist: Vec<String>,
 }
 
+#[inline]
+fn safe_prefix(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
 impl SecretGuardEngine {
     pub fn new() -> Self {
         let cfg = config::SecretGuardConfig::load();
@@ -90,8 +95,8 @@ impl SecretGuardEngine {
                     .regex
                     .replace_all(&sanitized, |caps: &regex::Captures| {
                         let matched = &caps[0];
-                        if matched.len() > 10 {
-                            format!("{}[REDACTED]", &matched[..4])
+                        if matched.chars().count() > 10 {
+                            format!("{}[REDACTED]", safe_prefix(matched, 4))
                         } else {
                             "[REDACTED]".to_string()
                         }
@@ -114,8 +119,8 @@ impl SecretGuardEngine {
             matched_rules.push("Contextual Entropy Password/Token".to_string());
             for (secret_val, _, _) in entropy_hits {
                 let mock_val = generate_synthetic_token("Entropy", &secret_val);
-                if secret_val.len() > 8 {
-                    let masked = format!("{}[REDACTED]", &secret_val[..3]);
+                if secret_val.chars().count() > 8 {
+                    let masked = format!("{}[REDACTED]", safe_prefix(&secret_val, 3));
                     sanitized = sanitized.replace(&secret_val, &masked);
                 } else {
                     sanitized = sanitized.replace(&secret_val, "[REDACTED]");
@@ -146,8 +151,8 @@ impl SecretGuardEngine {
 
             if let Some(rule) = detected_rule {
                 matched_rules.push(rule);
-                let mask = if encoded_str.len() > 10 {
-                    format!("{}[REDACTED_ENCODED_SECRET]", &encoded_str[..4])
+                let mask = if encoded_str.chars().count() > 10 {
+                    format!("{}[REDACTED_ENCODED_SECRET]", safe_prefix(&encoded_str, 4))
                 } else {
                     "[REDACTED_ENCODED_SECRET]".to_string()
                 };

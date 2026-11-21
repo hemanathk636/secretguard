@@ -178,6 +178,8 @@ pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), St
     let key = derive_vault_key(passphrase);
     let encrypted = encrypt_vault_payload(&json_bytes, &key)?;
 
+    let tmp_path = path.with_extension("tmp");
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -186,16 +188,21 @@ pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), St
             .write(true)
             .truncate(true)
             .mode(0o600)
-            .open(&path)
-            .map_err(|e| format!("Failed to create vault file {} with 0600 mode: {}", path.display(), e))?;
+            .open(&tmp_path)
+            .map_err(|e| format!("Failed to create temporary vault file {} with 0600 mode: {}", tmp_path.display(), e))?;
         file.write_all(&encrypted)
-            .map_err(|e| format!("Failed to write encrypted vault data to {}: {}", path.display(), e))?;
+            .map_err(|e| format!("Failed to write encrypted vault data to {}: {}", tmp_path.display(), e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync temporary vault file: {}", e))?;
     }
     #[cfg(not(unix))]
     {
-        fs::write(&path, encrypted)
-            .map_err(|e| format!("Failed to write vault file (path: {}): {}", path.display(), e))?;
+        fs::write(&tmp_path, &encrypted)
+            .map_err(|e| format!("Failed to write temporary vault file (path: {}): {}", tmp_path.display(), e))?;
     }
+
+    fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("Failed to atomically replace vault file {}: {}", path.display(), e))?;
 
     Ok(())
 }
@@ -295,7 +302,10 @@ SUBCOMMANDS:
             let key_name = &args[1];
             let mut store = load_vault(None).unwrap_or_default();
             if store.secrets.remove(key_name).is_some() {
-                save_vault(&store, None).unwrap();
+                if let Err(e) = save_vault(&store, None) {
+                    eprintln!("❌ Failed to save vault after deletion: {}", e);
+                    process::exit(1);
+                }
                 println!("🗑️  Removed '{}' from vault.", key_name);
             } else {
                 eprintln!("❌ Secret '{}' not found.", key_name);
@@ -338,12 +348,27 @@ SUBCOMMANDS:
                 .args(child_args)
                 .envs(&env_injects)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
+                .stderr(Stdio::piped())
                 .spawn()
                 .unwrap_or_else(|e| {
                     eprintln!("❌ Failed to execute command '{}': {}", child_cmd, e);
                     process::exit(1);
                 });
+
+            // Asynchronously sanitize child stderr to prevent credential leakage in error logs
+            let stderr_opt = child.stderr.take();
+            let stderr_thread = std::thread::spawn(move || {
+                if let Some(stderr) = stderr_opt {
+                    let reader = io::BufReader::new(stderr);
+                    let stderr_handle = io::stderr();
+                    let mut handle = stderr_handle.lock();
+                    let local_engine = SecretGuardEngine::new();
+                    for line in reader.lines().flatten() {
+                        let res = local_engine.scan_and_sanitize(&line);
+                        let _ = writeln!(handle, "{}", res.sanitized_text);
+                    }
+                }
+            });
 
             if let Some(stdout) = child.stdout.take() {
                 let reader = io::BufReader::new(stdout);
@@ -352,10 +377,11 @@ SUBCOMMANDS:
 
                 for line in reader.lines().flatten() {
                     let res = engine.scan_and_sanitize(&line);
-                    writeln!(handle, "{}", res.sanitized_text).unwrap();
+                    let _ = writeln!(handle, "{}", res.sanitized_text);
                 }
             }
 
+            let _ = stderr_thread.join();
             let status = child.wait().expect("Child process was not running");
             process::exit(status.code().unwrap_or(0));
         }
@@ -369,7 +395,13 @@ SUBCOMMANDS:
 
             println!("📥 Importing secrets from '{}' into encrypted vault...", env_path.display());
 
-            let file = File::open(env_path).unwrap();
+            let file = match File::open(env_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("❌ Failed to open '{}': {}", env_path.display(), e);
+                    process::exit(1);
+                }
+            };
             let reader = io::BufReader::new(file);
             let mut store = load_vault(None).unwrap_or_default();
             let mut imported = 0;
@@ -394,11 +426,20 @@ SUBCOMMANDS:
                 }
             }
 
-            save_vault(&store, None).unwrap();
+            if let Err(e) = save_vault(&store, None) {
+                eprintln!("❌ Failed to save vault: {}", e);
+                process::exit(1);
+            }
             let example_path = env_path.with_file_name(".env.example");
-            let mut out = File::create(&example_path).unwrap();
-            for l in example_lines {
-                writeln!(out, "{}", l).unwrap();
+            match File::create(&example_path) {
+                Ok(mut out) => {
+                    for l in example_lines {
+                        let _ = writeln!(out, "{}", l);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Warning: Failed to create template file '{}': {}", example_path.display(), e);
+                }
             }
 
             println!("✨ Successfully imported {} secret(s) into encrypted vault!", imported);
