@@ -223,3 +223,59 @@ fn test_binary_stream_preservation_and_credential_sanitization() {
     assert!(!out_str.contains("sk-proj-embeddedTokenInBinary01234567890abcdef"), "Embedded credential in binary output MUST be redacted");
     assert!(out_str.contains("[REDACTED_OPENAI_KEY]") || out_str.contains("[REDACTED"), "Credential must be redacted in output");
 }
+
+#[test]
+fn test_stream_sanitizer_split_chunk_credential_detection() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // Chunk 1: prefix of OpenAI key split right in the middle
+    let chunk1 = b"export OPENAI_API_KEY=\"sk-proj-prefixPart12345";
+    let mut out1 = Vec::new();
+    sanitizer.sanitize_chunk(chunk1, &engine, &mut out1).unwrap();
+
+    // Chunk 2: suffix of the key completing the credential across chunk boundary
+    let chunk2 = b"67890suffixPartAbcdef0123456789\"\n";
+    let mut out2 = Vec::new();
+    sanitizer.sanitize_chunk(chunk2, &engine, &mut out2).unwrap();
+    sanitizer.flush_final();
+
+    let combined_out = format!("{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2));
+    assert!(
+        !combined_out.contains("sk-proj-prefixPart1234567890suffixPartAbcdef0123456789"),
+        "Credential split across chunks MUST be redacted across boundary"
+    );
+    assert!(
+        combined_out.contains("[REDACTED_OPENAI_KEY]") || combined_out.contains("[REDACTED"),
+        "Split credential must trigger redaction in output: {}",
+        combined_out
+    );
+}
+
+#[test]
+fn test_atomic_replace_first_creation_and_subsequent_overwrites() {
+    use secretguard::vault::atomic_replace_file;
+
+    let temp_dir = std::env::temp_dir().join(format!("sg_replace_flow_{}", std::process::id()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    let target = temp_dir.join("vault.enc");
+    let tmp1 = temp_dir.join(".tmp1.vault");
+    let tmp2 = temp_dir.join(".tmp2.vault");
+
+    // 1. First-time creation (target does not exist yet)
+    fs::write(&tmp1, b"first-time vault content").unwrap();
+    assert!(!target.exists(), "Target file must not exist before first creation");
+    assert!(atomic_replace_file(&tmp1, &target).is_ok(), "First-time creation must succeed");
+    assert!(target.exists(), "Target file must exist after first creation");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "first-time vault content");
+
+    // 2. Subsequent replacement (target already exists, tests ReplaceFileW / rename)
+    fs::write(&tmp2, b"second-time replaced content").unwrap();
+    assert!(atomic_replace_file(&tmp2, &target).is_ok(), "Subsequent replacement must succeed");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "second-time replaced content");
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}

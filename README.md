@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.7)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.8)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.7
+    rev: v0.3.8
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -498,6 +498,16 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 📦 What's New in v0.3.8 (Production Baseline & Split-Chunk Defense)
+
+SecretGuard v0.3.8 delivers full security baseline completion and edge-case hardening:
+* **Directory Ownership & Anti-Symlink Enforcement:** On Unix, verifies `meta.uid() == active_user_uid` and rejects symlinked directories, preventing multi-user symlink races and directory squatting attacks.
+* **Bounded Overlap Stream Sanitizer:** Maintains a bounded 128-byte sliding overlap window between stream chunks. Credentials split across arbitrary chunk boundaries (e.g. `sk-proj-12345` + `67890abcdef`) are captured and redacted, eliminating split-chunk leak bypasses.
+* **Windows First-Creation & In-Place Replacement:** Separates first-time vault creation (`fs::rename`) from subsequent in-place replacement (`ReplaceFileW`), guaranteeing seamless initialization and crash-safe updates.
+* **Catchable Signal Handling (SIGINT/SIGTERM):** Automatically intercepts `Ctrl+C` and `SIGTERM` during hidden password input to restore terminal echo before exit.
 
 ---
 

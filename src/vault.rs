@@ -19,6 +19,26 @@ pub struct VaultStore {
     pub secrets: HashMap<String, String>,
 }
 
+#[cfg(unix)]
+extern "C" {
+    fn getuid() -> u32;
+    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+}
+
+#[cfg(unix)]
+extern "C" fn sigint_restore_echo(_sig: i32) {
+    let _ = Command::new("stty").arg("echo").status();
+    eprintln!();
+    std::process::exit(130);
+}
+
+#[cfg(unix)]
+extern "C" fn sigterm_restore_echo(_sig: i32) {
+    let _ = Command::new("stty").arg("echo").status();
+    eprintln!();
+    std::process::exit(143);
+}
+
 #[cfg(windows)]
 mod win32 {
     use std::os::windows::ffi::OsStrExt;
@@ -46,25 +66,43 @@ mod win32 {
 }
 
 /// Resolves or creates a secure, private per-user directory for SecretGuard state (never falls back to shared /tmp).
-/// Fails closed if 0700 private directory permissions cannot be established or verified on Unix.
+/// Fails closed if 0700 private directory permissions, non-symlink status, or user ownership cannot be established on Unix.
 pub fn get_vault_dir() -> Result<PathBuf, String> {
     if let Ok(dir_str) = env::var("SECRETGUARD_DIR") {
         let p = PathBuf::from(dir_str);
         fs::create_dir_all(&p).map_err(|e| format!("Failed to create SECRETGUARD_DIR at '{}': {}", p.display(), e))?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            let meta = fs::symlink_metadata(&p).map_err(|e| {
+                format!("Security Error: Failed to inspect metadata on custom SECRETGUARD_DIR '{}': {}. Aborting.", p.display(), e)
+            })?;
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "Security Error: Custom SECRETGUARD_DIR '{}' is a symbolic link. Symbolic links are strictly prohibited for vault storage.",
+                    p.display()
+                ));
+            }
+            let active_uid = unsafe { getuid() };
+            if meta.uid() != active_uid {
+                return Err(format!(
+                    "Security Error: Custom SECRETGUARD_DIR '{}' is owned by UID {} but active process user is UID {}. Aborting.",
+                    p.display(),
+                    meta.uid(),
+                    active_uid
+                ));
+            }
             fs::set_permissions(&p, fs::Permissions::from_mode(0o700)).map_err(|e| {
                 format!("Security Error: Failed to enforce 0700 permissions on custom SECRETGUARD_DIR '{}': {}. Aborting.", p.display(), e)
             })?;
-            let meta = fs::symlink_metadata(&p).map_err(|e| {
+            let re_meta = fs::symlink_metadata(&p).map_err(|e| {
                 format!("Security Error: Failed to verify permissions on custom SECRETGUARD_DIR '{}': {}. Aborting.", p.display(), e)
             })?;
-            if meta.permissions().mode() & 0o077 != 0 {
+            if re_meta.permissions().mode() & 0o077 != 0 {
                 return Err(format!(
                     "Security Error: Custom SECRETGUARD_DIR '{}' permissions are insecure ({:o}). Operation aborted.",
                     p.display(),
-                    meta.permissions().mode() & 0o777
+                    re_meta.permissions().mode() & 0o777
                 ));
             }
         }
@@ -82,18 +120,36 @@ pub fn get_vault_dir() -> Result<PathBuf, String> {
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let meta = fs::symlink_metadata(&dir).map_err(|e| {
+            format!("Security Error: Failed to inspect metadata on directory '{}': {}. Aborting.", dir.display(), e)
+        })?;
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "Security Error: Directory '{}' is a symbolic link. Symbolic links are strictly prohibited for vault storage.",
+                dir.display()
+            ));
+        }
+        let active_uid = unsafe { getuid() };
+        if meta.uid() != active_uid {
+            return Err(format!(
+                "Security Error: Directory '{}' is owned by UID {} but active process user is UID {}. Aborting.",
+                dir.display(),
+                meta.uid(),
+                active_uid
+            ));
+        }
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|e| {
             format!("Security Error: Failed to enforce 0700 permissions on directory '{}': {}. Aborting.", dir.display(), e)
         })?;
-        let meta = fs::symlink_metadata(&dir).map_err(|e| {
+        let re_meta = fs::symlink_metadata(&dir).map_err(|e| {
             format!("Security Error: Failed to verify permissions on directory '{}': {}. Aborting.", dir.display(), e)
         })?;
-        if meta.permissions().mode() & 0o077 != 0 {
+        if re_meta.permissions().mode() & 0o077 != 0 {
             return Err(format!(
                 "Security Error: Directory '{}' permissions are insecure ({:o}). Operation aborted.",
                 dir.display(),
-                meta.permissions().mode() & 0o777
+                re_meta.permissions().mode() & 0o777
             ));
         }
     }
@@ -492,8 +548,8 @@ impl Drop for SttyEchoGuard {
 }
 
 /// Reads a password or secret from the terminal with terminal echo disabled (zero external dependencies).
-/// Fails closed if terminal echo cannot be disabled. On Unix, terminal echo is restored both explicitly
-/// and via an RAII drop guard for stack unwinding.
+/// Fails closed if terminal echo cannot be disabled. On Unix, terminal echo is restored both explicitly,
+/// via an RAII drop guard for stack unwinding, and via catchable signal handlers (SIGINT / SIGTERM).
 ///
 /// Note on termination: Uncatchable OS-level signals (such as SIGKILL/SIGSTOP) or release panic=abort
 /// cannot execute userspace unwinding destructors. In such unexpected crash conditions, users can reset
@@ -517,6 +573,12 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             ));
         }
 
+        // Install catchable signal handlers to restore terminal echo on Ctrl+C (SIGINT) or SIGTERM
+        const SIGINT: i32 = 2;
+        const SIGTERM: i32 = 15;
+        let old_sigint = unsafe { signal(SIGINT, sigint_restore_echo) };
+        let old_sigterm = unsafe { signal(SIGTERM, sigterm_restore_echo) };
+
         // RAII guard guarantees stty echo is restored even on panic or error
         let _guard = SttyEchoGuard;
 
@@ -524,6 +586,13 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         let res = io::stdin().read_line(&mut input);
         // Explicitly restore echo before returning
         let _ = Command::new("stty").arg("echo").status();
+
+        // Restore previous signal handlers
+        unsafe {
+            signal(SIGINT, std::mem::transmute(old_sigint));
+            signal(SIGTERM, std::mem::transmute(old_sigterm));
+        }
+
         eprintln!();
         res?;
         strip_line_terminator(&mut input);
@@ -557,38 +626,69 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
     }
 }
 
-/// Sanitizes a stream buffer while preserving binary stream fidelity and guaranteeing
-/// that credentials embedded inside binary chunks cannot escape redaction.
-///
-/// 1. If the buffer is valid UTF-8, it is scanned and sanitized normally.
-/// 2. If the buffer contains invalid UTF-8 (binary payload), it performs an inspection
-///    for credentials. If a secret pattern is detected, it is strictly redacted (fail-closed);
-///    if no secrets are present, the raw binary buffer is passed through byte-for-byte.
-pub fn sanitize_stream_buffer(buf: &[u8], engine: &SecretGuardEngine, out: &mut impl Write) -> io::Result<()> {
-    match std::str::from_utf8(buf) {
-        Ok(text_chunk) => {
-            let res = engine.scan_and_sanitize(text_chunk);
-            out.write_all(res.sanitized_text.as_bytes())?;
-        }
-        Err(_) => {
-            let lossy = String::from_utf8_lossy(buf);
-            let res = engine.scan_and_sanitize(&lossy);
-            if res.has_secret {
-                // Credential detected within binary chunk: fail-closed against credential leakage
-                out.write_all(res.sanitized_text.as_bytes())?;
-            } else {
-                // Pure binary chunk with no credentials: preserve byte-for-byte
-                out.write_all(buf)?;
-            }
+/// Stream sanitizer that maintains a bounded overlap window (128 bytes) between chunks
+/// to guarantee that credentials split across arbitrary buffer or delimiter boundaries
+/// cannot escape redaction, while preserving clean binary streams byte-for-byte.
+pub struct StreamSanitizer {
+    carryover: Vec<u8>,
+}
+
+impl StreamSanitizer {
+    pub const WINDOW_SIZE: usize = 128; // Max secret length to span chunk boundaries
+
+    pub fn new() -> Self {
+        Self {
+            carryover: Vec::new(),
         }
     }
-    out.flush()
+
+    pub fn sanitize_chunk(&mut self, chunk: &[u8], engine: &SecretGuardEngine, out: &mut impl Write) -> io::Result<()> {
+        let mut combined = Vec::with_capacity(self.carryover.len() + chunk.len());
+        combined.extend_from_slice(&self.carryover);
+        combined.extend_from_slice(chunk);
+
+        let lossy = String::from_utf8_lossy(&combined);
+        let res = engine.scan_and_sanitize(&lossy);
+
+        if res.has_secret {
+            // Secret detected across chunk boundary or within chunk: redact and output
+            out.write_all(res.sanitized_text.as_bytes())?;
+            self.carryover.clear();
+        } else {
+            // No secret: output the current chunk cleanly
+            match std::str::from_utf8(chunk) {
+                Ok(text_chunk) => {
+                    out.write_all(text_chunk.as_bytes())?;
+                }
+                Err(_) => {
+                    // Pure binary chunk with no credentials: preserve byte-for-byte
+                    out.write_all(chunk)?;
+                }
+            }
+            // Retain last WINDOW_SIZE bytes as carryover for the next chunk
+            let tail_len = chunk.len().min(Self::WINDOW_SIZE);
+            self.carryover = chunk[chunk.len() - tail_len..].to_vec();
+        }
+
+        out.flush()
+    }
+
+    pub fn flush_final(&mut self) {
+        self.carryover.clear();
+    }
+}
+
+/// Sanitizes a stream buffer while preserving binary stream fidelity and guaranteeing
+/// that credentials embedded inside binary chunks cannot escape redaction.
+pub fn sanitize_stream_buffer(buf: &[u8], engine: &SecretGuardEngine, out: &mut impl Write) -> io::Result<()> {
+    let mut sanitizer = StreamSanitizer::new();
+    sanitizer.sanitize_chunk(buf, engine, out)
 }
 
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.7)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.8)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]
@@ -781,8 +881,8 @@ SUBCOMMANDS:
                     process::exit(1);
                 });
 
-            // Asynchronously sanitize child stderr using chunk/delimiter streaming while preserving binary fidelity
-            // and guaranteeing that credentials inside binary chunks are detected and redacted
+            // Asynchronously sanitize child stderr using chunk/delimiter streaming with bounded overlap window
+            // guaranteeing that credentials split across chunk boundaries are detected and redacted
             let stderr_opt = child.stderr.take();
             let stderr_thread = std::thread::spawn(move || {
                 if let Some(stderr) = stderr_opt {
@@ -790,14 +890,16 @@ SUBCOMMANDS:
                     let stderr_handle = io::stderr();
                     let mut handle = stderr_handle.lock();
                     let local_engine = SecretGuardEngine::new();
+                    let mut sanitizer = StreamSanitizer::new();
                     let mut buf = Vec::new();
                     while let Ok(n) = reader.read_until(b'\n', &mut buf) {
                         if n == 0 {
                             break;
                         }
-                        let _ = sanitize_stream_buffer(&buf, &local_engine, &mut handle);
+                        let _ = sanitizer.sanitize_chunk(&buf, &local_engine, &mut handle);
                         buf.clear();
                     }
+                    sanitizer.flush_final();
                 }
             });
 
@@ -805,14 +907,16 @@ SUBCOMMANDS:
                 let mut reader = io::BufReader::new(stdout);
                 let stdout_handle = io::stdout();
                 let mut handle = stdout_handle.lock();
+                let mut sanitizer = StreamSanitizer::new();
                 let mut buf = Vec::new();
                 while let Ok(n) = reader.read_until(b'\n', &mut buf) {
                     if n == 0 {
                         break;
                     }
-                    let _ = sanitize_stream_buffer(&buf, engine, &mut handle);
+                    let _ = sanitizer.sanitize_chunk(&buf, engine, &mut handle);
                     buf.clear();
                 }
+                sanitizer.flush_final();
             }
 
             let _ = stderr_thread.join();
