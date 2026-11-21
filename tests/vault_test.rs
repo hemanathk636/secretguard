@@ -122,3 +122,31 @@ fn test_atomic_unique_tmp_file_during_save_vault() {
     std::env::remove_var("SECRETGUARD_VAULT_PATH");
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_windows_and_unix_existing_vault_replacement() {
+    let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let temp_dir = std::env::temp_dir().join(format!("sg_replace_test_{}", std::process::id()));
+    let _ = fs::create_dir_all(&temp_dir);
+    let vault_path = temp_dir.join("vault.enc");
+
+    std::env::set_var("SECRETGUARD_VAULT_PATH", &vault_path);
+
+    let mut store = VaultStore::default();
+    store.secrets.insert("KEY1".to_string(), "val1".to_string());
+    assert!(save_vault(&store, None).is_ok(), "Initial save must succeed");
+
+    // Replace existing vault multiple times to test Windows and Unix file replacement
+    store.secrets.insert("KEY2".to_string(), "val2".to_string());
+    assert!(save_vault(&store, None).is_ok(), "Overwriting existing vault must succeed atomically");
+
+    store.secrets.insert("KEY3".to_string(), "val3".to_string());
+    assert!(save_vault(&store, None).is_ok(), "Third update to existing vault must succeed atomically");
+
+    let loaded = load_vault(None).expect("Vault should load updated secrets");
+    assert_eq!(loaded.secrets.len(), 3);
+    assert_eq!(loaded.secrets.get("KEY3").unwrap(), "val3");
+
+    std::env::remove_var("SECRETGUARD_VAULT_PATH");
+    let _ = fs::remove_dir_all(&temp_dir);
+}

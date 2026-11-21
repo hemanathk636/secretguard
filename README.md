@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.4)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.5)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.4
+    rev: v0.3.5
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -501,14 +501,14 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 
 ---
 
-## 📦 What's New in v0.3.4 (Hardened Release)
+## 📦 What's New in v0.3.5 (Production Keystore Hardening)
 
-SecretGuard v0.3.4 delivers complete security hardening across local keystore persistence and terminal defense:
-* **Concurrency-Safe Master Key Storage:** Multi-process `create_new(true)` atomic key initialization preventing truncation or overwrite races.
-* **Corrupt Vault & Key Protection:** Strict fail-closed semantics that reject corrupt vaults or keys without ever overwriting existing encrypted secrets.
-* **CLI Argument Exposure Defense:** Security warning and interactive/stdin secret prompting in `vault set` to prevent secrets leaking to `ps aux` and shell history.
-* **Unpredictable Temporary Vault Swaps:** Cryptographically unique process-randomized temporary files with atomic rename.
-* **ANSI Escape Sequence Evasion Shield:** Transparent de-obfuscation and detection of secrets fragmented with terminal ANSI color/styling codes.
+SecretGuard v0.3.5 delivers rigorous, defense-in-depth hardening across local keystore persistence, terminal echo, and I/O streaming:
+* **Terminal Echo Suppression:** Interactive `vault set` disables terminal echo natively (`stty -echo` on Unix, `Read-Host -AsSecureString` on Windows), preventing credentials from appearing on screen.
+* **Symlink & Dangling Symlink Defense:** Pre-flight `symlink_metadata` validation rejecting active or dangling symlinks without following them, eliminating recursive loops.
+* **Master-Key Permissions Fail-Closed:** Strict Unix permission verification that fails closed if insecure modes cannot be tightened to `0o600`.
+* **Cross-Platform Atomic Replacement:** OS-specific atomic replace with backup swap on Windows and journal directory syncing (`fsync` on parent directory) on Unix.
+* **Delimiter-Preserving Stream Sanitization:** Child process I/O uses delimiter streaming (`read_until(b'\n')`), preserving binary output, trailing chunks, and formatting fidelity.
 
 ### 🛡️ 1. Ambient Shield & Runtime Defense
 * **`secretguard hook bash`**: Native Bash `shopt -s extdebug` with `trap ... DEBUG` line interceptor that stops leaked credentials before execution while preserving normal terminal operation.

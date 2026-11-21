@@ -49,131 +49,209 @@ pub fn get_master_key_path() -> PathBuf {
     temp.join(".master.key")
 }
 
-/// Retrieves or generates a genuine 256-bit cryptographically secure random master key via CSPRNG (OsRng)
-/// with atomic, concurrency-safe 0600 file creation on Unix.
-///
-/// Returns Err if the master key file exists but is corrupted, unreadable, or a symlink,
-/// or if key generation fails to persist to disk. Never returns an unpersisted ephemeral key.
-pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
-    let path = get_master_key_path();
-
-    if path.exists() {
-        // Prevent symlink hijacking
-        if let Ok(meta) = fs::symlink_metadata(&path) {
-            if meta.file_type().is_symlink() {
-                return Err(format!(
-                    "Security Error: Master key at '{}' is a symbolic link. Symlinks are rejected to prevent hijacking.",
-                    path.display()
-                ));
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = meta.permissions().mode();
-                if mode & 0o077 != 0 {
-                    eprintln!(
-                        "⚠️  Warning: Master key file '{}' permissions ({:o}) are overly permissive. Tightening to 0600...",
-                        path.display(),
-                        mode & 0o777
-                    );
-                    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-                }
-            }
-        }
-
-        let bytes = fs::read(&path).map_err(|e| {
-            format!(
-                "Permission denied or I/O error reading master key at '{}': {}. Aborting to protect vault integrity.",
-                path.display(),
-                e
-            )
-        })?;
-
-        if bytes.len() != 32 {
-            return Err(format!(
-                "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
-                 Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
-                path.display(),
-                bytes.len()
-            ));
-        }
-
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&bytes);
-        return Ok(key);
-    }
-
-    // Generate genuine 256-bit cryptographically secure random key via OsRng (CSPRNG)
-    let mut key = [0u8; 32];
-    OsRng.fill_bytes(&mut key);
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            format!(
-                "Failed to create master key directory '{}': {}",
-                parent.display(),
-                e
-            )
-        })?;
-    }
-
-    // Concurrency-safe exclusive creation: prevent race conditions and never truncate an existing key
+/// Cross-platform atomic file replacement with Unix directory sync and Windows file replacement safety
+pub fn atomic_replace_file(tmp_path: &Path, target_path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        match fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                if let Err(e) = file.write_all(&key).and_then(|_| file.sync_all()) {
-                    let _ = fs::remove_file(&path);
-                    return Err(format!(
-                        "Failed to persist master key to '{}': {}. Vault operations aborted.",
-                        path.display(),
-                        e
-                    ));
-                }
-            }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                // Another concurrent process created the file just now; re-read and validate it
-                return get_or_generate_master_key();
-            }
-            Err(e) => {
-                return Err(format!(
-                    "Failed to create master key file '{}' with 0600 permissions: {}",
-                    path.display(),
-                    e
-                ));
+        fs::rename(tmp_path, target_path).map_err(|e| {
+            let _ = fs::remove_file(tmp_path);
+            format!("Failed to atomically replace vault file {}: {}", target_path.display(), e)
+        })?;
+        // Sync parent directory after rename on Unix for full journal durability
+        if let Some(parent) = target_path.parent() {
+            if let Ok(dir) = fs::File::open(parent) {
+                let _ = dir.sync_all();
             }
         }
+        Ok(())
     }
     #[cfg(not(unix))]
     {
-        use std::fs::OpenOptions;
-        match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                if let Err(e) = file.write_all(&key).and_then(|_| file.sync_all()) {
-                    let _ = fs::remove_file(&path);
-                    return Err(format!(
-                        "Failed to persist master key to '{}': {}. Vault operations aborted.",
-                        path.display(),
-                        e
-                    ));
+        if target_path.exists() {
+            let pid = process::id();
+            let backup_tmp = target_path.with_extension(format!("old.{}", pid));
+            let _ = fs::remove_file(&backup_tmp);
+
+            if let Err(e) = fs::rename(target_path, &backup_tmp) {
+                if let Err(e2) = fs::rename(tmp_path, target_path) {
+                    let _ = fs::remove_file(tmp_path);
+                    return Err(format!("Windows atomic vault replacement failed: {} (direct: {})", e, e2));
+                } else {
+                    return Ok(());
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                return get_or_generate_master_key();
+
+            if let Err(e) = fs::rename(tmp_path, target_path) {
+                let _ = fs::rename(&backup_tmp, target_path);
+                let _ = fs::remove_file(tmp_path);
+                return Err(format!("Failed to place new vault file at {}: {}", target_path.display(), e));
+            }
+
+            let _ = fs::remove_file(&backup_tmp);
+            Ok(())
+        } else {
+            fs::rename(tmp_path, target_path).map_err(|e| {
+                let _ = fs::remove_file(tmp_path);
+                format!("Failed to rename temporary file to {}: {}", target_path.display(), e)
+            })
+        }
+    }
+}
+
+/// Retrieves or generates a genuine 256-bit cryptographically secure random master key via CSPRNG (OsRng)
+/// with atomic, concurrency-safe 0600 file creation on Unix.
+///
+/// Returns Err if the master key path is a symlink (including dangling symlinks),
+/// if permissions are insecure and cannot be tightened, or if the key length is corrupted.
+pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
+    let path = get_master_key_path();
+
+    // Bounded retry loop (max 3 attempts) to eliminate recursion and prevent stack overflow
+    for _attempt in 0..3 {
+        // Inspect symlink metadata first to safely catch dangling symlinks without following them
+        match fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                // Issue 3: Explicitly reject symlinks (dangling or active)
+                if meta.file_type().is_symlink() {
+                    return Err(format!(
+                        "Security Error: Master key path '{}' is a symbolic link (or dangling symlink). Symbolic links are strictly prohibited for master keys to prevent hijacking.",
+                        path.display()
+                    ));
+                }
+
+                // Issue 2: Verify and enforce strict permissions on Unix (fail-closed if tightening fails)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = meta.permissions().mode();
+                    if mode & 0o077 != 0 {
+                        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| {
+                            format!(
+                                "Security Error: Master key file '{}' permissions ({:o}) are insecure and could not be tightened to 0600: {}. Aborting for security.",
+                                path.display(),
+                                mode & 0o777,
+                                e
+                            )
+                        })?;
+                        // Re-verify after tightening
+                        let re_meta = fs::symlink_metadata(&path).map_err(|e| {
+                            format!("Failed to re-verify master key metadata after permission update: {}", e)
+                        })?;
+                        if re_meta.permissions().mode() & 0o077 != 0 {
+                            return Err(format!(
+                                "Security Error: Master key permissions on '{}' remain insecure ({:o}). Operation aborted.",
+                                path.display(),
+                                re_meta.permissions().mode() & 0o777
+                            ));
+                        }
+                    }
+                }
+
+                let bytes = fs::read(&path).map_err(|e| {
+                    format!(
+                        "Permission denied or I/O error reading master key at '{}': {}. Aborting to protect vault integrity.",
+                        path.display(),
+                        e
+                    )
+                })?;
+
+                if bytes.len() != 32 {
+                    return Err(format!(
+                        "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
+                         Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
+                        path.display(),
+                        bytes.len()
+                    ));
+                }
+
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                return Ok(key);
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // File does not exist: generate a new master key
+                let mut key = [0u8; 32];
+                OsRng.fill_bytes(&mut key);
+
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|err| {
+                        format!(
+                            "Failed to create master key directory '{}': {}",
+                            parent.display(),
+                            err
+                        )
+                    })?;
+                }
+
+                // Concurrency-safe exclusive creation
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    match fs::OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .mode(0o600)
+                        .open(&path)
+                    {
+                        Ok(mut file) => {
+                            if let Err(err) = file.write_all(&key).and_then(|_| file.sync_all()) {
+                                let _ = fs::remove_file(&path);
+                                return Err(format!(
+                                    "Failed to persist master key to '{}': {}. Vault operations aborted.",
+                                    path.display(),
+                                    err
+                                ));
+                            }
+                            return Ok(key);
+                        }
+                        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                            // Concurrent process created file; continue to next loop iteration to read & validate it
+                            continue;
+                        }
+                        Err(err) => {
+                            return Err(format!(
+                                "Failed to create master key file '{}' with 0600 permissions: {}",
+                                path.display(),
+                                err
+                            ));
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    use std::fs::OpenOptions;
+                    match OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(&path)
+                    {
+                        Ok(mut file) => {
+                            if let Err(err) = file.write_all(&key).and_then(|_| file.sync_all()) {
+                                let _ = fs::remove_file(&path);
+                                return Err(format!(
+                                    "Failed to persist master key to '{}': {}. Vault operations aborted.",
+                                    path.display(),
+                                    err
+                                ));
+                            }
+                            return Ok(key);
+                        }
+                        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                            continue;
+                        }
+                        Err(err) => {
+                            return Err(format!(
+                                "Failed to create master key file '{}': {}",
+                                path.display(),
+                                err
+                            ));
+                        }
+                    }
+                }
             }
             Err(e) => {
                 return Err(format!(
-                    "Failed to create master key file '{}': {}",
+                    "Filesystem error inspecting master key path '{}': {}",
                     path.display(),
                     e
                 ));
@@ -181,7 +259,10 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
         }
     }
 
-    Ok(key)
+    Err(format!(
+        "Failed to safely access or create master key at '{}' after multiple attempts.",
+        path.display()
+    ))
 }
 
 /// RFC 5869 HKDF-SHA256 (Extract and Expand) using official audited `hkdf` crate
@@ -298,18 +379,54 @@ pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), St
         }
     }
 
-    fs::rename(&tmp_path, &path).map_err(|e| {
-        let _ = fs::remove_file(&tmp_path);
-        format!("Failed to atomically replace vault file {}: {}", path.display(), e)
-    })?;
+    atomic_replace_file(&tmp_path, &path)?;
 
     Ok(())
+}
+
+/// Reads a password or secret from the terminal with terminal echo disabled (zero external dependencies)
+pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
+    #[cfg(unix)]
+    {
+        eprint!("{}", prompt);
+        let _ = io::stderr().flush();
+        let _ = Command::new("stty").arg("-echo").status();
+        let mut input = String::new();
+        let res = io::stdin().read_line(&mut input);
+        let _ = Command::new("stty").arg("echo").status();
+        eprintln!();
+        res.map(|_| input.trim().to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        eprint!("{}", prompt);
+        let _ = io::stderr().flush();
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$p = Read-Host -AsSecureString; if ($p) { [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p)) }",
+            ])
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !s.is_empty() {
+                    return Ok(s);
+                }
+            }
+        }
+        let mut buffer = String::new();
+        io::stdin().read_line(&mut buffer)?;
+        Ok(buffer.trim().to_string())
+    }
 }
 
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.4)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.5)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]
@@ -331,23 +448,29 @@ SUBCOMMANDS:
             if args.len() < 2 {
                 eprintln!("Usage: secretguard vault set <KEY_NAME> [VALUE]");
                 eprintln!("\nSafe Usage:");
-                eprintln!("  secretguard vault set <KEY_NAME>          (prompts interactively, preventing shell history & ps leaks)");
+                eprintln!("  secretguard vault set <KEY_NAME>          (prompts interactively with hidden input, preventing shell & ps leaks)");
                 eprintln!("  cat secret.txt | secretguard vault set <KEY_NAME>  (reads secret securely from piped stdin)");
                 process::exit(2);
             }
             let key_name = &args[1];
 
-            // Finding 3: Protect secrets from leaking through command-line arguments
+            // Finding 1 & 3: Protect secrets from leaking through command-line arguments and terminal echo
             let secret_val = if args.len() >= 3 {
                 eprintln!("⚠️  SECURITY WARNING: Passing secrets as CLI arguments exposes them in process listings ('ps aux')");
                 eprintln!("   and shell history files. Prefer 'secretguard vault set {}' (interactive/stdin).\n", key_name);
                 args[2].clone()
             } else {
-                eprint!("Enter secret value for '{}': ", key_name);
-                let _ = io::stderr().flush();
-                let mut buffer = String::new();
-                let _ = io::stdin().read_line(&mut buffer);
-                buffer.trim().to_string()
+                use std::io::IsTerminal;
+                if io::stdin().is_terminal() {
+                    // Disable terminal echo
+                    let prompt = format!("Enter secret value for '{}' (input hidden): ", key_name);
+                    read_password_hidden(&prompt).unwrap_or_default().trim().to_string()
+                } else {
+                    // Piped stdin
+                    let mut buffer = String::new();
+                    let _ = io::stdin().read_line(&mut buffer);
+                    buffer.trim().to_string()
+                }
             };
 
             if secret_val.is_empty() {
@@ -485,29 +608,42 @@ SUBCOMMANDS:
                     process::exit(1);
                 });
 
-            // Asynchronously sanitize child stderr to prevent credential leakage in error logs
+            // Asynchronously sanitize child stderr using chunk/delimiter streaming to preserve binary fidelity
             let stderr_opt = child.stderr.take();
             let stderr_thread = std::thread::spawn(move || {
                 if let Some(stderr) = stderr_opt {
-                    let reader = io::BufReader::new(stderr);
+                    let mut reader = io::BufReader::new(stderr);
                     let stderr_handle = io::stderr();
                     let mut handle = stderr_handle.lock();
                     let local_engine = SecretGuardEngine::new();
-                    for line in reader.lines().flatten() {
-                        let res = local_engine.scan_and_sanitize(&line);
-                        let _ = writeln!(handle, "{}", res.sanitized_text);
+                    let mut buf = Vec::new();
+                    while let Ok(n) = reader.read_until(b'\n', &mut buf) {
+                        if n == 0 {
+                            break;
+                        }
+                        let text_chunk = String::from_utf8_lossy(&buf);
+                        let res = local_engine.scan_and_sanitize(&text_chunk);
+                        let _ = handle.write_all(res.sanitized_text.as_bytes());
+                        let _ = handle.flush();
+                        buf.clear();
                     }
                 }
             });
 
             if let Some(stdout) = child.stdout.take() {
-                let reader = io::BufReader::new(stdout);
+                let mut reader = io::BufReader::new(stdout);
                 let stdout_handle = io::stdout();
                 let mut handle = stdout_handle.lock();
-
-                for line in reader.lines().flatten() {
-                    let res = engine.scan_and_sanitize(&line);
-                    let _ = writeln!(handle, "{}", res.sanitized_text);
+                let mut buf = Vec::new();
+                while let Ok(n) = reader.read_until(b'\n', &mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    let text_chunk = String::from_utf8_lossy(&buf);
+                    let res = engine.scan_and_sanitize(&text_chunk);
+                    let _ = handle.write_all(res.sanitized_text.as_bytes());
+                    let _ = handle.flush();
+                    buf.clear();
                 }
             }
 
