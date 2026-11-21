@@ -12,7 +12,7 @@ body:
     attributes:
       label: SecretGuard Version
       description: Run `secretguard --version` and paste the output.
-      placeholder: e.g., SecretGuard v0.3.0
+      placeholder: e.g., SecretGuard v0.3.3
     validations:
       required: true
   - type: dropdown

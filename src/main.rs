@@ -822,7 +822,7 @@ fn main() {
         process::exit(0);
     }
     if subcommand == "--version" || subcommand == "-V" || subcommand == "version" {
-        println!("SecretGuard v0.3.0 (sub-millisecond terminal secret interceptor & AI firewall)");
+        println!("SecretGuard v0.3.3 (sub-millisecond terminal secret interceptor & AI firewall)");
         process::exit(0);
     }
 

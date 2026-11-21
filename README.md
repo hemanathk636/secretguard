@@ -77,21 +77,21 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.0)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.3)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
   ✓ Shell Interceptor: Attached line guard to ~/.zshrc (or $PROFILE)
   ✓ Git Pre-Commit:    Sub-millisecond verification installed (<0.02ms)
   ✓ AI Agent Shield:   Excluded .claude/, .env*, and .secretguard/ in .gitignore
-  ✓ Vault Keystore:    Hardware-isolated directory initialized at ~/.secretguard/
+  ✓ Vault Keystore:    AES-256-GCM encrypted keystore (0600 OS-isolated) initialized at ~/.secretguard/
 ─────────────────────────────────────────────────────────────────
 ✨ All 3 Security Pillars are now fully ACTIVATED!
 ```
 
 ---
 
-## 👻 Breakthrough 1: "Ghost Tokens" (Zero-Knowledge LLM Context Virtualization)
+## 👻 Breakthrough 1: "Ghost Tokens" (Client-Side Polymorphic LLM Context Virtualization)
 
 When you use **Claude Code**, **Cursor**, or **Aider**, the AI agent reads your project files and sends the code to cloud LLM providers. Once a credential reaches LLM prompt context, it is vulnerable to prompt injections and model exfiltration.
 
@@ -118,10 +118,10 @@ secretguard ghost purge
 Traditional scanners are passive: they print red text saying you leaked a key, while automated GitHub bots steal the token in 4 seconds.
 
 SecretGuard features an **Autonomous Immune Circuit-Breaker**:
-- Sub-second (<200ms) automated containment:
-  1. Calls cloud provider revocation APIs (OpenAI, AWS, GitHub, Stripe, Slack) in under 20ms.
-  2. Provisions a new key directly into your encrypted hardware vault.
-  3. Surgically sanitizes git commit trees before push.
+- Sub-second automated containment:
+  1. Executes automated token revocation for supported upstream endpoints (e.g. Slack `auth.revoke`) and live status probes for GitHub, OpenAI, Stripe, and AWS.
+  2. Directly guides the developer with immediate 1-click rotation console deep-links and isolates leaked tokens in local quarantined storage.
+  3. Surgically sanitizes git commit trees across all branches and references.
 
 ```bash
 # Trigger autonomous 4-stage zero-touch containment
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.0
+    rev: v0.3.3
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -470,6 +470,8 @@ Benchmarked across a synthetic test suite of **1,000 commands** (500 positive cr
 | **Memory Footprint** | **~1.5 MB** | < 20 MB |
 | **External Dependencies** | **Zero** (Pure Native Rust) | Self-contained |
 
+*> **Note on Benchmarks:** Synthetic command benchmark measured on optimized release builds on an Apple M-series / AMD Ryzen workstation. Actual real-world performance depends on command length, file I/O, and system load.*
+
 ---
 
 ## 🚀 Quick Install
@@ -499,27 +501,28 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 
 ---
 
-## 📦 What's New in v0.2.0 (Milestone Release)
+## 📦 What's New in v0.3.3 (Milestone Release)
 
-SecretGuard v0.2.0 introduces the **Autonomous Developer Security & AI Agent Firewall Platform**, organized into 3 cohesive pillars:
+SecretGuard v0.3.3 introduces hardened security architecture, zero-dependency RFC 5869 HKDF-SHA256 master key derivation, in-memory Base64/percent-encoding inspection, native Bash `extdebug` pre-execution trap blocking, and deep repository history sanitization:
 
 ### 🛡️ 1. Ambient Shield & Runtime Defense
-* **`secretguard tun`**: **Zero-Knowledge TLS Secret Swapper** — micro-proxy running locally. Applications and AI agents run purely with mock keys (`sk-proj-FAKE...`); real secrets are injected into outbound HTTPS requests in flight at the network boundary.
+* **`secretguard hook bash`**: Native Bash `shopt -s extdebug` with `trap ... DEBUG` line interceptor that stops leaked credentials before execution while preserving normal terminal operation.
+* **`secretguard ghost`**: **Client-Side Polymorphic LLM Context Virtualization** — Replaces active API keys in `.env` with mathematically valid Ghost Tokens (`sk-ghost-...`, `AKIA_GHOST_...`) before AI agents ingest them. Mappings are protected on disk with AES-256-GCM and strict 0600 file permissions.
+* **`secretguard tun`**: Zero-Knowledge TLS Secret Swapper — injects real keys into outbound TLS requests at the local loopback boundary.
 * **`secretguard agent-firewall`**: Terminal gate blocking destructive commands (`rm -rf`, `git push --force`), credential exfiltration (`curl @.env`), and prompt injection vectors before AI agents can execute them.
 * **`secretguard clipboard`**: OS clipboard privacy guardian with automatic 30-second self-destruct countdown timer and instant purge (`secretguard clipboard clean`).
 * **`secretguard radar`**: Scans for Trojan Source attacks (CVE-2021-42574 BiDi overrides) and invisible zero-width Unicode characters used in stealth prompt injection attacks.
 
-### 📦 2. Zero-Knowledge Keystore & Team Mesh
-* **`secretguard vault`**: AES-256-GCM memory-only secret keystore. Inject credentials directly into child processes (`secretguard vault run API_KEY -- npm start`) without `.env` files touching disk.
-* **`secretguard mesh`**: Serverless, zero-cloud P2P team secret sharing mesh (`.secretguard/mesh.vault`). Multi-recipient envelope encryption allowing teams to share secrets in git without paying $20/user/mo SaaS fees.
+### 📦 2. Hardened Keystore & Team Mesh
+* **`secretguard vault`**: AES-256-GCM encrypted keystore backed by CSPRNG (`OsRng`) master keys and RFC 5869 HMAC-SHA256 HKDF key expansion with atomic 0600 file creation.
+* **`secretguard mesh`**: Serverless, zero-cloud P2P team secret sharing mesh (`.secretguard/mesh.vault`). Multi-recipient envelope encryption allowing teams to share secrets in git without paying SaaS fees.
 * **`secretguard canary`**: Realistic honeytoken generator planting tripwires (AWS, OpenAI, GitHub, Stripe) in repositories and `.env.example` to detect unauthorized clones or reconnaissance.
 
 ### 🔍 3. Repository Auditing & Remediation
-* **`secretguard verify`**: Sub-microsecond key status & privilege inspector checking if detected tokens are live production keys, testmode keys, or synthetic mocks.
-* **`secretguard blast-radius`**: Maps where any credential is used across repositories, Dockerfiles, and configs to evaluate exposure risk (0-10 score).
-* **`secretguard time-machine`**: Surgically replaces exposed secrets across entire Git commit history with format-preserving synthetic mocks while creating automatic timestamped backup branches.
-* **`secretguard panic`**: 1-click emergency leak undo. Amends Git HEAD, purges shell history, quarantines the secret, and outputs direct provider revocation links.
-* **`secretguard report`**: Generates SOC 2 CC6.1, HIPAA §164.312, and GDPR Art. 32 cryptographic compliance audit certificates.
+* **`secretguard audit immune`**: Automated token containment with live status probes (GitHub, OpenAI, Stripe, AWS) + instant Slack API revocation (`auth.revoke`) and guided 1-click rotation deep-links.
+* **`secretguard audit git scan`**: Multi-branch commit history scanner (`git log --all`) and deep history cleaner inspecting hidden files (`.env*`) and streaming through SecretGuard's 24+ pattern detection engine.
+* **`secretguard audit panic`**: 1-click emergency leak undo. Amends Git HEAD, purges shell history, quarantines the secret, and outputs direct provider revocation links.
+* **`secretguard audit report`**: Generates SOC 2 CC6.1, HIPAA §164.312, and GDPR Art. 32 cryptographic compliance audit certificates.
 
 ---
 

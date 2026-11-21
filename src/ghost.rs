@@ -71,14 +71,21 @@ impl GhostVirtualizer {
         let encrypted = encrypt_vault_payload(&serialized, &key)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-        fs::write(&path, encrypted)?;
-
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&path)?.permissions();
-            perms.set_mode(0o600);
-            let _ = fs::set_permissions(&path, perms);
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
+            file.write_all(&encrypted)?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(&path, encrypted)?;
         }
 
         Ok(())

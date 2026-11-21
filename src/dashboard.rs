@@ -96,7 +96,7 @@ fn handle_connection(mut stream: TcpStream, engine: &SecretGuardEngine) {
     } else if method == "GET" && path == "/api/status" {
         let json_body = serde_json::json!({
             "status": "healthy",
-            "version": "0.3.1",
+            "version": "0.3.3",
             "latency_us": 14.8,
             "patterns_loaded": 24,
             "dual_tier_entropy": true,
@@ -334,7 +334,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         </div>
 
         <footer>
-            <p>SecretGuard (v0.3.1) • Dual-Licensed under MIT and Apache-2.0 • 100% Free and Open Source • <a href="https://github.com/hemanathk636/secretguard" target="_blank">GitHub Repository</a> • <a href="https://crates.io/crates/secretguard" target="_blank">Crates.io</a></p>
+            <p>SecretGuard (v0.3.3) • Dual-Licensed under MIT and Apache-2.0 • 100% Free and Open Source • <a href="https://github.com/hemanathk636/secretguard" target="_blank">GitHub Repository</a> • <a href="https://crates.io/crates/secretguard" target="_blank">Crates.io</a></p>
         </footer>
     </div>
 

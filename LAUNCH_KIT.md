@@ -24,7 +24,7 @@ We built SecretGuard (https://github.com/hemanathk636/secretguard) because tradi
 
 SecretGuard sits directly in the shell line buffer between your keystroke and the OS, evaluating credentials via RegexSet and Shannon entropy in under 15 microseconds (0.016ms).
 
-Key technical highlights in v0.3.0:
+Key technical highlights in v0.3.3:
 - Ghost Tokens: Zero-Knowledge LLM context virtualization. AI agents code against format-preserving decoy keys (`sk-ghost-...`), while our local in-flight swapper replaces them with real keys inside RAM when making live network calls. The cloud LLM never sees real credentials.
 - Autonomous Self-Healing Immune Engine: Sub-second (<200ms) automated circuit breaker that calls provider revocation APIs, auto-rotates vault keys, and scrubs git commit trees before GitHub receives the packet.
 - 10-Second Setup: Running `secretguard init` auto-configures your shell hooks (~/.zshrc / $PROFILE), pre-commit hooks (<0.02ms), and AI agent gitignore shields.
@@ -52,7 +52,7 @@ SecretGuard: A sub-millisecond terminal secret interceptor and AI agent firewall
 ```text
 Hey everyone,
 
-I'd like to share SecretGuard (v0.3.0), an open-source tool written in native Rust to solve the credential leak window in terminal workflows and AI agent environments.
+I'd like to share SecretGuard (v0.3.3), an open-source tool written in native Rust to solve the credential leak window in terminal workflows and AI agent environments.
 
 Repo: https://github.com/hemanathk636/secretguard
 Website & Live WebAssembly/Sandbox: https://hemanathk636.github.io/secretguard/
@@ -85,7 +85,7 @@ Feedback, issue reports, and new pattern requests are very welcome!
 
 **Tweet 1 (Hook):**
 ```text
-We just released SecretGuard v0.3.0 🛡️
+We just released SecretGuard v0.3.3 🛡️
 
 A sub-millisecond terminal secret interceptor and AI agent firewall written in native Rust.
 
@@ -106,7 +106,7 @@ Decoy tokens that AI agents use to code and run tests. Your real credentials NEV
 ```text
 Traditional scanners show red text saying you leaked a key.
 
-SecretGuard v0.3.0 features an Autonomous Immune Engine 🧬:
+SecretGuard v0.3.3 features an Autonomous Immune Engine 🧬:
 Calls provider revocation APIs, rotates new keys into an encrypted vault, and sanitizes git trees in <200ms with zero human touch.
 ```
 

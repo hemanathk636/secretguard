@@ -115,3 +115,33 @@ fn test_bash_extdebug_preexecution_hook() {
     assert!(stdout.contains("trap '_secretguard_bash_preexec' DEBUG"));
     assert!(stdout.contains("BASH_COMMAND"));
 }
+
+#[test]
+fn test_rfc5869_hkdf_sha256_derivation() {
+    let salt = b"secretguard_test_salt";
+    let ikm = b"secretguard_input_key_material_12345";
+    let info = b"test_info_label";
+    
+    let okm1 = secretguard::vault::hkdf_sha256(salt, ikm, info, 32);
+    assert_eq!(okm1.len(), 32);
+
+    let okm2 = secretguard::vault::hkdf_sha256(salt, ikm, info, 32);
+    assert_eq!(okm1, okm2, "HKDF-SHA256 must be deterministic");
+
+    let okm_diff_info = secretguard::vault::hkdf_sha256(salt, ikm, b"different_info", 32);
+    assert_ne!(okm1, okm_diff_info, "Different info must yield distinct expanded keys");
+}
+
+#[test]
+fn test_encoded_secret_base64_detection() {
+    let engine = SecretGuardEngine::new();
+
+    // Base64 of: sk-proj-1234567890abcdef1234567890abcdef
+    // is: c2stcHJvai0xMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZg==
+    let cmd = "export TOKEN=c2stcHJvai0xMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZg==";
+    let res = engine.scan_and_sanitize(cmd);
+
+    assert!(res.has_secret, "Engine must detect Base64-encoded secret token");
+    assert!(res.matched_rules.iter().any(|r| r.contains("Encoded")));
+    assert!(res.sanitized_text.contains("[REDACTED"));
+}

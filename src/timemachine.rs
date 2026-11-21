@@ -52,7 +52,7 @@ impl TimeMachine {
         if let Some(p) = repo_path {
             cmd.current_dir(p);
         }
-        cmd.args(["log", "--format=%H", "--reverse"]);
+        cmd.args(["log", "--all", "--format=%H", "--reverse"]);
         if let Some(n) = max_commits {
             cmd.arg(format!("-n{}", n));
         }
@@ -208,6 +208,16 @@ impl TimeMachine {
             r#"
 $files = Get-ChildItem -File -Recurse -Force | Where-Object { $_.FullName -notmatch '[\\/]\.git([\\/]|$)' }
 foreach ($f in $files) {
+    if (Get-Command secretguard -ErrorAction SilentlyContinue) {
+        $raw = Get-Content -Raw $f.FullName
+        if ($raw) {
+            $sanitized = secretguard sanitize "$raw" 2>$null
+            if ($sanitized -and $sanitized.Trim().Length -gt 0) {
+                Set-Content -NoNewline -Path $f.FullName -Value $sanitized
+                continue
+            }
+        }
+    }
     (Get-Content -Raw $f.FullName) `
         -replace 'sk-(?:proj-)?[a-zA-Z0-9_-]{32,}', 'sk-proj-SCRUBBED00000000000000000' `
         -replace 'sk-ant-api03-[a-zA-Z0-9_-]{80,}', 'sk-ant-api03-SCRUBBED00000000000000000' `
@@ -224,6 +234,13 @@ foreach ($f in $files) {
             // Unix sh filter: includes hidden files like .env, excludes .git
             r#"
 find . -type f -not -path './.git/*' | while read -r f; do
+    if command -v secretguard >/dev/null 2>&1; then
+        clean=$(secretguard sanitize < "$f" 2>/dev/null)
+        if [ -n "$clean" ]; then
+            printf "%s" "$clean" > "$f"
+            continue
+        fi
+    fi
     sed -i 's/sk-[a-zA-Z0-9]\{20,\}/sk-proj-SCRUBBED00000000000000000/g' "$f" 2>/dev/null || true
     sed -i 's/ghp_[a-zA-Z0-9]\{20,\}/ghp_SCRUBBED00000000000000000000/g' "$f" 2>/dev/null || true
     sed -i 's/AKIA[0-9A-Z]\{16\}/AKIAFAKE000000000000/g' "$f" 2>/dev/null || true

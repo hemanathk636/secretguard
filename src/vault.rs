@@ -48,6 +48,7 @@ pub fn get_master_key_path() -> PathBuf {
 }
 
 /// Retrieves or generates a genuine 256-bit cryptographically secure random master key via CSPRNG (OsRng)
+/// with atomic 0600 file creation on Unix.
 pub fn get_or_generate_master_key() -> [u8; 32] {
     let path = get_master_key_path();
     if path.exists() {
@@ -65,37 +66,118 @@ pub fn get_or_generate_master_key() -> [u8; 32] {
     OsRng.fill_bytes(&mut key);
 
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("Warning: Failed to create master key directory {}: {}", parent.display(), e);
+        }
     }
-    let _ = fs::write(&path, &key);
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(&path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            let _ = fs::set_permissions(&path, perms);
+        use std::os::unix::fs::OpenOptionsExt;
+        match fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(&key) {
+                    eprintln!("Warning: Failed to write master key to {}: {}", path.display(), e);
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to create master key file {}: {}", path.display(), e);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if let Err(e) = fs::write(&path, &key) {
+            eprintln!("Warning: Failed to write master key to {}: {}", path.display(), e);
         }
     }
 
     key
 }
 
-pub fn derive_vault_key(passphrase: Option<&str>) -> [u8; 32] {
-    let master = get_or_generate_master_key();
-    let mut hasher = Sha256::new();
-    hasher.update(b"SECRETGUARD_VAULT_HKDF_v2:");
-    hasher.update(&master);
-
-    if let Some(pass) = passphrase {
-        hasher.update(b":PASS:");
-        hasher.update(pass.as_bytes());
+/// RFC 2104 compliant HMAC-SHA256
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        let mut hasher = Sha256::new();
+        hasher.update(key);
+        let hash = hasher.finalize();
+        k[..32].copy_from_slice(&hash);
+    } else {
+        k[..key.len()].copy_from_slice(key);
     }
 
-    let result = hasher.finalize();
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for i in 0..64 {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+
+    let mut inner = Sha256::new();
+    inner.update(&ipad);
+    inner.update(data);
+    let inner_hash = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(&opad);
+    outer.update(&inner_hash);
+    let outer_hash = outer.finalize();
+
+    let mut result = [0u8; 32];
+    result.copy_from_slice(&outer_hash);
+    result
+}
+
+/// RFC 5869 HKDF-Extract(salt, ikm) -> PRK
+pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
+    let default_salt = [0u8; 32];
+    let s = if salt.is_empty() { &default_salt[..] } else { salt };
+    hmac_sha256(s, ikm)
+}
+
+/// RFC 5869 HKDF-Expand(prk, info, length) -> OKM
+pub fn hkdf_expand(prk: &[u8; 32], info: &[u8], out_len: usize) -> Vec<u8> {
+    let mut okm = Vec::with_capacity(out_len);
+    let mut t = Vec::new();
+    let mut counter = 1u8;
+
+    while okm.len() < out_len {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(&t);
+        msg.extend_from_slice(info);
+        msg.push(counter);
+        let step = hmac_sha256(prk, &msg);
+        t = step.to_vec();
+        let take = (out_len - okm.len()).min(32);
+        okm.extend_from_slice(&step[..take]);
+        counter += 1;
+    }
+    okm
+}
+
+/// RFC 5869 HKDF-SHA256 (Extract and Expand)
+pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], length: usize) -> Vec<u8> {
+    let prk = hkdf_extract(salt, ikm);
+    hkdf_expand(&prk, info, length)
+}
+
+pub fn derive_vault_key(passphrase: Option<&str>) -> [u8; 32] {
+    let master = get_or_generate_master_key();
+    let salt = match passphrase {
+        Some(pass) => pass.as_bytes(),
+        None => b"secretguard_vault_rfc5869_salt_v3",
+    };
+    let info = b"SECRETGUARD_RFC5869_HKDF_AES256GCM_KEY";
+    let derived = hkdf_sha256(salt, &master, info, 32);
     let mut key = [0u8; 32];
-    key.copy_from_slice(&result[..32]);
+    key.copy_from_slice(&derived[..32]);
     key
 }
 
@@ -145,20 +227,40 @@ pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
 pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), String> {
     let path = get_vault_path();
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create vault directory {}: {}", parent.display(), e))?;
     }
     let json_bytes =
         serde_json::to_vec(store).map_err(|e| format!("Failed to serialize vault: {}", e))?;
     let key = derive_vault_key(passphrase);
     let encrypted = encrypt_vault_payload(&json_bytes, &key)?;
-    fs::write(&path, encrypted).map_err(|e| format!("Failed to write vault file (path: {}): {}", path.display(), e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("Failed to create vault file {} with 0600 mode: {}", path.display(), e))?;
+        file.write_all(&encrypted)
+            .map_err(|e| format!("Failed to write encrypted vault data to {}: {}", path.display(), e))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(&path, encrypted)
+            .map_err(|e| format!("Failed to write vault file (path: {}): {}", path.display(), e))?;
+    }
+
     Ok(())
 }
 
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.1.6)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.3)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]

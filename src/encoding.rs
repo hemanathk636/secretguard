@@ -86,8 +86,8 @@ pub fn find_encoded_candidates(input: &str) -> Vec<(String, String)> {
     for part in input.split(|c: char| c.is_whitespace() || c == '=' || c == '"' || c == '\'' || c == ',' || c == ':' || c == ';') {
         let clean = part.trim_matches(|c: char| !c.is_alphanumeric() && c != '+' && c != '/' && c != '=' && c != '-' && c != '_');
         
-        // Base64 candidates typically >= 24 chars
-        if clean.len() >= 24 {
+        // Base64 candidates typically >= 16 chars (e.g. 12+ raw bytes encoded)
+        if clean.len() >= 16 {
             if let Some(decoded) = decode_base64(clean) {
                 candidates.push((clean.to_string(), decoded));
             }

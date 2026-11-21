@@ -127,18 +127,32 @@ impl SecretGuardEngine {
         // Tier 3: In-Memory Encoded Secret Inspection (Base64 & URL percent-encoding)
         let encoded_candidates = encoding::find_encoded_candidates(input);
         for (encoded_str, decoded_str) in encoded_candidates {
+            let mut detected_rule = None;
             for p in &self.patterns {
                 if p.regex.is_match(&decoded_str) {
-                    matched_rules.push(format!("Encoded ({})", p.name));
-                    let mask = if encoded_str.len() > 10 {
-                        format!("{}[REDACTED_ENCODED_SECRET]", &encoded_str[..4])
-                    } else {
-                        "[REDACTED_ENCODED_SECRET]".to_string()
-                    };
-                    sanitized = sanitized.replace(&encoded_str, &mask);
-                    synthetic = synthetic.replace(&encoded_str, "[SYNTHETIC_MOCK_ENCODED_TOKEN]");
+                    detected_rule = Some(format!("Encoded ({})", p.name));
                     break;
                 }
+            }
+
+            // Also check if decoded string contains contextual entropy or high-risk password/token
+            if detected_rule.is_none() {
+                let hits = scan_contextual_entropy(&decoded_str);
+                let lower = decoded_str.to_lowercase();
+                if !hits.is_empty() || lower.contains("password") || lower.contains("secret") || (decoded_str.contains(':') && decoded_str.len() >= 10) {
+                    detected_rule = Some("Encoded (Credential/Token)".to_string());
+                }
+            }
+
+            if let Some(rule) = detected_rule {
+                matched_rules.push(rule);
+                let mask = if encoded_str.len() > 10 {
+                    format!("{}[REDACTED_ENCODED_SECRET]", &encoded_str[..4])
+                } else {
+                    "[REDACTED_ENCODED_SECRET]".to_string()
+                };
+                sanitized = sanitized.replace(&encoded_str, &mask);
+                synthetic = synthetic.replace(&encoded_str, "[SYNTHETIC_MOCK_ENCODED_TOKEN]");
             }
         }
 
