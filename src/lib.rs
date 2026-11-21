@@ -36,6 +36,7 @@ pub struct ScanResult {
     pub sanitized_text: String,
     pub synthetic_text: String,
     pub matched_rules: Vec<String>,
+    pub redacted_pairs: Vec<(String, String)>,
 }
 
 pub struct SecretGuardEngine {
@@ -107,6 +108,7 @@ impl SecretGuardEngine {
                     sanitized_text: input.to_string(),
                     synthetic_text: input.to_string(),
                     matched_rules: Vec::new(),
+                    redacted_pairs: Vec::new(),
                 };
             }
         }
@@ -114,11 +116,21 @@ impl SecretGuardEngine {
         let mut sanitized = input.to_string();
         let mut synthetic = input.to_string();
         let mut matched_rules = Vec::new();
+        let mut redacted_pairs = Vec::new();
 
         // Tier 1: High-confidence structured patterns
         for p in &self.patterns {
             if p.regex.is_match(&sanitized) {
                 matched_rules.push(p.name.to_string());
+                for caps in p.regex.captures_iter(&sanitized) {
+                    let matched = caps[0].to_string();
+                    let replacement = if matched.chars().count() > 10 {
+                        format!("{}[REDACTED]", safe_prefix(&matched, 4))
+                    } else {
+                        "[REDACTED]".to_string()
+                    };
+                    redacted_pairs.push((matched, replacement));
+                }
                 sanitized = p
                     .regex
                     .replace_all(&sanitized, |caps: &regex::Captures| {
@@ -147,12 +159,13 @@ impl SecretGuardEngine {
             matched_rules.push("Contextual Entropy Password/Token".to_string());
             for (secret_val, _, _) in entropy_hits {
                 let mock_val = generate_synthetic_token("Entropy", &secret_val);
-                if secret_val.chars().count() > 8 {
-                    let masked = format!("{}[REDACTED]", safe_prefix(&secret_val, 3));
-                    sanitized = sanitized.replace(&secret_val, &masked);
+                let masked = if secret_val.chars().count() > 8 {
+                    format!("{}[REDACTED]", safe_prefix(&secret_val, 3))
                 } else {
-                    sanitized = sanitized.replace(&secret_val, "[REDACTED]");
-                }
+                    "[REDACTED]".to_string()
+                };
+                redacted_pairs.push((secret_val.clone(), masked.clone()));
+                sanitized = sanitized.replace(&secret_val, &masked);
                 synthetic = synthetic.replace(&secret_val, &mock_val);
             }
         }
@@ -184,6 +197,7 @@ impl SecretGuardEngine {
                 } else {
                     "[REDACTED_ENCODED_SECRET]".to_string()
                 };
+                redacted_pairs.push((encoded_str.clone(), mask.clone()));
                 sanitized = sanitized.replace(&encoded_str, &mask);
                 synthetic = synthetic.replace(&encoded_str, "[SYNTHETIC_MOCK_ENCODED_TOKEN]");
             }
@@ -209,6 +223,7 @@ impl SecretGuardEngine {
             sanitized_text: sanitized,
             synthetic_text: synthetic,
             matched_rules,
+            redacted_pairs,
         }
     }
 }

@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.9)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.10)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.9
+    rev: v0.3.10
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -498,6 +498,16 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 📦 What's New in v0.3.10 (Cross-Platform Correctness & Auditor Validation)
+
+SecretGuard v0.3.10 delivers cross-platform correctness and exhaustive auditor verification:
+* **Fail-Closed Parent Directory & Trusted-Parent Policy:** Unifies directory and custom path validation (`validate_secure_path`). Checks parent directory ownership (`parent.uid() == active_uid || parent.uid() == 0`), rejects group-writable (`0o020`) and world-writable (`0o002`) parents, fails closed on metadata errors, and establishes an explicit trusted-parent policy for root-owned sticky directories (`/tmp` with `0o1000`). Also hardens `SECRETGUARD_VAULT_PATH` and `SECRETGUARD_MASTER_KEY_PATH` overrides against symlink and permission bypasses.
+* **5-Attempt Race-Free Windows Replacement:** Enforces an exact 5-attempt retry loop in `atomic_replace_file` passing `win32::REPLACEFILE_WRITE_THROUGH | win32::REPLACEFILE_IGNORE_MERGE_ERRORS`, eliminating TOCTOU races between file existence and in-place replacement with exponential backoff and concurrent creation handling.
+* **POSIX `siginterrupt` & Distinguishable Exit Codes:** Uses standard `siginterrupt(sig, 1)` to disable system call restart semantics during hidden password input, guaranteeing immediate wake-up upon signal delivery. Distinguishes `SIGINT` (exit code 130) from `SIGTERM` (exit code 143) while preserving async-signal-safe flag architecture.
+* **4KB Tail Buffer & Pure Binary Fidelity:** Increases stream sanitizer window to 4096 bytes (`WINDOW_SIZE = 4096`), guaranteeing full split-chunk coverage for 4096-bit RSA PEM key headers, extended JWTs, and AWS session tokens. Surgical byte-level replacement (`replace_bytes`) preserves surrounding non-secret invalid UTF-8 bytes byte-for-byte without Unicode replacement character corruption.
 
 ---
 

@@ -1,4 +1,4 @@
-﻿# SecretGuard 1-Line Universal Installer for Windows PowerShell
+# SecretGuard 1-Line Universal Installer for Windows PowerShell
 # Usage: irm https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +15,7 @@ if (-not (Test-Path $InstallDir)) {
 }
 
 # Determine release tag
-$Tag = "v0.3.9"
+$Tag = "v0.3.10"
 try {
     $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 5
     if ($Release.tag_name) {

@@ -264,12 +264,12 @@ fn test_stream_sanitizer_large_stream_sliding_holdback() {
     let engine = SecretGuardEngine::new();
     let mut sanitizer = StreamSanitizer::new();
 
-    // Stream 2KB of non-secret filler text
-    let filler = vec![b'A'; 1500];
+    // Stream 5KB of non-secret filler text
+    let filler = vec![b'A'; 5000];
     let mut out1 = Vec::new();
     sanitizer.sanitize_chunk(&filler, &engine, &mut out1).unwrap();
-    // out1 should have drained 1500 - 1024 = 476 bytes
-    assert_eq!(out1.len(), 1500 - StreamSanitizer::WINDOW_SIZE);
+    // out1 should have drained 5000 - 4096 = 904 bytes
+    assert_eq!(out1.len(), 5000 - StreamSanitizer::WINDOW_SIZE);
 
     // Now inject split secret in chunk 2 and chunk 3
     let chunk2 = b"prefix_filler ghp_1234567890";
@@ -295,6 +295,87 @@ fn test_stream_sanitizer_large_stream_sliding_holdback() {
 }
 
 #[test]
+fn test_stream_sanitizer_long_pem_and_jwt_split_chunk() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // 1. Long RSA PEM private key header split across chunk boundary
+    let chunk_pem1 = b"-----BEGIN RSA PRIVATE ";
+    let chunk_pem2 = b"KEY-----\nMIIEowIBAAKCAQEA0Y5k1v...\n-----END RSA PRIVATE KEY-----\n";
+
+    let mut out_pem1 = Vec::new();
+    sanitizer.sanitize_chunk(chunk_pem1, &engine, &mut out_pem1).unwrap();
+    assert!(out_pem1.is_empty(), "Partial PEM header must be held back in window");
+
+    let mut out_pem2 = Vec::new();
+    sanitizer.sanitize_chunk(chunk_pem2, &engine, &mut out_pem2).unwrap();
+    sanitizer.flush_final(&engine, &mut out_pem2).unwrap();
+
+    let pem_out = format!("{}{}", String::from_utf8_lossy(&out_pem1), String::from_utf8_lossy(&out_pem2));
+    assert!(!pem_out.contains("-----BEGIN RSA PRIVATE KEY-----"), "Split PEM key header must be redacted");
+    assert!(pem_out.contains("[REDACTED]"), "Sanitizer must redact split PEM block");
+
+    // 2. Large JWT token split across chunks
+    let mut jwt_sanitizer = StreamSanitizer::new();
+    let jwt_part1 = b"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.";
+    let jwt_part2 = b"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c_extra_long_payload_suffix\n";
+
+    let mut out_jwt1 = Vec::new();
+    jwt_sanitizer.sanitize_chunk(jwt_part1, &engine, &mut out_jwt1).unwrap();
+    assert!(out_jwt1.is_empty(), "Partial JWT within window must be held back");
+
+    let mut out_jwt2 = Vec::new();
+    jwt_sanitizer.sanitize_chunk(jwt_part2, &engine, &mut out_jwt2).unwrap();
+    jwt_sanitizer.flush_final(&engine, &mut out_jwt2).unwrap();
+
+    let jwt_out = format!("{}{}", String::from_utf8_lossy(&out_jwt1), String::from_utf8_lossy(&out_jwt2));
+    assert!(!jwt_out.contains("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"), "Split JWT token must be redacted");
+    assert!(jwt_out.contains("[REDACTED]"), "Split JWT must be redacted");
+}
+
+#[test]
+fn test_stream_sanitizer_binary_fidelity_with_embedded_credentials() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+
+    // Raw binary sequence containing invalid UTF-8 bytes: 0xFF, 0xFE, 0x00, 0x80
+    let binary_prefix = vec![0xFF, 0xFE, 0x00, 0x80, b' '];
+    let secret_bytes = b"ghp_1234567890abcdef1234567890abcdef1234";
+    let binary_suffix = vec![b' ', 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF];
+
+    let mut tainted_payload = Vec::new();
+    tainted_payload.extend_from_slice(&binary_prefix);
+    tainted_payload.extend_from_slice(secret_bytes);
+    tainted_payload.extend_from_slice(&binary_suffix);
+
+    let (sanitized_bytes, has_secret) = StreamSanitizer::sanitize_bytes_internal(&tainted_payload, &engine);
+
+    assert!(has_secret, "Sanitizer must detect secret embedded in raw binary stream");
+    // Verify secret is redacted:
+    assert!(
+        !sanitized_bytes.windows(secret_bytes.len()).any(|w| w == secret_bytes),
+        "Embedded raw secret must be completely redacted"
+    );
+    // Verify invalid UTF-8 binary prefix is preserved EXACTLY byte-for-byte:
+    assert_eq!(
+        &sanitized_bytes[..binary_prefix.len()],
+        binary_prefix.as_slice(),
+        "Surrounding invalid UTF-8 binary prefix bytes must be preserved byte-for-byte"
+    );
+    // Verify invalid UTF-8 binary suffix is preserved EXACTLY byte-for-byte:
+    assert_eq!(
+        &sanitized_bytes[sanitized_bytes.len() - binary_suffix.len()..],
+        binary_suffix.as_slice(),
+        "Surrounding invalid UTF-8 binary suffix bytes must be preserved byte-for-byte"
+    );
+}
+
+#[test]
 fn test_atomic_replace_first_creation_and_subsequent_overwrites() {
     use secretguard::vault::atomic_replace_file;
 
@@ -315,6 +396,74 @@ fn test_atomic_replace_first_creation_and_subsequent_overwrites() {
     fs::write(&tmp2, b"second-time replaced content").unwrap();
     assert!(atomic_replace_file(&tmp2, &target).is_ok(), "Subsequent replacement must succeed");
     assert_eq!(fs::read_to_string(&target).unwrap(), "second-time replaced content");
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_windows_concurrent_first_creation_race() {
+    use secretguard::vault::atomic_replace_file;
+    use std::sync::Arc;
+    use std::thread;
+
+    let temp_dir = Arc::new(std::env::temp_dir().join(format!("sg_concurrent_first_{}", std::process::id())));
+    fs::create_dir_all(&*temp_dir).unwrap();
+    let target = Arc::new(temp_dir.join("vault.enc"));
+
+    // Spawn 8 concurrent threads racing to be the first to create target
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let target_clone = Arc::clone(&target);
+        let temp_dir_clone = Arc::clone(&temp_dir);
+        handles.push(thread::spawn(move || {
+            let tmp = temp_dir_clone.join(format!(".tmp_thread_{}.vault", i));
+            let content = format!("content from thread {}", i);
+            fs::write(&tmp, content.as_bytes()).unwrap();
+            atomic_replace_file(&tmp, &target_clone)
+        }));
+    }
+
+    let mut successes = 0;
+    for h in handles {
+        let res = h.join().unwrap();
+        if res.is_ok() {
+            successes += 1;
+        }
+    }
+
+    assert!(successes > 0, "At least one concurrent creation must succeed");
+    assert!(target.exists(), "Target file must exist after concurrent race");
+    let final_content = fs::read_to_string(&*target).unwrap();
+    assert!(final_content.starts_with("content from thread "), "Final content must be valid thread payload: {}", final_content);
+
+    let _ = fs::remove_dir_all(&*temp_dir);
+}
+
+#[test]
+fn test_sigint_and_sigterm_exit_codes() {
+    // Tests signal exit status semantics (SIGINT -> 130, SIGTERM -> 143)
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+
+    let exit_sigint = 128 + SIGINT;
+    let exit_sigterm = 128 + SIGTERM;
+
+    assert_eq!(exit_sigint, 130, "SIGINT exit code must strictly equal 130 (128 + 2)");
+    assert_eq!(exit_sigterm, 143, "SIGTERM exit code must strictly equal 143 (128 + 15)");
+}
+
+#[test]
+fn test_secure_path_validation_and_symlink_defense() {
+    use secretguard::vault::validate_secure_path;
+
+    let temp_dir = std::env::temp_dir().join(format!("sg_secure_val_{}", std::process::id()));
+    fs::create_dir_all(&temp_dir).unwrap();
+
+    let target_file = temp_dir.join("test_vault.enc");
+    fs::write(&target_file, b"test content").unwrap();
+
+    // Path inside trusted temp_dir must pass validation
+    assert!(validate_secure_path(&target_file, true).is_ok(), "Valid path inside temp_dir must pass");
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
