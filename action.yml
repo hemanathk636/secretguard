@@ -55,21 +55,24 @@ runs:
         echo "📥 Downloading SecretGuard release archive: ${TARBALL}..."
         curl -fsSL "${RELEASE_URL}/${TARBALL}" -o "$DOWNLOAD_FILE"
 
-        # Verify SHA-256 checksum if checksum file is available
-        if curl -fsSL "${RELEASE_URL}/${TARBALL}.sha256" -o "$CHECKSUM_FILE" 2>/dev/null; then
-          echo "🔒 Verifying SHA-256 checksum..."
-          cd "$RUNNER_TEMP"
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum -c "$CHECKSUM_FILE" || { echo "::error::Checksum verification failed!"; exit 1; }
-          elif command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 -c "$CHECKSUM_FILE" || { echo "::error::Checksum verification failed!"; exit 1; }
-          fi
-          cd - >/dev/null
-          echo "✅ Release checksum verified successfully."
-        else
-          echo "ℹ️ Verifying archive non-empty status..."
-          [ -s "$DOWNLOAD_FILE" ] || { echo "::error::Downloaded archive is empty or invalid!"; exit 1; }
+        echo "🔒 Downloading SHA-256 release checksum..."
+        if ! curl -fsSL "${RELEASE_URL}/${TARBALL}.sha256" -o "$CHECKSUM_FILE"; then
+          echo "::error::Strict verification failure: Failed to download SHA-256 checksum for ${TARBALL}. Refusing unverified installation."
+          exit 1
         fi
+
+        echo "🔒 Cryptographically verifying SHA-256 checksum..."
+        cd "$RUNNER_TEMP"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sha256sum -c "$CHECKSUM_FILE" || { echo "::error::Cryptographic checksum mismatch for ${TARBALL}!"; exit 1; }
+        elif command -v shasum >/dev/null 2>&1; then
+          shasum -a 256 -c "$CHECKSUM_FILE" || { echo "::error::Cryptographic checksum mismatch for ${TARBALL}!"; exit 1; }
+        else
+          echo "::error::Neither sha256sum nor shasum is available on this runner to verify release checksum."
+          exit 1
+        fi
+        cd - >/dev/null
+        echo "✅ Release archive SHA-256 checksum verified successfully."
 
         # Extract archive securely
         if [[ "$TARBALL" == *.zip ]]; then

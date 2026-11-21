@@ -1,17 +1,45 @@
 use secretguard::timemachine::TimeMachine;
 use secretguard::SecretGuardEngine;
 use std::fs;
-use std::path::Path;
 use std::process::Command;
 
 #[test]
 fn test_timemachine_git_detection() {
     let _engine = SecretGuardEngine::new();
-    let is_repo = TimeMachine::is_git_repo(Some(Path::new(".")));
-    assert!(is_repo, "SecretGuard workspace must be a git repository");
 
-    let commits = TimeMachine::get_commit_hashes(Some(Path::new(".")), Some(5)).unwrap();
-    assert!(!commits.is_empty(), "Must find git commits");
+    // Create a self-contained temp directory to test both non-git and git scenarios
+    let temp_dir = std::env::temp_dir().join(format!("sg_tm_detect_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    fs::create_dir_all(&temp_dir).unwrap();
+
+    // Verify non-git directory returns false
+    assert!(!TimeMachine::is_git_repo(Some(&temp_dir)), "Fresh directory without .git must not be identified as a git repo");
+
+    // Initialize git repository
+    let run = |args: &[&str]| {
+        Command::new("git")
+            .current_dir(&temp_dir)
+            .args(args)
+            .output()
+            .expect("git command failed")
+    };
+
+    run(&["init"]);
+    run(&["config", "user.email", "test@secretguard.dev"]);
+    run(&["config", "user.name", "SecretGuard Test"]);
+
+    // Verify it is now recognized as a git repository
+    assert!(TimeMachine::is_git_repo(Some(&temp_dir)), "Initialized repository must be recognized");
+
+    // Make an initial commit
+    let test_file = temp_dir.join("init.txt");
+    fs::write(&test_file, "initial commit content\n").unwrap();
+    run(&["add", "init.txt"]);
+    run(&["commit", "-m", "Initial commit"]);
+
+    let commits = TimeMachine::get_commit_hashes(Some(&temp_dir), Some(5)).unwrap();
+    assert_eq!(commits.len(), 1, "Must find exactly 1 commit in self-contained repo");
+
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]

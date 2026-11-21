@@ -11,6 +11,7 @@ documentation = "https://docs.rs/secretguard"
 readme = "README.md"
 keywords = ["security", "cli", "ai-agent", "secret-scanner", "privacy"]
 categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.78"
 
 [dependencies]
 regex = "1.10"

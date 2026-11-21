@@ -29,7 +29,7 @@ src/
 ## 🚀 Development Quickstart
 
 ### Prerequisites
-- [Rust & Cargo](https://rustup.rs/) (edition 2021, MSRV 1.70+)
+- [Rust & Cargo](https://rustup.rs/) (edition 2021, MSRV 1.78+)
 - `git`
 
 ### Build & Run
