@@ -385,6 +385,30 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 
 ---
 
+## 📦 What's New in v0.2.0 (Milestone Release)
+
+SecretGuard v0.2.0 introduces the **Autonomous Developer Security & AI Agent Firewall Platform**, organized into 3 cohesive pillars:
+
+### 🛡️ 1. Ambient Shield & Runtime Defense
+* **`secretguard tun`**: **Zero-Knowledge TLS Secret Swapper** — micro-proxy running locally. Applications and AI agents run purely with mock keys (`sk-proj-FAKE...`); real secrets are injected into outbound HTTPS requests in flight at the network boundary.
+* **`secretguard agent-firewall`**: Terminal gate blocking destructive commands (`rm -rf`, `git push --force`), credential exfiltration (`curl @.env`), and prompt injection vectors before AI agents can execute them.
+* **`secretguard clipboard`**: OS clipboard privacy guardian with automatic 30-second self-destruct countdown timer and instant purge (`secretguard clipboard clean`).
+* **`secretguard radar`**: Scans for Trojan Source attacks (CVE-2021-42574 BiDi overrides) and invisible zero-width Unicode characters used in stealth prompt injection attacks.
+
+### 📦 2. Zero-Knowledge Keystore & Team Mesh
+* **`secretguard vault`**: AES-256-GCM memory-only secret keystore. Inject credentials directly into child processes (`secretguard vault run API_KEY -- npm start`) without `.env` files touching disk.
+* **`secretguard mesh`**: Serverless, zero-cloud P2P team secret sharing mesh (`.secretguard/mesh.vault`). Multi-recipient envelope encryption allowing teams to share secrets in git without paying $20/user/mo SaaS fees.
+* **`secretguard canary`**: Realistic honeytoken generator planting tripwires (AWS, OpenAI, GitHub, Stripe) in repositories and `.env.example` to detect unauthorized clones or reconnaissance.
+
+### 🔍 3. Repository Auditing & Remediation
+* **`secretguard verify`**: Sub-microsecond key status & privilege inspector checking if detected tokens are live production keys, testmode keys, or synthetic mocks.
+* **`secretguard blast-radius`**: Maps where any credential is used across repositories, Dockerfiles, and configs to evaluate exposure risk (0-10 score).
+* **`secretguard time-machine`**: Surgically replaces exposed secrets across entire Git commit history with format-preserving synthetic mocks while creating automatic timestamped backup branches.
+* **`secretguard panic`**: 1-click emergency leak undo. Amends Git HEAD, purges shell history, quarantines the secret, and outputs direct provider revocation links.
+* **`secretguard report`**: Generates SOC 2 CC6.1, HIPAA §164.312, and GDPR Art. 32 cryptographic compliance audit certificates.
+
+---
+
 ## 🔧 Shell Integration
 
 ### Zsh (macOS / Linux)
