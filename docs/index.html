@@ -3,24 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SecretGuard — Never Leak API Keys to Your Terminal History</title>
-  <meta name="description" content="Sub-millisecond Rust terminal secret interceptor and privacy guard for developers and AI coding agents. 0.016ms latency, zero telemetry." />
-  <meta name="keywords" content="terminal secret interceptor, prevent api keys bash history, zsh history secret scanner, stop leaking api keys terminal, claude code secret protection, ai agent security, rust cli privacy tool, shannon entropy detector" />
+  <title>SecretGuard — Never Leak Secrets to Terminal, Git, or AI Agents</title>
+  <meta name="description" content="Sub-millisecond Rust terminal secret interceptor, TLS token swapper, git time-machine scrubber, and AI agent firewall. 0.016ms latency, 100% offline." />
+  <meta name="keywords" content="terminal secret interceptor, prevent api keys bash history, zsh history secret scanner, stop leaking api keys terminal, claude code secret protection, ai agent security, rust cli privacy tool, shannon entropy detector, tls secret swapper, git time machine, p2p team vault" />
   <meta name="author" content="Hemanath" />
   <link rel="canonical" href="https://hemanathk636.github.io/secretguard/" />
 
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://hemanathk636.github.io/secretguard/" />
-  <meta property="og:title" content="SecretGuard — Stop Leaking API Keys to Shell History" />
-  <meta property="og:description" content="Sub-millisecond native Rust terminal hook and privacy guard. Blocks secrets before they ever touch .zsh_history or AI agent logs. 0.016ms latency, 100% offline." />
+  <meta property="og:title" content="SecretGuard v0.2.0 — Stop Leaking API Keys to Shell History" />
+  <meta property="og:description" content="Sub-millisecond native Rust terminal hook, TLS secret swapper, git time-machine, and AI agent firewall. 0.016ms latency, 100% offline." />
   <meta property="og:image" content="https://hemanathk636.github.io/secretguard/og-preview.png" />
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:url" content="https://hemanathk636.github.io/secretguard/" />
-  <meta name="twitter:title" content="SecretGuard — Stop Leaking API Keys to Shell History" />
-  <meta name="twitter:description" content="Sub-millisecond native Rust terminal hook and privacy guard. Blocks secrets before they ever touch .zsh_history or AI agent logs. 0.016ms latency, 100% offline." />
+  <meta name="twitter:title" content="SecretGuard v0.2.0 — Stop Leaking API Keys to Shell History" />
+  <meta name="twitter:description" content="Sub-millisecond native Rust terminal hook, TLS secret swapper, git time-machine, and AI agent firewall. 0.016ms latency, 100% offline." />
 
   <!-- Schema.org Structured Data for Search Engines & AI Knowledge Indexers -->
   <script type="application/ld+json">
@@ -28,8 +28,8 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "SecretGuard",
-    "headline": "Sub-millisecond Rust Terminal Secret Interceptor & Privacy Guard",
-    "description": "A blazing-fast (15.68 µs) native Rust terminal line-hook and privacy guard that prevents API keys, tokens, and credentials from ever reaching shell history files (.zsh_history, .bash_history) or AI coding agent logs (Claude Code, Cursor).",
+    "headline": "Sub-millisecond Rust Terminal Secret Interceptor & AI Agent Firewall",
+    "description": "A blazing-fast (15.68 µs) native Rust terminal line-hook, TLS secret swapper, git time-machine scrubber, and AI agent privacy guard that prevents API keys, tokens, and credentials from ever reaching shell history files (.zsh_history, .bash_history) or AI coding agent logs (Claude Code, Cursor).",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS, Linux, Windows",
     "offers": {
@@ -45,19 +45,19 @@
     "url": "https://hemanathk636.github.io/secretguard/",
     "codeRepository": "https://github.com/hemanathk636/secretguard",
     "softwareVersion": "0.2.0",
-    "keywords": "terminal secret scanner, zsh secret interceptor, bash history secret leak, claude code security, ai agent secret leak, shannon entropy scanner, rust cli security, prevent api key leak, tls secret swapper, git time machine, zero-knowledge vault",
+    "keywords": "terminal secret scanner, zsh secret interceptor, bash history secret leak, claude code security, ai agent secret leak, shannon entropy scanner, rust cli security, prevent api key leak, tls secret swapper, git time machine, zero-knowledge vault, team secret mesh",
     "featureList": [
       "Sub-millisecond real-time terminal pre-exec line interception in 15.68 microseconds",
       "Shannon entropy analysis detecting high-entropy random keys",
       "Zero-Knowledge TLS Secret Swapper (in-flight network token injection)",
       "Cryptographic Git Time-Machine surgical history scrubber",
-      "Serverless P2P Zero-Knowledge Team Secret Mesh",
-      "AI coding agent workspace protection for Claude Code & Cursor",
-      "Trojan Source & Invisible Zero-Width Attack Radar",
+      "Serverless P2P Zero-Knowledge Team Secret Mesh with ChaCha20-Poly1305",
+      "AI coding agent workspace protection for Claude Code, Cursor, and Aider",
+      "Trojan Source & Invisible Zero-Width Prompt Injection Attack Radar",
       "OS Clipboard Privacy Guardian with auto-destruct timer",
-      "Honeytoken Decoy Canary Tripwires",
-      "SOC 2, HIPAA & GDPR Compliance Auditor",
-      "History auditing and one-click interactive scrubbing",
+      "Honeytoken Decoy Canary Tripwires for breach trip detection",
+      "Automated SOC 2, HIPAA & GDPR Compliance Auditor",
+      "Multi-stage Dockerfile Credential Leak X-Ray",
       "Zero network requests, 100% local, offline verification"
     ]
   }
@@ -83,6 +83,7 @@
       --accent-glow: rgba(59, 130, 246, 0.15);
       --mint: #10b981;
       --mint-glow: rgba(16, 185, 129, 0.15);
+      --purple: #a855f7;
       --danger: #f43f5e;
       --code-font: 'JetBrains Mono', monospace;
       --mouse-x: 50%;
@@ -120,7 +121,7 @@
     }
 
     .container {
-      max-width: 1140px;
+      max-width: 1180px;
       margin: 0 auto;
       padding: 0 24px;
       position: relative;
@@ -132,19 +133,31 @@
       border-bottom: 1px solid var(--border);
       background: rgba(13, 16, 23, 0.85);
       backdrop-filter: blur(12px);
-      padding: 9px 16px;
+      padding: 10px 16px;
       text-align: center;
-      font-size: 0.82rem;
+      font-size: 0.84rem;
       color: var(--text-secondary);
       display: flex;
       justify-content: center;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
+      flex-wrap: wrap;
     }
     .announcement-bar a {
       color: #60a5fa;
       text-decoration: underline;
       font-weight: 600;
+    }
+    .announcement-badge {
+      background: rgba(59, 130, 246, 0.15);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 0.74rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
     .kbd-hint {
       background: rgba(255, 255, 255, 0.06);
@@ -189,7 +202,7 @@
     .nav-items {
       display: flex;
       align-items: center;
-      gap: 24px;
+      gap: 20px;
     }
     .nav-link {
       color: var(--text-secondary);
@@ -220,7 +233,7 @@
 
     /* Hero */
     .hero {
-      padding: 84px 0 52px;
+      padding: 72px 0 48px;
       text-align: center;
     }
     .release-tag {
@@ -246,10 +259,10 @@
     }
     
     h1 {
-      font-size: clamp(2.4rem, 5.5vw, 4.2rem);
+      font-size: clamp(2.3rem, 5.2vw, 4.1rem);
       font-weight: 900;
       letter-spacing: -0.04em;
-      line-height: 1.1;
+      line-height: 1.12;
       margin-bottom: 18px;
       color: var(--text-main);
     }
@@ -257,20 +270,42 @@
       color: #93c5fd;
     }
     .hero-lead {
-      font-size: clamp(1.05rem, 1.8vw, 1.2rem);
+      font-size: clamp(1.02rem, 1.7vw, 1.18rem);
       color: var(--text-secondary);
-      max-width: 680px;
+      max-width: 760px;
       margin: 0 auto 36px;
       line-height: 1.6;
     }
 
-    /* Install Box - Clean & Unified */
+    /* Pillar Summary Badges */
+    .hero-pillars {
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 36px;
+    }
+    .pillar-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+    }
+    .pillar-pill strong { color: var(--text-main); }
+
+    /* Install Box - Unified & Easy Download */
     .install-all-box {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 20px;
-      max-width: 820px;
+      max-width: 860px;
       margin: 0 auto 56px;
       box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
     }
@@ -283,13 +318,16 @@
       border-bottom: 1px solid var(--border);
     }
     .install-box-title {
-      font-size: 0.86rem;
-      font-weight: 600;
+      font-size: 0.88rem;
+      font-weight: 700;
       color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
     .install-row {
       display: grid;
-      grid-template-columns: 130px 1fr auto;
+      grid-template-columns: 140px 1fr auto;
       gap: 12px;
       align-items: center;
       background: #080a0f;
@@ -303,7 +341,7 @@
     .install-row:hover {
       border-color: var(--border-active);
     }
-    @media (max-width: 680px) {
+    @media (max-width: 720px) {
       .install-row { grid-template-columns: 1fr; gap: 8px; }
     }
     .platform-pill {
@@ -354,19 +392,50 @@
       font-size: 0.98rem;
       color: var(--text-secondary);
       text-align: center;
-      max-width: 620px;
-      margin: 0 auto 40px;
+      max-width: 680px;
+      margin: 0 auto 32px;
       line-height: 1.55;
     }
 
-    /* Commands Grid - Clean Slate Cards */
+    /* Filter Tabs for 3 Pillars */
+    .filter-bar {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 32px;
+    }
+    .filter-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 8px 18px;
+      border-radius: 9999px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .filter-btn:hover {
+      background: var(--surface-hover);
+      color: var(--text-main);
+      border-color: var(--border-active);
+    }
+    .filter-btn.active {
+      background: rgba(59, 130, 246, 0.15);
+      color: #93c5fd;
+      border-color: #3b82f6;
+      box-shadow: 0 0 16px rgba(59, 130, 246, 0.2);
+    }
+
+    /* Commands Grid */
     .commands-grid {
       display: grid;
       grid-template-columns: repeat(2, 1fr);
-      gap: 16px;
-      margin-bottom: 96px;
+      gap: 18px;
+      margin-bottom: 48px;
     }
-    @media (max-width: 840px) {
+    @media (max-width: 880px) {
       .commands-grid { grid-template-columns: 1fr; }
     }
     .cmd-card {
@@ -385,9 +454,9 @@
     }
     .cmd-card.featured {
       grid-column: span 2;
-      border-color: rgba(96, 165, 250, 0.25);
+      border-color: rgba(96, 165, 250, 0.3);
     }
-    @media (max-width: 840px) {
+    @media (max-width: 880px) {
       .cmd-card.featured { grid-column: span 1; }
     }
     .cmd-card-header {
@@ -404,10 +473,23 @@
       border-radius: 4px;
       margin-bottom: 10px;
       font-family: var(--code-font);
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border);
+    }
+    .badge-pillar1 {
+      background: rgba(59, 130, 246, 0.12);
+      border: 1px solid rgba(59, 130, 246, 0.3);
       color: #93c5fd;
     }
+    .badge-pillar2 {
+      background: rgba(168, 85, 247, 0.12);
+      border: 1px solid rgba(168, 85, 247, 0.3);
+      color: #c084fc;
+    }
+    .badge-pillar3 {
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #34d399;
+    }
+
     .cmd-card-title {
       font-size: 1.15rem;
       font-weight: 700;
@@ -456,6 +538,28 @@
       font-size: 0.82rem;
       color: #93c5fd;
       font-weight: 500;
+    }
+
+    /* Cheatsheet Table */
+    .cheatsheet-table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow-x: auto;
+      margin-bottom: 96px;
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
+    }
+    .cheatsheet-header {
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .cheatsheet-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text-main);
     }
 
     /* Live Interactive Sandbox */
@@ -693,7 +797,7 @@
       line-height: 1.55;
     }
 
-    /* Final CTA Card (Clean & Focused, Exactly matching user image) */
+    /* Final CTA Card */
     .cta-card {
       background: linear-gradient(180deg, #0d1017 0%, #07090e 100%);
       border: 1px solid var(--border);
@@ -780,7 +884,8 @@
 
   <!-- Top Announcement Bar -->
   <div class="announcement-bar">
-    <span>SecretGuard v0.1.3 is live on Homebrew, Cargo, and GitHub Releases.</span>
+    <span class="announcement-badge">v0.2.0 Released</span>
+    <span>🚀 <strong>SecretGuard v0.2.0 is live!</strong> Zero-Knowledge TLS Swapper, Git Time-Machine, P2P Team Vault & AI Firewall.</span>
     <span class="kbd-hint">Press C to copy install</span>
   </div>
 
@@ -797,6 +902,7 @@
       <div class="nav-items">
         <a href="#install" class="nav-link">Install</a>
         <a href="#commands" class="nav-link">Commands</a>
+        <a href="#cheatsheet" class="nav-link">Cheat Sheet</a>
         <a href="#playground" class="nav-link">Sandbox</a>
         <a href="#comparison" class="nav-link">Compare</a>
         <a href="#benchmarks" class="nav-link">Speed</a>
@@ -814,7 +920,7 @@
   <section class="hero container">
     <div class="release-tag">
       <span class="status-dot"></span>
-      0.016ms Native Rust • Instant Terminal Secret Protection
+      0.016ms Native Rust • Instant Terminal Secret Protection &amp; AI Firewall
     </div>
 
     <h1>
@@ -823,31 +929,40 @@
     </h1>
 
     <p class="hero-lead">
-      The moment you paste an API key or password into your terminal, it gets permanently saved in your <code>~/.zsh_history</code>.
-      SecretGuard catches credentials the exact millisecond you hit Enter — before they ever touch your disk.
+      The millisecond you paste an API key or password into your terminal, it gets permanently etched into your <code>~/.zsh_history</code>.
+      SecretGuard catches credentials before they ever touch your disk — and shields your AI coding agents, git trees, and CI/CD pipelines.
     </p>
 
-    <!-- ALL INSTALL COMMANDS VISIBLE SIMULTANEOUSLY -->
+    <!-- 3 Pillars Highlights in Hero -->
+    <div class="hero-pillars">
+      <div class="pillar-pill">
+        <span>🛡️</span>
+        <span><strong>Pillar 1:</strong> Ambient Shield &amp; Runtime Defense</span>
+      </div>
+      <div class="pillar-pill">
+        <span>🔐</span>
+        <span><strong>Pillar 2:</strong> Zero-Knowledge Keystore &amp; Team Mesh</span>
+      </div>
+      <div class="pillar-pill">
+        <span>⚡</span>
+        <span><strong>Pillar 3:</strong> Repository Auditing &amp; Remediation</span>
+      </div>
+    </div>
+
+    <!-- ALL INSTALL COMMANDS VISIBLE SIMULTANEOUSLY (1-Click Copy) -->
     <div class="install-all-box" id="install">
       <div class="install-box-header">
         <div class="install-box-title">
-          <span>Quick Install:</span>
+          <span>⚡ 1-Click Install &amp; Run:</span>
         </div>
         <span class="kbd-hint">Press C to copy Homebrew</span>
       </div>
 
       <!-- Homebrew -->
       <div class="install-row">
-        <span class="platform-pill">Homebrew</span>
+        <span class="platform-pill">Homebrew (macOS/Linux)</span>
         <span class="install-cmd-code" id="cmd-brew">brew tap hemanathk636/tap &amp;&amp; brew install secretguard</span>
         <button class="copy-btn-sm" onclick="copySnippet('cmd-brew')">Copy</button>
-      </div>
-
-      <!-- Curl Script -->
-      <div class="install-row">
-        <span class="platform-pill">Curl Script</span>
-        <span class="install-cmd-code" id="cmd-curl">curl -fsSL https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.sh | bash</span>
-        <button class="copy-btn-sm" onclick="copySnippet('cmd-curl')">Copy</button>
       </div>
 
       <!-- Cargo -->
@@ -857,28 +972,60 @@
         <button class="copy-btn-sm" onclick="copySnippet('cmd-cargo')">Copy</button>
       </div>
 
+      <!-- GitHub Action -->
+      <div class="install-row">
+        <span class="platform-pill">GitHub Action (CI/CD)</span>
+        <span class="install-cmd-code" id="cmd-action">- uses: hemanathk636/secretguard@v0.2.0</span>
+        <button class="copy-btn-sm" onclick="copySnippet('cmd-action')">Copy</button>
+      </div>
+
+      <!-- Standalone Shell / Curl -->
+      <div class="install-row">
+        <span class="platform-pill">Curl Installer (Linux/Unix)</span>
+        <span class="install-cmd-code" id="cmd-curl">curl -fsSL https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.sh | bash</span>
+        <button class="copy-btn-sm" onclick="copySnippet('cmd-curl')">Copy</button>
+      </div>
+
       <!-- Windows PowerShell -->
       <div class="install-row">
-        <span class="platform-pill">PowerShell</span>
+        <span class="platform-pill">PowerShell (Windows)</span>
         <span class="install-cmd-code" id="cmd-pwsh">irm https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.ps1 | iex</span>
         <button class="copy-btn-sm" onclick="copySnippet('cmd-pwsh')">Copy</button>
+      </div>
+
+      <!-- VS Code / Cursor -->
+      <div class="install-row">
+        <span class="platform-pill">VS Code / Cursor</span>
+        <span class="install-cmd-code" id="cmd-ide">code --install-extension editors/vscode</span>
+        <button class="copy-btn-sm" onclick="copySnippet('cmd-ide')">Copy</button>
       </div>
     </div>
   </section>
 
-  <!-- ALL 5 COMMANDS DISPLAYED LIVE (Clean, Uncluttered Grid) -->
+  <!-- 3-PILLAR INTERACTIVE COMMAND SHOWCASE -->
   <section class="container" id="commands">
-    <h2 class="section-headline">Commands &amp; Capabilities</h2>
-    <p class="section-subhead">Every command is ready out of the box with zero runtime configuration.</p>
+    <h2 class="section-headline">Command Showcase &amp; Architecture</h2>
+    <p class="section-subhead">Organized across 3 core security pillars. Filter by domain or explore all 18 commands below.</p>
+
+    <!-- Filter Buttons -->
+    <div class="filter-bar">
+      <button class="filter-btn active" onclick="filterCategory('all', this)">All Commands (18)</button>
+      <button class="filter-btn" onclick="filterCategory('pillar1', this)">🛡️ Pillar 1: Ambient Defense (7)</button>
+      <button class="filter-btn" onclick="filterCategory('pillar2', this)">🔐 Pillar 2: Keystore &amp; Team Mesh (3)</button>
+      <button class="filter-btn" onclick="filterCategory('pillar3', this)">⚡ Pillar 3: Auditing &amp; Remediation (8)</button>
+    </div>
 
     <div class="commands-grid">
-      <!-- Command 1: hook (Featured Card) -->
-      <div class="cmd-card featured">
+
+      <!-- ================= PILLAR 1: AMBIENT SHIELD & RUNTIME DEFENSE ================= -->
+
+      <!-- 1. hook (Featured) -->
+      <div class="cmd-card featured" data-category="pillar1">
         <div class="cmd-card-header">
-          <span class="cmd-badge">Live Interceptor • Set &amp; Forget</span>
-          <div class="cmd-card-title">1. Protect Terminal Automatically (`secretguard hook`)</div>
+          <span class="cmd-badge badge-pillar1">Pillar 1: Ambient Shield • Set &amp; Forget</span>
+          <div class="cmd-card-title">1. Shell Pre-Exec Line Interceptor (`secretguard hook`)</div>
           <div class="cmd-card-desc">
-            Installs a 0.016ms hook into your shell (Zsh, Bash, PowerShell). When you press Enter on any command containing an OpenAI key, AWS token, or database password, SecretGuard redacts it before it ever reaches <code>~/.zsh_history</code>.
+            Attaches a sub-millisecond (15.68 µs) hook into Zsh, Bash, or PowerShell. When you press Enter on any command containing an OpenAI token, AWS secret, or Postgres URI, SecretGuard redacts it in memory before it ever reaches <code>~/.zsh_history</code>.
           </div>
         </div>
         <div class="cmd-terminal-top">
@@ -898,62 +1045,13 @@
         </div>
       </div>
 
-      <!-- Command 2: audit -->
-      <div class="cmd-card">
+      <!-- 2. agent-firewall -->
+      <div class="cmd-card" data-category="pillar1">
         <div class="cmd-card-header">
-          <span class="cmd-badge">History Scanner</span>
-          <div class="cmd-card-title">2. Find Past Leaks (`secretguard audit`)</div>
+          <span class="cmd-badge badge-pillar1">Pillar 1: AI Agent Firewall</span>
+          <div class="cmd-card-title">2. AI Coding Agent Shield (`secretguard protect-agent`)</div>
           <div class="cmd-card-desc">
-            Scans thousands of commands in your existing shell history in milliseconds and shows you every secret currently saved on your disk with exact line numbers.
-          </div>
-        </div>
-        <div class="cmd-terminal-top">
-          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
-          <span>history audit</span>
-        </div>
-        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard audit</span>
-Scanning ~/.zsh_history (4,820 commands)...
-<span style="color: #f87171;">⚠️  Line 142: AWS Access Key (AKIA...)</span>
-<span style="color: #f87171;">⚠️  Line 891: Database Password (postgres://admin:P@ss...)</span>
-────────────────────────────────────────
-Found: <span style="color: #f87171; font-weight: 600;">2 exposed secrets in your history</span></div>
-        <div class="cmd-terminal-action">
-          <span class="cmd-syntax" id="syntax-audit">secretguard audit</span>
-          <button class="copy-btn-sm" onclick="copySnippet('syntax-audit')">Copy Command</button>
-        </div>
-      </div>
-
-      <!-- Command 3: clean-history -->
-      <div class="cmd-card">
-        <div class="cmd-card-header">
-          <span class="cmd-badge">Safe Cleaner</span>
-          <div class="cmd-card-title">3. Clean History Safely (`secretguard clean-history`)</div>
-          <div class="cmd-card-desc">
-            Scans and scrubs exposed secrets from your history. Automatically creates a timestamped backup before touching anything so your history is never lost or corrupted.
-          </div>
-        </div>
-        <div class="cmd-terminal-top">
-          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
-          <span>history cleanup</span>
-        </div>
-        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard clean-history</span>
-Found 2 exposed secrets.
-<span style="color: #eab308;">Safely sanitize 2 secrets in history? (y/N): y</span>
-<span style="color: #34d399;">📦 Safe backup created: ~/.zsh_history.backup.1741</span>
-<span style="color: #34d399;">✓ Successfully sanitized 2 commands!</span></div>
-        <div class="cmd-terminal-action">
-          <span class="cmd-syntax" id="syntax-clean">secretguard clean-history</span>
-          <button class="copy-btn-sm" onclick="copySnippet('syntax-clean')">Copy Command</button>
-        </div>
-      </div>
-
-      <!-- Command 4: protect-agent -->
-      <div class="cmd-card">
-        <div class="cmd-card-header">
-          <span class="cmd-badge">AI Agent Shield</span>
-          <div class="cmd-card-title">4. Shield AI Coding Agents (`secretguard protect-agent`)</div>
-          <div class="cmd-card-desc">
-            AI coding agents (Claude Code, Cursor, Aider) often cache approved commands in working files like <code>.claude/settings.local.json</code>. This command scans local agent files and protects them from accidental Git pushes.
+            Protects Claude Code, Cursor, and Aider workspaces. AI agents frequently dump executed shell commands into local session files like <code>.claude/settings.local.json</code>. This command sanitizes unmasked credentials and safeguards <code>.gitignore</code>.
           </div>
         </div>
         <div class="cmd-terminal-top">
@@ -964,25 +1062,50 @@ Found 2 exposed secrets.
 Checking local AI agent configs in '.'...
 <span style="color: #f87171;">⚠️  Found unmasked API key in .claude/settings.local.json</span>
 <span style="color: #34d399;">🔒 Added '.claude/' to .gitignore automatically</span>
-<span style="color: #34d399;">✓ Agent workspace shielded from Git push</span></div>
+<span style="color: #34d399;">✓ Agent workspace shielded from accidental Git push</span></div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-agent">secretguard protect-agent</span>
           <button class="copy-btn-sm" onclick="copySnippet('syntax-agent')">Copy Command</button>
         </div>
       </div>
 
-      <!-- Command 5: wrap -->
-      <div class="cmd-card">
+      <!-- 3. TLS Swapper (tun) -->
+      <div class="cmd-card" data-category="pillar1">
         <div class="cmd-card-header">
-          <span class="cmd-badge">Screen Share Cloak</span>
-          <div class="cmd-card-title">5. Cloak Screen Shares (`secretguard wrap`)</div>
+          <span class="cmd-badge badge-pillar1">Pillar 1: Zero-Knowledge TLS Swapper</span>
+          <div class="cmd-card-title">3. In-Flight TLS Secret Swapper (`secretguard tun`)</div>
           <div class="cmd-card-desc">
-            Prefix any command or dev server with <code>secretguard wrap</code> to dynamically mask database passwords, authorization tokens, and API keys from ever showing on your screen during Zoom calls or live demos.
+            Code and curl using safe mock placeholders (e.g. <code>mock_openai_token</code>). The local TLS proxy swaps mock tokens with real live credentials inside the encrypted outbound network packet without live keys ever touching your disk or terminal.
           </div>
         </div>
         <div class="cmd-terminal-top">
           <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
-          <span>stdout cloaking</span>
+          <span>in-flight tls swapper</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard tun swap mock_openai_token sk_live_actual_9843a</span>
+<span style="color: #34d399;">✓ Registered TLS secret swap rule: mock_openai_token -> sk_live_***</span>
+
+<span style="color: #60a5fa;">$ secretguard tun start --port 8443</span>
+<span style="color: #34d399;">🚀 Zero-Knowledge TLS Proxy listening on 127.0.0.1:8443</span>
+<span style="color: #8b949e;">[SWAP] Replaced mock token 'mock_openai_token' with live key in-flight</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-tun">secretguard tun start</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-tun')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- 4. wrap / stdout cloaking -->
+      <div class="cmd-card" data-category="pillar1">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar1">Pillar 1: Live Output Cloaking</span>
+          <div class="cmd-card-title">4. Screen Share Cloaking (`secretguard wrap`)</div>
+          <div class="cmd-card-desc">
+            Wraps any CLI tool, script, or dev server (e.g. <code>npm run dev</code>) to dynamically mask database connection strings, auth headers, and environment secrets from appearing on your screen during Zoom calls or live Twitch streams.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>stdout redaction</span>
         </div>
         <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard wrap npm run dev</span>
 [dotenv] Loaded environment variables:
@@ -995,77 +1118,492 @@ Checking local AI agent configs in '.'...
         </div>
       </div>
 
-      <!-- Command 6: doctor -->
-      <div class="cmd-card">
+      <!-- 5. shield -->
+      <div class="cmd-card" data-category="pillar1">
         <div class="cmd-card-header">
-          <span class="cmd-badge">System Diagnostics</span>
-          <div class="cmd-card-title">6. Instant Health Check (`secretguard doctor`)</div>
+          <span class="cmd-badge badge-pillar1">Pillar 1: Screen-Share Blur</span>
+          <div class="cmd-card-title">5. Screen-Share Shield (`secretguard shield`)</div>
           <div class="cmd-card-desc">
-            Runs an instant diagnostic checkup to verify your engine latency, shell integration status, history health, and AI agent shield in 5 milliseconds.
+            Actively detects running conferencing applications (Zoom, Microsoft Teams, Slack, Google Meet, OBS) and automatically triggers privacy protections and output masking across active terminal sessions.
           </div>
         </div>
         <div class="cmd-terminal-top">
           <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
-          <span>system diagnostics</span>
+          <span>presentation privacy shield</span>
         </div>
-        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard doctor</span>
-<span style="color: #34d399;">✓ Dual-Tier Engine: Active (RegexSet + Shannon Entropy)</span>
-<span style="color: #34d399;">✓ Live Latency:     15.68 µs — Sub-millisecond verified</span>
-<span style="color: #34d399;">✓ Git Pre-Commit:   Active (.git/hooks/pre-commit shields commits)</span>
-<span style="color: #34d399;">✓ AI Agent Shield:  .claude/ and .env* in .gitignore</span>
-<span style="color: #34d399;">✓ Binary Size:      1.56 MB (100% Offline / Zero Telemetry)</span></div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard shield auto</span>
+<span style="color: #34d399;">🛡️ Screen-Share Monitor started. Probing active conference apps...</span>
+<span style="color: #fbbf24;">[DETECT] Zoom / OBS stream detected in background</span>
+<span style="color: #34d399;">✓ Terminal obfuscation engaged automatically</span></div>
         <div class="cmd-terminal-action">
-          <span class="cmd-syntax" id="syntax-doctor">secretguard doctor</span>
-          <button class="copy-btn-sm" onclick="copySnippet('syntax-doctor')">Copy Command</button>
+          <span class="cmd-syntax" id="syntax-shield">secretguard shield auto</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-shield')">Copy Command</button>
         </div>
       </div>
 
-      <!-- Command 7: Git Pre-Commit Hook -->
-      <div class="cmd-card">
+      <!-- 6. clipboard -->
+      <div class="cmd-card" data-category="pillar1">
         <div class="cmd-card-header">
-          <span class="cmd-badge">Git Automation</span>
-          <div class="cmd-card-title">7. Sub-Millisecond Pre-Commit (`secretguard install-pre-commit`)</div>
+          <span class="cmd-badge badge-pillar1">Pillar 1: Clipboard Guardian</span>
+          <div class="cmd-card-title">6. OS Clipboard Guardian (`secretguard clipboard`)</div>
           <div class="cmd-card-desc">
-            Installs a zero-lag (<0.02ms) git pre-commit hook into your repository. Unlike sluggish 3-second Python hooks, SecretGuard inspects staged diffs instantaneously.
+            Watches system clipboard for copied API keys and tokens. Automatically zeroes or scrubs high-entropy credentials after an adjustable self-destruct timer (e.g. 30 seconds) to prevent clipboard theft by background apps.
           </div>
         </div>
         <div class="cmd-terminal-top">
           <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
-          <span>git pre-commit hook</span>
+          <span>clipboard watcher</span>
         </div>
-        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard install-pre-commit</span>
-<span style="color: #34d399;">✨ Successfully installed SecretGuard pre-commit hook!</span>
-<span style="color: #8b949e;">📁 Path: ./.git/hooks/pre-commit</span>
-<span style="color: #34d399;">🔒 Every 'git commit' is now shielded in &lt;0.02ms!</span></div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard clipboard watch --timeout 30s</span>
+<span style="color: #34d399;">📋 Clipboard Guardian active (30s auto-destruct)</span>
+<span style="color: #f87171;">⚠️  Detected OpenAI API Key in clipboard: sk-proj-***</span>
+<span style="color: #8b949e;">⏱️  Auto-destruct countdown started (30s remaining)</span>
+<span style="color: #34d399;">✓ Clipboard safely sanitized</span></div>
         <div class="cmd-terminal-action">
-          <span class="cmd-syntax" id="syntax-precommit">secretguard install-pre-commit</span>
-          <button class="copy-btn-sm" onclick="copySnippet('syntax-precommit')">Copy Command</button>
+          <span class="cmd-syntax" id="syntax-clip">secretguard clipboard watch</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-clip')">Copy Command</button>
         </div>
       </div>
 
-      <!-- Command 8: File & .env Scanner -->
-      <div class="cmd-card">
+      <!-- 7. radar -->
+      <div class="cmd-card" data-category="pillar1">
         <div class="cmd-card-header">
-          <span class="cmd-badge">Codebase & CI</span>
-          <div class="cmd-card-title">8. Codebase & Config Scanner (`secretguard scan`)</div>
+          <span class="cmd-badge badge-pillar1">Pillar 1: Trojan Source &amp; Prompt Injection</span>
+          <div class="cmd-card-title">7. Trojan Source &amp; Injection Radar (`secretguard radar`)</div>
           <div class="cmd-card-desc">
-            Recursively scans project directories, source files, or .env files for unmasked keys and high-entropy credentials before shipping. Perfect for local dev and CI.
+            Detects bidirectional Unicode overrides (CVE-2021-42574 Trojan Source attacks), zero-width characters, homoglyphs, and hidden prompt injections designed to hijack AI agents like Claude Code or Cursor.
           </div>
         </div>
         <div class="cmd-terminal-top">
           <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
-          <span>file scanner</span>
+          <span>trojan source radar</span>
         </div>
-        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard scan ./src</span>
-<span style="color: #fbbf24;">⚠️  [./src/config.py:14] Found ["Stripe Live Secret Key"]</span>
-<span style="color: #f87171;">   Redacted: STRIPE_API_KEY = "sk_live_[REDACTED]"</span>
-<span style="color: #8b949e;">────────────────────────────────────────────</span>
-<span style="color: #34d399;">Files Scanned: 48 | Lines: 4,820</span></div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard radar ./src</span>
+Scanning 148 files for invisible characters &amp; prompt injections...
+<span style="color: #f87171;">🚨 [src/auth.rs:32] Found Bidi Unicode Override (U+202E): Code visually reversed!</span>
+<span style="color: #f87171;">🚨 [prompts/system.md:14] Hidden zero-width prompt injection detected!</span>
+<span style="color: #34d399;">Scanned in 1.4ms — 2 stealth threats intercepted</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-radar">secretguard radar .</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-radar')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- ================= PILLAR 2: ZERO-KNOWLEDGE KEYSTORE & TEAM MESH ================= -->
+
+      <!-- 8. vault (Featured) -->
+      <div class="cmd-card featured" data-category="pillar2">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar2">Pillar 2: Zero-Knowledge Keystore</span>
+          <div class="cmd-card-title">8. Hardware-Isolated Local Keystore (`secretguard vault`)</div>
+          <div class="cmd-card-desc">
+            An encrypted zero-knowledge keystore protected with AES-256-GCM and Argon2id key derivation. Never store plain text <code>.env</code> files on your disk. Inject credentials into child processes on-demand with zero plaintext persistence.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>vault management</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard vault init</span>
+<span style="color: #34d399;">🔐 Vault initialized. Protected by Argon2id + AES-256-GCM.</span>
+
+<span style="color: #60a5fa;">$ secretguard vault set STRIPE_SECRET_KEY sk_live_89712398a7sdf</span>
+<span style="color: #34d399;">✓ Encrypted key 'STRIPE_SECRET_KEY' stored in hardware keystore</span>
+
+<span style="color: #60a5fa;">$ secretguard vault run -- npm start</span>
+<span style="color: #34d399;">🚀 Process launched with decrypted env variables piped directly into memory!</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-vault">secretguard vault init</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-vault')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- 9. mesh -->
+      <div class="cmd-card" data-category="pillar2">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar2">Pillar 2: Serverless P2P Sync</span>
+          <div class="cmd-card-title">9. Serverless P2P Team Secret Mesh (`secretguard mesh`)</div>
+          <div class="cmd-card-desc">
+            Share encrypted dev environment secrets across engineering teams without third-party cloud servers. Uses ChaCha20-Poly1305 authenticated encryption and decentralized peer discovery to keep team secrets synchronized safely.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>team secret mesh</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard mesh init --cluster frontend-core</span>
+<span style="color: #34d399;">🕸️ Initialized P2P Mesh cluster 'frontend-core'</span>
+
+<span style="color: #60a5fa;">$ secretguard mesh add-peer 192.168.1.45:9099 --key peer_pub_key_8a</span>
+<span style="color: #34d399;">✓ Verified peer connection. Handshake established via ChaCha20-Poly1305.</span>
+<span style="color: #34d399;">✓ 8 team secrets synchronized across 3 active peers.</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-mesh">secretguard mesh init</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-mesh')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- 10. canary -->
+      <div class="cmd-card" data-category="pillar2">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar2">Pillar 2: Breach Tripwires</span>
+          <div class="cmd-card-title">10. Honeytoken Canary Tripwires (`secretguard canary`)</div>
+          <div class="cmd-card-desc">
+            Plant synthetic decoy AWS, GitHub, or Stripe honeytokens inside test directories or dummy config files. The instant an unauthorized agent or attacker attempts to query or leak them, SecretGuard triggers an immediate containment alert.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>canary generator</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard canary plant --provider aws --file ./tests/fixtures/config.json</span>
+<span style="color: #34d399;">🐤 Decoy AWS Honeytoken planted: AKIA_CANARY_TRIPWIRE_8731</span>
+<span style="color: #8b949e;">Monitoring file for unauthorized read access...</span>
+<span style="color: #f87171;">🚨 ALERT: Rogue script attempted to read canary token!</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-canary">secretguard canary plant --provider aws</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-canary')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- ================= PILLAR 3: REPOSITORY AUDITING & REMEDIATION ================= -->
+
+      <!-- 11. time-machine (Featured) -->
+      <div class="cmd-card featured" data-category="pillar3">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar3">Pillar 3: Surgical Git Remediation</span>
+          <div class="cmd-card-title">11. Cryptographic Git History Scrubber (`secretguard time-machine`)</div>
+          <div class="cmd-card-desc">
+            Accidentally committed an AWS secret or OpenAI token 10 commits ago? <code>time-machine</code> rewrites commit trees surgically, scrubs the leak across all branch histories, and maintains repo integrity in seconds without destructive git resets.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>git time-machine scrubber</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard time-machine scan</span>
+Scanning commit history (248 commits)...
+<span style="color: #f87171;">⚠️  Found leaked Stripe Live Key in commit 4f8a12e (8 days ago)</span>
+
+<span style="color: #60a5fa;">$ secretguard time-machine scrub --commit 4f8a12e</span>
+<span style="color: #34d399;">📦 Automatic safety backup created at .git/refs/original/</span>
+<span style="color: #34d399;">✓ Rewrote 8 commits. Replaced target secret with [REDACTED].</span>
+<span style="color: #34d399;">✓ Git repository sanitized cleanly in 0.42s!</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-timemachine">secretguard time-machine scan</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-timemachine')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- 12. scan / Codebase Scanner -->
+      <div class="cmd-card" data-category="pillar3">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar3">Pillar 3: Sub-Millisecond Codebase Scanner</span>
+          <div class="cmd-card-title">12. High-Speed Codebase Scanner (`secretguard scan`)</div>
+          <div class="cmd-card-desc">
+            Recursively scans source trees, configuration files, and git diffs at 2.4 million lines/sec. Includes structured <code>--json</code> output for seamless CI/CD integration with GitHub Actions, GitLab CI, and CircleCI.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>codebase scan</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard scan ./src --json</span>
+{
+  "total_files": 142,
+  "lines_scanned": 18450,
+  "scan_duration_ms": 7.42,
+  "throughput_lines_sec": 2486522,
+  "findings": []
+}
+<span style="color: #34d399;">✓ 0 secrets found. Clean codebase.</span></div>
         <div class="cmd-terminal-action">
           <span class="cmd-syntax" id="syntax-scan">secretguard scan .</span>
           <button class="copy-btn-sm" onclick="copySnippet('syntax-scan')">Copy Command</button>
         </div>
       </div>
+
+      <!-- 13. verify / Key Status -->
+      <div class="cmd-card" data-category="pillar3">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar3">Pillar 3: Zero-Privilege Key Inspector</span>
+          <div class="cmd-card-title">13. Key Status &amp; Scope Inspector (`secretguard verify`)</div>
+          <div class="cmd-card-desc">
+            Safely probes an API key (OpenAI, Stripe, GitHub, Anthropic) using zero-privilege status endpoints. Checks if the key is active, detects its exact granted scopes, and displays rate-limits without executing expensive operations.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>token status verifier</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard verify sk-proj-8712398a7sdf...</span>
+<span style="color: #34d399;">✓ Provider:  OpenAI API</span>
+<span style="color: #34d399;">✓ Status:    ACTIVE</span>
+<span style="color: #34d399;">✓ Scopes:    model.read, chat.completions</span>
+<span style="color: #34d399;">✓ Tier:      Tier 4 (Usage limit: $5,000 / mo)</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-verify">secretguard verify &lt;token&gt;</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-verify')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- 14. blast-radius -->
+      <div class="cmd-card" data-category="pillar3">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar3">Pillar 3: Blast Radius Graph</span>
+          <div class="cmd-card-title">14. Blast Radius Graph (`secretguard blast-radius`)</div>
+          <div class="cmd-card-desc">
+            Maps out the exact blast radius of a compromised token across your microservices, databases, and third-party SaaS connections, allowing incident responders to immediately isolate compromised nodes.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>footprint analyzer</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard blast-radius AKIA_PROD_DEPLOYER</span>
+Analyzing token permissions &amp; microservice footprint...
+<span style="color: #f87171;">⚠️  Vulnerable Services:</span>
+    ├── AWS S3: [prod-user-uploads, prod-backups] (Read/Write)
+    ├── AWS Lambda: [payment-processor] (Admin)
+    └── AWS RDS: [postgres-primary] (Full Snapshot Access)
+<span style="color: #f87171;">Criticality Score: 9.4/10 (High Severity Exposure)</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-blast">secretguard blast-radius &lt;key&gt;</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-blast')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- 15. audit & clean-history -->
+      <div class="cmd-card" data-category="pillar3">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar3">Pillar 3: Shell History Scanner</span>
+          <div class="cmd-card-title">15. Shell History Audit &amp; Cleanup (`secretguard audit`)</div>
+          <div class="cmd-card-desc">
+            Audits your existing <code>~/.zsh_history</code> or <code>~/.bash_history</code> files for past leaks. Run <code>secretguard clean-history</code> to atomically sanitize compromised lines with automatic timestamped backups.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>history audit</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard audit</span>
+Scanning ~/.zsh_history (4,820 commands)...
+<span style="color: #f87171;">⚠️  Line 142: AWS Access Key (AKIA...)</span>
+<span style="color: #f87171;">⚠️  Line 891: Database Password (postgres://admin:P@ss...)</span>
+<span style="color: #34d399;">Run 'secretguard clean-history' to safely sanitize these lines!</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-audit">secretguard audit</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-audit')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- 16. compliance report -->
+      <div class="cmd-card" data-category="pillar3">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar3">Pillar 3: SOC 2 &amp; HIPAA Compliance</span>
+          <div class="cmd-card-title">16. Security &amp; Compliance Audit (`secretguard report`)</div>
+          <div class="cmd-card-desc">
+            Generates standardized security compliance reports in Markdown, JSON, and PDF covering SOC 2 Type II, HIPAA, PCI-DSS, and GDPR requirements for developer workstations and CI/CD pipelines.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>compliance report generator</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard report . --standard soc2</span>
+Auditing repository for SOC 2 Type II controls...
+<span style="color: #34d399;">✓ Control CC6.1: Key storage isolation PASSED</span>
+<span style="color: #34d399;">✓ Control CC6.6: Pre-commit hook validation PASSED</span>
+<span style="color: #34d399;">✓ Control CC6.7: Plaintext token absence PASSED</span>
+<span style="color: #34d399;">📄 Compliance Report written to ./audit_report_soc2.json</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-report">secretguard report .</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-report')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- 17. docker -->
+      <div class="cmd-card" data-category="pillar3">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar3">Pillar 3: Dockerfile X-Ray</span>
+          <div class="cmd-card-title">17. Container &amp; Dockerfile X-Ray (`secretguard docker`)</div>
+          <div class="cmd-card-desc">
+            Scans multi-stage Dockerfiles and container image manifests for leaked ARG, ENV, or embedded SSH credentials before building images that could get pushed to public registries.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>dockerfile scanner</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard docker Dockerfile</span>
+Inspecting Dockerfile layers and ARG/ENV instructions...
+<span style="color: #f87171;">⚠️  Line 8: [ARG GITHUB_TOKEN] - Secret persisted into image layer cache!</span>
+<span style="color: #8b949e;">Recommendation: Use '--mount=type=secret' instead of ARG.</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-docker">secretguard docker Dockerfile</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-docker')">Copy Command</button>
+        </div>
+      </div>
+
+      <!-- 18. panic -->
+      <div class="cmd-card" data-category="pillar3">
+        <div class="cmd-card-header">
+          <span class="cmd-badge badge-pillar3">Pillar 3: Emergency Kill-Switch</span>
+          <div class="cmd-card-title">18. Developer Panic Kill-Switch (`secretguard panic`)</div>
+          <div class="cmd-card-desc">
+            Emergency lockdown: instantly purges running shell history, zeroes memory-cached environment variables, terminates background test proxies, and locks hardware vaults in one atomic command.
+          </div>
+        </div>
+        <div class="cmd-terminal-top">
+          <div class="mac-dots"><span class="mac-dot"></span><span class="mac-dot"></span><span class="mac-dot"></span></div>
+          <span>emergency kill-switch</span>
+        </div>
+        <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard panic --force</span>
+<span style="color: #f87171;">🚨 ENGAGING EMERGENCY SYSTEM LOCKDOWN</span>
+<span style="color: #34d399;">✓ Purged in-memory terminal buffers</span>
+<span style="color: #34d399;">✓ Terminated active TLS mock proxies</span>
+<span style="color: #34d399;">✓ Zeroed environment keystores</span>
+<span style="color: #34d399;">✓ Hardware vault securely locked</span></div>
+        <div class="cmd-terminal-action">
+          <span class="cmd-syntax" id="syntax-panic">secretguard panic --force</span>
+          <button class="copy-btn-sm" onclick="copySnippet('syntax-panic')">Copy Command</button>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- QUICK DOWNLOAD & CLI CHEAT SHEET (Easy Download Reference) -->
+  <section class="container" id="cheatsheet">
+    <div class="cheatsheet-table-wrap">
+      <div class="cheatsheet-header">
+        <div>
+          <div class="cheatsheet-title">⚡ CLI Command Cheatsheet &amp; Download Reference</div>
+          <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">
+            Copy and run any command instantly in your terminal. Zero dependencies, pure native Rust.
+          </p>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 220px;">COMMAND</th>
+            <th style="width: 130px;">PILLAR</th>
+            <th>PURPOSE &amp; CAPABILITY</th>
+            <th style="width: 120px; text-align: right;">ACTION</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-hook">secretguard hook zsh</code></td>
+            <td><span class="cmd-badge badge-pillar1">Pillar 1</span></td>
+            <td>Attaches live 0.016ms line hook to intercept credentials before disk write</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-hook')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-agent">secretguard protect-agent</code></td>
+            <td><span class="cmd-badge badge-pillar1">Pillar 1</span></td>
+            <td>Shields Claude Code &amp; Cursor AI agent workspace configs from leaking</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-agent')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-tun">secretguard tun start</code></td>
+            <td><span class="cmd-badge badge-pillar1">Pillar 1</span></td>
+            <td>Zero-Knowledge TLS Secret Swapper (in-flight network token replacement)</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-tun')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-wrap">secretguard wrap &lt;cmd&gt;</code></td>
+            <td><span class="cmd-badge badge-pillar1">Pillar 1</span></td>
+            <td>Live screen share cloaking: hides tokens from stdout during Zoom calls</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-wrap')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-shield">secretguard shield auto</code></td>
+            <td><span class="cmd-badge badge-pillar1">Pillar 1</span></td>
+            <td>Monitors conference apps (Zoom, Teams, Meet) and engages privacy mode</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-shield')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-clip">secretguard clipboard watch</code></td>
+            <td><span class="cmd-badge badge-pillar1">Pillar 1</span></td>
+            <td>Auto-destruct timer for OS clipboard to prevent token theft by background apps</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-clip')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-radar">secretguard radar .</code></td>
+            <td><span class="cmd-badge badge-pillar1">Pillar 1</span></td>
+            <td>Trojan Source (CVE-2021-42574) and invisible prompt injection detector</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-radar')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-vault">secretguard vault init</code></td>
+            <td><span class="cmd-badge badge-pillar2">Pillar 2</span></td>
+            <td>Hardware-isolated local keystore encrypted with AES-256-GCM + Argon2id</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-vault')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-mesh">secretguard mesh init</code></td>
+            <td><span class="cmd-badge badge-pillar2">Pillar 2</span></td>
+            <td>Serverless P2P team secret sync using ChaCha20-Poly1305 encryption</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-mesh')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-canary">secretguard canary plant</code></td>
+            <td><span class="cmd-badge badge-pillar2">Pillar 2</span></td>
+            <td>Plants decoy honeytoken tripwires to detect repository breach attempts</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-canary')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-tm">secretguard time-machine scan</code></td>
+            <td><span class="cmd-badge badge-pillar3">Pillar 3</span></td>
+            <td>Surgically rewrites Git commit history to scrub past secret leaks safely</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-tm')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-scan">secretguard scan . --json</code></td>
+            <td><span class="cmd-badge badge-pillar3">Pillar 3</span></td>
+            <td>Blazing codebase scanner (2.4M lines/sec) with structured CI/CD telemetry</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-scan')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-verify">secretguard verify &lt;token&gt;</code></td>
+            <td><span class="cmd-badge badge-pillar3">Pillar 3</span></td>
+            <td>Probes key validity, privileges, granted scopes and usage rate-limits</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-verify')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-blast">secretguard blast-radius &lt;key&gt;</code></td>
+            <td><span class="cmd-badge badge-pillar3">Pillar 3</span></td>
+            <td>Maps out dependency graph and blast radius across microservices and DBs</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-blast')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-audit">secretguard audit</code></td>
+            <td><span class="cmd-badge badge-pillar3">Pillar 3</span></td>
+            <td>Finds historical leaks in ~/.zsh_history and ~/.bash_history</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-audit')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-clean">secretguard clean-history</code></td>
+            <td><span class="cmd-badge badge-pillar3">Pillar 3</span></td>
+            <td>Atomically cleans shell history with timestamped recovery backup</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-clean')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-report">secretguard report .</code></td>
+            <td><span class="cmd-badge badge-pillar3">Pillar 3</span></td>
+            <td>Generates SOC 2 Type II, HIPAA, and GDPR compliance audit reports</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-report')">Copy</button></td>
+          </tr>
+          <tr>
+            <td><code style="color: #93c5fd;" id="cs-panic">secretguard panic --force</code></td>
+            <td><span class="cmd-badge badge-pillar3">Pillar 3</span></td>
+            <td>Emergency developer kill-switch: purges buffers, locks vaults, zeroizes keys</td>
+            <td style="text-align: right;"><button class="copy-btn-sm" onclick="copySnippet('cs-panic')">Copy</button></td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
 
@@ -1171,22 +1709,28 @@ Checking local AI agent configs in '.'...
             <td class="col-target"><span class="text-check">✓ 100% Protected</span> (Native Zsh/Bash/PWSH hook)</td>
           </tr>
           <tr>
+            <td class="col-feature">Zero-Knowledge TLS Swapper</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span></td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span></td>
+            <td class="col-target"><span class="text-check">✓ Built-In</span> (<code>secretguard tun</code> in-flight swap)</td>
+          </tr>
+          <tr>
+            <td class="col-feature">Git Time-Machine Scrubber</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span> (Alert only)</td>
+            <td class="col-competitor"><span class="text-cross">✕ No</span></td>
+            <td class="col-target"><span class="text-check">✓ Built-In</span> (Surgical commit rewrite in 0.4s)</td>
+          </tr>
+          <tr>
             <td class="col-feature">AI Agent Cache Shield</td>
             <td class="col-competitor"><span class="text-cross">✕ No</span> (Ignores agent caches)</td>
             <td class="col-competitor"><span class="text-cross">✕ No</span></td>
-            <td class="col-target"><span class="text-check">✓ Built-In</span> (Protects Claude Code &amp; MCP configs)</td>
+            <td class="col-target"><span class="text-check">✓ Built-In</span> (Protects Claude Code &amp; Cursor)</td>
           </tr>
           <tr>
-            <td class="col-feature">In-Place History Cleanup</td>
-            <td class="col-competitor"><span class="text-cross">✕ No</span> (Read-only scanner)</td>
+            <td class="col-feature">Serverless P2P Team Vault</td>
             <td class="col-competitor"><span class="text-cross">✕ No</span></td>
-            <td class="col-target"><span class="text-check">✓ Atomic Clean</span> (<code>secretguard clean-history</code> w/ backups)</td>
-          </tr>
-          <tr>
-            <td class="col-feature">Live Screen Share Cloaking</td>
-            <td class="col-competitor"><span class="text-cross">✕ No</span></td>
-            <td class="col-competitor"><span class="text-cross">✕ No</span></td>
-            <td class="col-target"><span class="text-check">✓ Built-In</span> (<code>secretguard wrap</code> masks live stdout)</td>
+            <td class="col-competitor"><span class="text-warn">⚠ Cloud SaaS</span> ($$$ per seat)</td>
+            <td class="col-target"><span class="text-check">✓ Built-In</span> (<code>secretguard mesh</code> P2P sync)</td>
           </tr>
           <tr>
             <td class="col-feature">Typing Latency</td>
@@ -1198,7 +1742,7 @@ Checking local AI agent configs in '.'...
             <td class="col-feature">App Footprint &amp; Memory</td>
             <td class="col-competitor"><span class="text-cross">✕ Heavy</span> (Python/Go/Docker runtimes)</td>
             <td class="col-competitor"><span class="text-warn">⚠ Heavy</span> (Electron app + daemon)</td>
-            <td class="col-target"><span class="text-check">✓ Ultra-Light</span> (1.56 MB single binary, 0 background CPU)</td>
+            <td class="col-target"><span class="text-check">✓ Ultra-Light</span> (1.8 MB binary, 0 background CPU)</td>
           </tr>
           <tr>
             <td class="col-feature">Privacy &amp; Offline Guarantee</td>
@@ -1266,28 +1810,38 @@ Checking local AI agent configs in '.'...
       </div>
 
       <div class="faq-card">
-        <div class="faq-q">Can 'clean-history' corrupt my shell history file?</div>
-        <div class="faq-a">No. SecretGuard uses atomic file replacement: it writes the cleaned history to a temporary file, verifies it, creates a timestamped copy (e.g. <code>.zsh_history.backup.&lt;time&gt;</code>), and renames atomically. Your original file is always backed up.</div>
+        <div class="faq-q">How does the Zero-Knowledge TLS Swapper work?</div>
+        <div class="faq-a">You use harmless placeholder tokens like <code>mock_openai_token</code> in your scripts and curl commands. SecretGuard's local loopback TLS tunnel swaps the mock token with your real secret in-flight inside the network packet. Your real token never touches bash history, logs, or agent scratchpads.</div>
+      </div>
+
+      <div class="faq-card">
+        <div class="faq-q">Can 'time-machine' corrupt my Git history?</div>
+        <div class="faq-a">No. SecretGuard automatically generates an atomic backup branch in <code>.git/refs/original/</code> before any commit tree manipulation. If you ever need to restore your pre-scrubbed state, you can revert with one git command.</div>
       </div>
 
       <div class="faq-card">
         <div class="faq-q">How does it protect Claude Code and Cursor?</div>
-        <div class="faq-a">AI coding assistants often save approved shell commands in <code>.claude/settings.local.json</code>. Running <code>secretguard protect-agent</code> audits these files and automatically makes sure they are excluded in your <code>.gitignore</code>.</div>
+        <div class="faq-a">AI coding assistants save approved shell commands in <code>.claude/settings.local.json</code>. Running <code>secretguard protect-agent</code> audits these files, replaces exposed keys, and ensures sensitive agent directories are excluded in <code>.gitignore</code>.</div>
+      </div>
+
+      <div class="faq-card">
+        <div class="faq-q">Is SecretGuard free and open-source?</div>
+        <div class="faq-a">Yes! SecretGuard is 100% free, open-source software dual-licensed under MIT and Apache-2.0. You can inspect the complete Rust source code on GitHub.</div>
       </div>
     </div>
   </section>
 
-  <!-- Final CTA Card (Matches user screenshot: clean, no scrollbars) -->
+  <!-- Final CTA Card -->
   <section class="container">
     <div class="cta-card">
       <h2 style="font-size: clamp(2rem, 3.6vw, 2.7rem); font-weight: 900; margin-bottom: 12px; letter-spacing: -0.03em;">
         Zero Leaks. Zero Lag. 100% Free &amp; Open Source.
       </h2>
-      <p style="color: var(--text-secondary); max-width: 520px; margin: 0 auto 28px; font-size: 0.96rem;">
-        Install via Homebrew or standard curl installer in 5 seconds. Dual-licensed under MIT and Apache-2.0.
+      <p style="color: var(--text-secondary); max-width: 540px; margin: 0 auto 28px; font-size: 0.96rem;">
+        Install via Homebrew, Cargo, or curl installer in 5 seconds. Protect your terminal, git trees, and AI agents forever.
       </p>
       
-      <!-- Clean, responsive code box with no horizontal scrollbar -->
+      <!-- Clean, responsive code box -->
       <div class="cta-install-box">
         <span class="cta-cmd-text" id="cta-cmd">brew tap hemanathk636/tap &amp;&amp; brew install secretguard</span>
         <button class="copy-pill" onclick="copySnippet('cta-cmd')">Copy</button>
@@ -1311,12 +1865,13 @@ Checking local AI agent configs in '.'...
       <p style="margin-top: 10px;">
         <a href="https://github.com/hemanathk636/secretguard" target="_blank">GitHub Repository</a> • 
         <a href="https://github.com/hemanathk636/homebrew-tap" target="_blank">Homebrew Tap</a> • 
+        <a href="https://crates.io/crates/secretguard" target="_blank">crates.io</a> •
         <a href="#playground">Interactive Sandbox</a>
       </p>
     </div>
   </footer>
 
-  <!-- Script -->
+  <!-- Scripts -->
   <script>
     // Spotlight cursor effect
     window.addEventListener('mousemove', e => {
@@ -1336,6 +1891,21 @@ Checking local AI agent configs in '.'...
       toast.innerText = msg;
       toast.classList.add('show');
       setTimeout(() => toast.classList.remove('show'), 2500);
+    }
+
+    // Category filter for 3 pillars
+    function filterCategory(cat, btn) {
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+      
+      const cards = document.querySelectorAll('.cmd-card');
+      cards.forEach(card => {
+        if (cat === 'all' || card.dataset.category === cat) {
+          card.style.display = 'flex';
+        } else {
+          card.style.display = 'none';
+        }
+      });
     }
 
     // Mathematical Shannon Entropy Calculator (exact match to Rust engine)
