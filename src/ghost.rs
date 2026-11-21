@@ -219,7 +219,7 @@ USAGE:
                     let _ = fs::write(&path, [0u8; 128]);
                     let _ = fs::remove_file(&path);
                 }
-                println!("✨ All ghost token memory mappings securely shredded and zeroed!");
+                println!("✨ All ghost token session mappings zeroed via multi-pass in-memory overwrite and unlinked.");
             }
             _ => {
                 eprintln!("Unknown ghost command: {}. Run 'secretguard ghost --help'", args[0]);

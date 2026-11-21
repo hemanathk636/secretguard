@@ -91,7 +91,18 @@ fn test_deep_git_history_scrubbing_across_all_commits() {
 }
 
 #[test]
-fn test_bash_readline_buffer_preexecution_hook() {
+fn test_csprng_master_key_generation() {
+    let key1 = secretguard::vault::get_or_generate_master_key();
+    assert_eq!(key1.len(), 32);
+    // Verify non-zero entropy
+    assert!(key1.iter().any(|&b| b != 0));
+
+    let key2 = secretguard::vault::get_or_generate_master_key();
+    assert_eq!(key1, key2, "Master key must be deterministically persisted on disk");
+}
+
+#[test]
+fn test_bash_extdebug_preexecution_hook() {
     let bin_path = env!("CARGO_BIN_EXE_secretguard");
     let output = Command::new(bin_path)
         .args(["hook", "bash"])
@@ -100,7 +111,7 @@ fn test_bash_readline_buffer_preexecution_hook() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("READLINE_LINE=\"\""));
-    assert!(stdout.contains("bind -x"));
-    assert!(stdout.contains("_secretguard_bash_enter_hook"));
+    assert!(stdout.contains("shopt -s extdebug"));
+    assert!(stdout.contains("trap '_secretguard_bash_preexec' DEBUG"));
+    assert!(stdout.contains("BASH_COMMAND"));
 }

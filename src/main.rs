@@ -8,7 +8,7 @@ use std::thread;
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.3.2) — Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.3.3) — Sub-millisecond Terminal Secret & Privacy Guard
 The Autonomous Developer Security & AI Agent Firewall Platform
 
 USAGE:
@@ -689,23 +689,25 @@ zshaddhistory() {
         ),
         "bash" => print!(
             "{}",
-            r#"# SecretGuard Native Bash Pre-Execution Hook (Readline Buffer Interceptor)
+            r#"# SecretGuard Native Bash Pre-Execution Hook (DEBUG Trap with extdebug)
 # Add to ~/.bashrc: eval "$(secretguard hook bash)"
 export HISTCONTROL=ignorespace:erasedups
-_secretguard_bash_enter_hook() {
-    local cmd="$READLINE_LINE"
-    if [ -n "$cmd" ] && [ ${#cmd} -ge 15 ]; then
-        if ! secretguard check "$cmd" >/dev/null 2>&1; then
-            echo -e "\n\033[1;31m[secretguard]\033[0m 🚨 Secret intercepted in Bash buffer before execution!" >&2
-            echo -e "\033[0;33mCommand canceled: raw credentials never executed or saved to history.\033[0m" >&2
-            READLINE_LINE="" # Zeroes the line buffer before execution
-            return 1
-        fi
+_secretguard_bash_preexec() {
+    local cmd="$BASH_COMMAND"
+    if [[ "$cmd" =~ ^secretguard || "$cmd" =~ ^PROMPT_COMMAND || ${#cmd} -lt 15 ]]; then
+        return 0
     fi
+    if ! secretguard check "$cmd" >/dev/null 2>&1; then
+        echo -e "\n\033[1;31m[secretguard]\033[0m 🚨 Secret intercepted before execution!" >&2
+        echo -e "\033[0;33mCommand contains exposed credential and was blocked from running.\033[0m" >&2
+        history -d $(history 1 | awk '{print $1}') 2>/dev/null || true
+        return 1 # In extdebug mode, returning non-zero aborts command execution
+    fi
+    return 0 # Normal commands execute completely naturally
 }
 if [[ $- == *i* ]]; then
-    bind -x '"\C-m": _secretguard_bash_enter_hook' 2>/dev/null || true
-    bind -x '"\C-j": _secretguard_bash_enter_hook' 2>/dev/null || true
+    shopt -s extdebug 2>/dev/null || true
+    trap '_secretguard_bash_preexec' DEBUG
 fi
 "#
         ),

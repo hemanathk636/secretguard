@@ -28,18 +28,65 @@ pub fn get_vault_path() -> PathBuf {
     dir.join("vault.enc")
 }
 
-pub fn derive_vault_key(passphrase: Option<&str>) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    let home = env::var("HOME")
+pub fn get_master_key_path() -> PathBuf {
+    if let Ok(p) = env::var("SECRETGUARD_MASTER_KEY_PATH") {
+        return PathBuf::from(p);
+    }
+    let base_dir = env::var("SECRETGUARD_DIR")
         .or_else(|_| env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "secretguard-default-salt".to_string());
-    let user = env::var("USER")
-        .or_else(|_| env::var("USERNAME"))
-        .unwrap_or_else(|_| "local-dev".to_string());
+        .or_else(|_| env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
+    let dir = Path::new(&base_dir).join(".secretguard");
+    if let Ok(_) = fs::create_dir_all(&dir) {
+        if dir.exists() {
+            return dir.join(".master.key");
+        }
+    }
+    let temp = env::temp_dir().join(".secretguard");
+    let _ = fs::create_dir_all(&temp);
+    temp.join(".master.key")
+}
 
-    hasher.update(b"SECRETGUARD_VAULT_SALT_v1");
-    hasher.update(home.as_bytes());
-    hasher.update(user.as_bytes());
+/// Retrieves or generates a genuine 256-bit cryptographically secure random master key via CSPRNG (OsRng)
+pub fn get_or_generate_master_key() -> [u8; 32] {
+    let path = get_master_key_path();
+    if path.exists() {
+        if let Ok(bytes) = fs::read(&path) {
+            if bytes.len() == 32 {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                return key;
+            }
+        }
+    }
+
+    // Generate genuine 256-bit cryptographically secure random key via OsRng (CSPRNG)
+    let mut key = [0u8; 32];
+    OsRng.fill_bytes(&mut key);
+
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, &key);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = fs::set_permissions(&path, perms);
+        }
+    }
+
+    key
+}
+
+pub fn derive_vault_key(passphrase: Option<&str>) -> [u8; 32] {
+    let master = get_or_generate_master_key();
+    let mut hasher = Sha256::new();
+    hasher.update(b"SECRETGUARD_VAULT_HKDF_v2:");
+    hasher.update(&master);
 
     if let Some(pass) = passphrase {
         hasher.update(b":PASS:");

@@ -202,30 +202,35 @@ impl TimeMachine {
             ));
         }
 
-        // 2. Perform surgical tree filter: replace detected secret patterns across working tree
-        // Create an executable or python/powershell/sh script to pass to git filter-branch or run index filter
+        // 2. Perform surgical tree filter: replace detected secret patterns across working tree (including hidden files like .env)
         let script_content = if cfg!(target_os = "windows") {
-            // Windows powershell filter
+            // Windows PowerShell filter: includes hidden files like .env, excludes .git
             r#"
-$files = Get-ChildItem -File -Recurse -Exclude .git
+$files = Get-ChildItem -File -Recurse -Force | Where-Object { $_.FullName -notmatch '[\\/]\.git([\\/]|$)' }
 foreach ($f in $files) {
-    # Scrub known high-confidence token prefixes
     (Get-Content -Raw $f.FullName) `
-        -replace 'sk-[a-zA-Z0-9]{20,}', 'sk-proj-SCRUBBED00000000000000000' `
+        -replace 'sk-(?:proj-)?[a-zA-Z0-9_-]{32,}', 'sk-proj-SCRUBBED00000000000000000' `
+        -replace 'sk-ant-api03-[a-zA-Z0-9_-]{80,}', 'sk-ant-api03-SCRUBBED00000000000000000' `
         -replace 'ghp_[a-zA-Z0-9]{20,}', 'ghp_SCRUBBED00000000000000000000' `
         -replace 'AKIA[0-9A-Z]{16}', 'AKIAFAKE000000000000' `
+        -replace 'sk_live_[0-9a-zA-Z]{24,}', '[REDACTED_STRIPE_KEY]' `
         -replace 'xox[baprs]-[0-9a-zA-Z]{10,48}', 'xoxb-SCRUBBED000000000000' `
+        -replace 'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}', 'SG.SCRUBBED000000000000.000000000000' `
+        -replace 'AIza[0-9A-Za-z_-]{35}', 'AIzaSyFAKE00000000000000000000000' `
         | Set-Content -NoNewline $f.FullName
 }
 "#
         } else {
-            // Unix sh filter
+            // Unix sh filter: includes hidden files like .env, excludes .git
             r#"
-find . -type f -not -path '*/.*' | while read -r f; do
+find . -type f -not -path './.git/*' | while read -r f; do
     sed -i 's/sk-[a-zA-Z0-9]\{20,\}/sk-proj-SCRUBBED00000000000000000/g' "$f" 2>/dev/null || true
     sed -i 's/ghp_[a-zA-Z0-9]\{20,\}/ghp_SCRUBBED00000000000000000000/g' "$f" 2>/dev/null || true
     sed -i 's/AKIA[0-9A-Z]\{16\}/AKIAFAKE000000000000/g' "$f" 2>/dev/null || true
+    sed -i 's/sk_live_[0-9a-zA-Z]\{24,\}/[REDACTED_STRIPE_KEY]/g' "$f" 2>/dev/null || true
     sed -i 's/xox[baprs]-[0-9a-zA-Z]\{10,48\}/xoxb-SCRUBBED000000000000/g' "$f" 2>/dev/null || true
+    sed -i 's/SG\.[a-zA-Z0-9_-]\{22\}\.[a-zA-Z0-9_-]\{43\}/SG.SCRUBBED000000000000.000000000000/g' "$f" 2>/dev/null || true
+    sed -i 's/AIza[0-9A-Za-z_-]\{35\}/AIzaSyFAKE00000000000000000000000/g' "$f" 2>/dev/null || true
 done
 "#
         };
@@ -240,7 +245,7 @@ done
             .write_all(script_content.as_bytes())
             .map_err(|e| format!("Failed to write filter script: {}", e))?;
 
-        // 3. Execute git filter-branch with safety override
+        // 3. Execute git filter-branch across all branches with safety override
         let tree_filter_arg = if cfg!(target_os = "windows") {
             format!("powershell -ExecutionPolicy Bypass -File \"{}\"", script_path.display())
         } else {
@@ -258,7 +263,7 @@ done
             "--tree-filter",
             &tree_filter_arg,
             "--",
-            "HEAD",
+            "--all",
         ]);
 
         let fb_out = fb_cmd.output();
@@ -270,10 +275,12 @@ done
                     Ok(TimeMachineScrubResult {
                         success: true,
                         commits_scrubbed: report.tainted_commits.len(),
-                        backup_ref: backup_branch,
+                        backup_ref: backup_branch.clone(),
                         message: format!(
-                            "Successfully scrubbed {} tainted commits. Created safety backup branch.",
-                            report.tainted_commits.len()
+                            "Successfully scrubbed {} tainted commits across all branches. Safety backup ref preserved at '{}'. Note: Historical backup branch retains original commits until manually pruned with 'git branch -D {}'.",
+                            report.tainted_commits.len(),
+                            backup_branch,
+                            backup_branch
                         ),
                     })
                 } else {
