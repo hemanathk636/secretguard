@@ -4,10 +4,18 @@ use secretguard::timemachine::TimeMachine;
 use secretguard::SecretGuardEngine;
 use std::fs;
 use std::process::Command;
+use std::sync::Mutex;
+
+static ADV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_ghost_session_aes_256_gcm_encryption() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap();
     let _engine = SecretGuardEngine::new();
+    let temp_dir = std::env::temp_dir().join(format!("sg_adv_ghost_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let secret = "sk-proj-superSecretRealKey1234567890abcdef12345678";
 
     let mut session = GhostVirtualizer::load_session();
@@ -29,6 +37,9 @@ fn test_ghost_session_aes_256_gcm_encryption() {
     // 4. Verify decryption round-trip via vault key
     let loaded = GhostVirtualizer::load_session();
     assert!(!loaded.mappings.is_empty());
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -92,6 +103,11 @@ fn test_deep_git_history_scrubbing_across_all_commits() {
 
 #[test]
 fn test_csprng_master_key_generation() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap();
+    let temp_dir = std::env::temp_dir().join(format!("sg_adv_master_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let key1 = secretguard::vault::get_or_generate_master_key().expect("Failed to get or generate master key");
     assert_eq!(key1.len(), 32);
     // Verify non-zero entropy
@@ -99,6 +115,9 @@ fn test_csprng_master_key_generation() {
 
     let key2 = secretguard::vault::get_or_generate_master_key().expect("Failed to get master key");
     assert_eq!(key1, key2, "Master key must be deterministically persisted on disk");
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]

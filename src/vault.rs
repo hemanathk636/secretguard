@@ -19,34 +19,46 @@ pub struct VaultStore {
     pub secrets: HashMap<String, String>,
 }
 
-pub fn get_vault_path() -> PathBuf {
-    if let Ok(p) = env::var("SECRETGUARD_VAULT_PATH") {
-        return PathBuf::from(p);
+/// Resolves or creates a secure, private per-user directory for SecretGuard state (never falls back to shared /tmp)
+pub fn get_vault_dir() -> Result<PathBuf, String> {
+    if let Ok(dir_str) = env::var("SECRETGUARD_DIR") {
+        let p = PathBuf::from(dir_str);
+        fs::create_dir_all(&p).map_err(|e| format!("Failed to create SECRETGUARD_DIR at '{}': {}", p.display(), e))?;
+        return Ok(p);
     }
-    let home = env::var("USERPROFILE")
+
+    let base_dir = env::var("USERPROFILE")
         .or_else(|_| env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    let dir = Path::new(&home).join(".secretguard");
-    dir.join("vault.enc")
+        .map_err(|_| "Environment Error: Neither HOME nor USERPROFILE is set. SecretGuard cannot securely locate the private user directory. Refusing to use a shared directory.".to_string())?;
+
+    let dir = Path::new(&base_dir).join(".secretguard");
+    fs::create_dir_all(&dir).map_err(|e| {
+        format!("Failed to create secure user directory at '{}': {}", dir.display(), e)
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
+
+    Ok(dir)
 }
 
-pub fn get_master_key_path() -> PathBuf {
+pub fn get_vault_path() -> Result<PathBuf, String> {
+    if let Ok(p) = env::var("SECRETGUARD_VAULT_PATH") {
+        return Ok(PathBuf::from(p));
+    }
+    let dir = get_vault_dir()?;
+    Ok(dir.join("vault.enc"))
+}
+
+pub fn get_master_key_path() -> Result<PathBuf, String> {
     if let Ok(p) = env::var("SECRETGUARD_MASTER_KEY_PATH") {
-        return PathBuf::from(p);
+        return Ok(PathBuf::from(p));
     }
-    let base_dir = env::var("SECRETGUARD_DIR")
-        .or_else(|_| env::var("USERPROFILE"))
-        .or_else(|_| env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    let dir = Path::new(&base_dir).join(".secretguard");
-    if let Ok(_) = fs::create_dir_all(&dir) {
-        if dir.exists() {
-            return dir.join(".master.key");
-        }
-    }
-    let temp = env::temp_dir().join(".secretguard");
-    let _ = fs::create_dir_all(&temp);
-    temp.join(".master.key")
+    let dir = get_vault_dir()?;
+    Ok(dir.join(".master.key"))
 }
 
 /// Cross-platform atomic file replacement with Unix directory sync and Windows file replacement safety
@@ -57,44 +69,35 @@ pub fn atomic_replace_file(tmp_path: &Path, target_path: &Path) -> Result<(), St
             let _ = fs::remove_file(tmp_path);
             format!("Failed to atomically replace vault file {}: {}", target_path.display(), e)
         })?;
-        // Sync parent directory after rename on Unix for full journal durability
+
+        // Issue 3: Propagate parent directory sync errors to guarantee journal commitment
         if let Some(parent) = target_path.parent() {
-            if let Ok(dir) = fs::File::open(parent) {
-                let _ = dir.sync_all();
-            }
+            let dir = fs::File::open(parent).map_err(|e| {
+                format!("Failed to open parent directory '{}' for fsync: {}", parent.display(), e)
+            })?;
+            dir.sync_all().map_err(|e| {
+                format!("Failed to fsync parent directory '{}' after vault replacement: {}", parent.display(), e)
+            })?;
         }
         Ok(())
     }
     #[cfg(not(unix))]
     {
-        if target_path.exists() {
-            let pid = process::id();
-            let backup_tmp = target_path.with_extension(format!("old.{}", pid));
-            let _ = fs::remove_file(&backup_tmp);
+        // On modern Windows (Vista+), std::fs::rename within the same filesystem replaces existing destination atomically
+        fs::rename(tmp_path, target_path).map_err(|e| {
+            let _ = fs::remove_file(tmp_path);
+            format!("Windows atomic vault replacement failed for '{}': {}", target_path.display(), e)
+        })
+    }
+}
 
-            if let Err(e) = fs::rename(target_path, &backup_tmp) {
-                if let Err(e2) = fs::rename(tmp_path, target_path) {
-                    let _ = fs::remove_file(tmp_path);
-                    return Err(format!("Windows atomic vault replacement failed: {} (direct: {})", e, e2));
-                } else {
-                    return Ok(());
-                }
-            }
-
-            if let Err(e) = fs::rename(tmp_path, target_path) {
-                let _ = fs::rename(&backup_tmp, target_path);
-                let _ = fs::remove_file(tmp_path);
-                return Err(format!("Failed to place new vault file at {}: {}", target_path.display(), e));
-            }
-
-            let _ = fs::remove_file(&backup_tmp);
-            Ok(())
-        } else {
-            fs::rename(tmp_path, target_path).map_err(|e| {
-                let _ = fs::remove_file(tmp_path);
-                format!("Failed to rename temporary file to {}: {}", target_path.display(), e)
-            })
-        }
+/// Strips trailing CR (\r) and LF (\n) line terminators while preserving
+/// leading and internal whitespace in secrets and passwords.
+pub fn strip_line_terminator(s: &mut String) {
+    if s.ends_with("\r\n") {
+        s.truncate(s.len() - 2);
+    } else if s.ends_with('\n') || s.ends_with('\r') {
+        s.truncate(s.len() - 1);
     }
 }
 
@@ -104,7 +107,7 @@ pub fn atomic_replace_file(tmp_path: &Path, target_path: &Path) -> Result<(), St
 /// Returns Err if the master key path is a symlink (including dangling symlinks),
 /// if permissions are insecure and cannot be tightened, or if the key length is corrupted.
 pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
-    let path = get_master_key_path();
+    let path = get_master_key_path()?;
 
     // Bounded retry loop (max 3 attempts) to eliminate recursion and prevent stack overflow
     for _attempt in 0..3 {
@@ -316,7 +319,7 @@ pub fn decrypt_vault_payload(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, Str
 }
 
 pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
-    let path = get_vault_path();
+    let path = get_vault_path()?;
     if !path.exists() {
         return Ok(VaultStore::default());
     }
@@ -330,7 +333,7 @@ pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
 }
 
 pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), String> {
-    let path = get_vault_path();
+    let path = get_vault_path()?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)
         .map_err(|e| format!("Failed to create vault directory '{}': {}", parent.display(), e))?;
@@ -384,18 +387,45 @@ pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), St
     Ok(())
 }
 
-/// Reads a password or secret from the terminal with terminal echo disabled (zero external dependencies)
+#[cfg(unix)]
+struct SttyEchoGuard;
+
+#[cfg(unix)]
+impl Drop for SttyEchoGuard {
+    fn drop(&mut self) {
+        let _ = Command::new("stty").arg("echo").status();
+    }
+}
+
+/// Reads a password or secret from the terminal with terminal echo disabled (zero external dependencies).
+/// Fails closed if terminal echo cannot be disabled. On Unix, uses an RAII guard to guarantee echo is restored.
 pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
     #[cfg(unix)]
     {
         eprint!("{}", prompt);
         let _ = io::stderr().flush();
-        let _ = Command::new("stty").arg("-echo").status();
+
+        // Disable echo and fail closed if stty fails
+        let status = Command::new("stty")
+            .arg("-echo")
+            .status()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to invoke stty to disable echo: {}", e)))?;
+
+        if !status.success() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Cannot disable terminal echo (stty returned non-zero). Failing closed to prevent secret leakage in terminal.",
+            ));
+        }
+
+        // RAII guard guarantees stty echo is restored even on panic or error
+        let _guard = SttyEchoGuard;
+
         let mut input = String::new();
-        let res = io::stdin().read_line(&mut input);
-        let _ = Command::new("stty").arg("echo").status();
+        io::stdin().read_line(&mut input)?;
         eprintln!();
-        res.map(|_| input.trim().to_string())
+        strip_line_terminator(&mut input);
+        Ok(input)
     }
     #[cfg(not(unix))]
     {
@@ -407,26 +437,28 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
                 "-Command",
                 "$p = Read-Host -AsSecureString; if ($p) { [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p)) }",
             ])
-            .output();
+            .output()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to invoke PowerShell for hidden input: {}", e)))?;
 
-        if let Ok(out) = output {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !s.is_empty() {
-                    return Ok(s);
-                }
-            }
+        if !output.status.success() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "PowerShell secure input failed. Failing closed to prevent secret leakage in terminal.",
+            ));
         }
-        let mut buffer = String::new();
-        io::stdin().read_line(&mut buffer)?;
-        Ok(buffer.trim().to_string())
+
+        let mut s = String::from_utf8(output.stdout)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid UTF-8 from secure input: {}", e)))?;
+        eprintln!();
+        strip_line_terminator(&mut s);
+        Ok(s)
     }
 }
 
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.5)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.6)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]
@@ -462,14 +494,25 @@ SUBCOMMANDS:
             } else {
                 use std::io::IsTerminal;
                 if io::stdin().is_terminal() {
-                    // Disable terminal echo
+                    // Disable terminal echo (fail-closed if echo cannot be disabled)
                     let prompt = format!("Enter secret value for '{}' (input hidden): ", key_name);
-                    read_password_hidden(&prompt).unwrap_or_default().trim().to_string()
+                    match read_password_hidden(&prompt) {
+                        Ok(val) => val,
+                        Err(e) => {
+                            eprintln!("❌ Security failure reading hidden secret: {}", e);
+                            eprintln!("🛑 Aborting: SecretGuard refuses to read secrets with terminal echo enabled.");
+                            process::exit(1);
+                        }
+                    }
                 } else {
                     // Piped stdin
                     let mut buffer = String::new();
-                    let _ = io::stdin().read_line(&mut buffer);
-                    buffer.trim().to_string()
+                    if let Err(e) = io::stdin().read_line(&mut buffer) {
+                        eprintln!("❌ Failed to read secret from stdin: {}", e);
+                        process::exit(1);
+                    }
+                    strip_line_terminator(&mut buffer);
+                    buffer
                 }
             };
 
@@ -608,7 +651,7 @@ SUBCOMMANDS:
                     process::exit(1);
                 });
 
-            // Asynchronously sanitize child stderr using chunk/delimiter streaming to preserve binary fidelity
+            // Asynchronously sanitize child stderr using chunk/delimiter streaming while preserving binary fidelity
             let stderr_opt = child.stderr.take();
             let stderr_thread = std::thread::spawn(move || {
                 if let Some(stderr) = stderr_opt {
@@ -621,9 +664,16 @@ SUBCOMMANDS:
                         if n == 0 {
                             break;
                         }
-                        let text_chunk = String::from_utf8_lossy(&buf);
-                        let res = local_engine.scan_and_sanitize(&text_chunk);
-                        let _ = handle.write_all(res.sanitized_text.as_bytes());
+                        match std::str::from_utf8(&buf) {
+                            Ok(text_chunk) => {
+                                let res = local_engine.scan_and_sanitize(text_chunk);
+                                let _ = handle.write_all(res.sanitized_text.as_bytes());
+                            }
+                            Err(_) => {
+                                // Raw binary chunk: preserve byte-for-byte without lossy UTF-8 conversion
+                                let _ = handle.write_all(&buf);
+                            }
+                        }
                         let _ = handle.flush();
                         buf.clear();
                     }
@@ -639,9 +689,16 @@ SUBCOMMANDS:
                     if n == 0 {
                         break;
                     }
-                    let text_chunk = String::from_utf8_lossy(&buf);
-                    let res = engine.scan_and_sanitize(&text_chunk);
-                    let _ = handle.write_all(res.sanitized_text.as_bytes());
+                    match std::str::from_utf8(&buf) {
+                        Ok(text_chunk) => {
+                            let res = engine.scan_and_sanitize(text_chunk);
+                            let _ = handle.write_all(res.sanitized_text.as_bytes());
+                        }
+                        Err(_) => {
+                            // Raw binary chunk: preserve byte-for-byte without lossy UTF-8 conversion
+                            let _ = handle.write_all(&buf);
+                        }
+                    }
                     let _ = handle.flush();
                     buf.clear();
                 }

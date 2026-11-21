@@ -7,7 +7,7 @@ pub struct SetupWizard;
 
 impl SetupWizard {
     pub fn run_interactive(_auto_yes: bool) {
-        println!("\n🛡️  SecretGuard 10-Second Setup Wizard (v0.3.5)");
+        println!("\n🛡️  SecretGuard 10-Second Setup Wizard (v0.3.6)");
         println!("Activating All 3 Security Pillars for Your Workstation & AI Agents\n");
 
         let mut actions_taken = Vec::new();

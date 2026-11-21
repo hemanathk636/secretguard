@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.5)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.6)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.5
+    rev: v0.3.6
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -498,6 +498,19 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 📦 What's New in v0.3.6 (Production Vault & CI Hardening)
+
+SecretGuard v0.3.6 delivers comprehensive defense-in-depth hardening across local keystore persistence, terminal echo safety, binary streaming, and CI verification:
+* **Fail-Closed Hidden Password Input:** Interactive `vault set` enforces zero-dependency terminal echo suppression. On Unix, an RAII drop guard guarantees terminal echo restoration even on panic or error, failing closed if `stty -echo` is denied. On Windows, secure input uses `Read-Host -AsSecureString` without plaintext fallback.
+* **True Atomic File Replacement:** Replaces vault files with atomic `fs::rename` within the same filesystem without risky multi-step backups, and explicitly propagates parent directory synchronization errors (`fsync`) on Unix to ensure filesystem journal commit.
+* **Byte-for-Byte Binary Output Stream Preservation:** `secretguard vault run` inspects child output streams with `std::str::from_utf8`. Valid text is sanitized in real-time while arbitrary binary data (tarballs, binaries, images) is preserved byte-for-byte without Unicode replacement character corruption.
+* **Safe Line Terminator Trimming:** Uses `strip_line_terminator` to trim only `\r\n` or `\n`, preserving intentional leading and trailing whitespace in passwords and cryptographic keys.
+* **Private User Keystore Fail-Closed:** Explicitly rejects falling back to shared `/tmp` directories, enforcing private per-user directories (`0o700` mode) and failing closed if neither `HOME` nor `USERPROFILE` is accessible.
+* **Self-Contained Git History Scanner Tests:** All Git history cleaner and time-machine tests dynamically initialize self-contained temporary repositories, ensuring 100% test pass rates across source tarballs, package builds, and headless CI checkouts.
+* **GitHub Action Strict Cryptographic Verification:** GitHub Action makes missing SHA-256 checksums a hard build failure (`exit 1`), refusing unverified execution.
 
 ---
 

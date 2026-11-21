@@ -10,6 +10,10 @@ static VAULT_TEST_MUTEX: Mutex<()> = Mutex::new(());
 #[test]
 fn test_vault_aes_gcm_roundtrip() {
     let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let temp_dir = std::env::temp_dir().join(format!("sg_roundtrip_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let key = derive_vault_key(Some("test-passphrase-123")).expect("Key derivation failed");
     let plaintext = b"sk-proj-super-secret-production-openai-key";
 
@@ -19,11 +23,18 @@ fn test_vault_aes_gcm_roundtrip() {
 
     let decrypted = decrypt_vault_payload(&encrypted, &key).expect("Decryption failed");
     assert_eq!(decrypted, plaintext);
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_vault_wrong_key_fails() {
     let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let temp_dir = std::env::temp_dir().join(format!("sg_wrong_key_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let key1 = derive_vault_key(Some("correct-key")).expect("Key derivation failed");
     let key2 = derive_vault_key(Some("wrong-key")).expect("Key derivation failed");
     let plaintext = b"my-private-database-password";
@@ -32,11 +43,18 @@ fn test_vault_wrong_key_fails() {
     let result = decrypt_vault_payload(&encrypted, &key2);
 
     assert!(result.is_err());
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_vault_store_serialization() {
     let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let temp_dir = std::env::temp_dir().join(format!("sg_store_ser_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let mut store = VaultStore::default();
     store
         .secrets
@@ -54,6 +72,9 @@ fn test_vault_store_serialization() {
     assert_eq!(loaded.secrets.len(), 2);
     assert_eq!(loaded.secrets.get("OPENAI_KEY").unwrap(), "sk-1234567890");
     assert_eq!(loaded.secrets.get("STRIPE_KEY").unwrap(), "sk_live_998877");
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -66,6 +87,7 @@ fn test_corrupted_vault_file_fails_loudly_without_data_loss() {
     // Write bogus corrupted ciphertext
     fs::write(&corrupt_vault_path, b"not_valid_aes_gcm_ciphertext_at_all").unwrap();
 
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
     std::env::set_var("SECRETGUARD_VAULT_PATH", &corrupt_vault_path);
 
     // Attempting to load MUST return Err, NEVER unwrap_or_default
@@ -74,6 +96,7 @@ fn test_corrupted_vault_file_fails_loudly_without_data_loss() {
 
     // Cleanup
     std::env::remove_var("SECRETGUARD_VAULT_PATH");
+    std::env::remove_var("SECRETGUARD_DIR");
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
@@ -87,6 +110,7 @@ fn test_corrupted_master_key_aborts_to_prevent_data_loss() {
     // Write truncated key (< 32 bytes)
     fs::write(&corrupt_key_path, b"short_16_byte_key!").unwrap();
 
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
     std::env::set_var("SECRETGUARD_MASTER_KEY_PATH", &corrupt_key_path);
 
     let result = get_or_generate_master_key();
@@ -96,6 +120,7 @@ fn test_corrupted_master_key_aborts_to_prevent_data_loss() {
 
     // Cleanup
     std::env::remove_var("SECRETGUARD_MASTER_KEY_PATH");
+    std::env::remove_var("SECRETGUARD_DIR");
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
@@ -106,6 +131,7 @@ fn test_atomic_unique_tmp_file_during_save_vault() {
     let _ = fs::create_dir_all(&temp_dir);
     let vault_path = temp_dir.join("vault.enc");
 
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
     std::env::set_var("SECRETGUARD_VAULT_PATH", &vault_path);
 
     let mut store = VaultStore::default();
@@ -117,9 +143,12 @@ fn test_atomic_unique_tmp_file_during_save_vault() {
 
     // Verify temp files were cleanly cleaned up
     let entries: Vec<_> = fs::read_dir(&temp_dir).unwrap().filter_map(|e| e.ok()).collect();
-    assert_eq!(entries.len(), 1, "Only final vault file should remain; temporary files must be cleaned up");
+    // vault.enc and .master.key exist, but no .vault.*.tmp files
+    let tmp_files: Vec<_> = entries.iter().filter(|e| e.file_name().to_string_lossy().contains(".tmp")).collect();
+    assert_eq!(tmp_files.len(), 0, "All temporary files must be cleaned up");
 
     std::env::remove_var("SECRETGUARD_VAULT_PATH");
+    std::env::remove_var("SECRETGUARD_DIR");
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
@@ -130,6 +159,7 @@ fn test_windows_and_unix_existing_vault_replacement() {
     let _ = fs::create_dir_all(&temp_dir);
     let vault_path = temp_dir.join("vault.enc");
 
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
     std::env::set_var("SECRETGUARD_VAULT_PATH", &vault_path);
 
     let mut store = VaultStore::default();
@@ -148,5 +178,23 @@ fn test_windows_and_unix_existing_vault_replacement() {
     assert_eq!(loaded.secrets.get("KEY3").unwrap(), "val3");
 
     std::env::remove_var("SECRETGUARD_VAULT_PATH");
+    std::env::remove_var("SECRETGUARD_DIR");
     let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_strip_line_terminator_preserves_whitespace() {
+    use secretguard::vault::strip_line_terminator;
+
+    let mut crlf = "  secret_with_spaces  \r\n".to_string();
+    strip_line_terminator(&mut crlf);
+    assert_eq!(crlf, "  secret_with_spaces  ");
+
+    let mut lf = "password 123\n".to_string();
+    strip_line_terminator(&mut lf);
+    assert_eq!(lf, "password 123");
+
+    let mut no_term = "  leading_and_trailing  ".to_string();
+    strip_line_terminator(&mut no_term);
+    assert_eq!(no_term, "  leading_and_trailing  ");
 }
