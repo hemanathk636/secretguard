@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.6)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.7)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.6
+    rev: v0.3.7
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -498,6 +498,16 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 📦 What's New in v0.3.7 (Enterprise Vault & Stream Hardening)
+
+SecretGuard v0.3.7 closes all remaining security and edge-case findings identified during security review:
+* **Fail-Closed Private Directory Permissions:** Enforces and verifies `0o700` permissions on both default (`~/.secretguard`) and custom (`SECRETGUARD_DIR`) directory paths, failing closed if permissions cannot be established.
+* **Native Windows Atomic Replacement (`ReplaceFileW`):** Implements zero-dependency Win32 `ReplaceFileW` with full OS replacement and recovery semantics, replacing temporary vault files atomically on Windows NTFS volumes.
+* **Binary Output Credential Redaction:** `secretguard vault run` stream processing now inspects binary chunks for embedded credentials; clean binary data is preserved byte-for-byte, while embedded secrets are strictly redacted (preventing binary-embedded credential leak bypasses).
+* **Terminal State Safety & Signal Transparency:** Explicitly restores terminal echo before function exit in addition to RAII drop unwinding, and documents userspace termination boundaries under uncatchable signals (`SIGKILL`, `panic = abort`).
 
 ---
 

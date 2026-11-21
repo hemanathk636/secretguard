@@ -198,3 +198,28 @@ fn test_strip_line_terminator_preserves_whitespace() {
     strip_line_terminator(&mut no_term);
     assert_eq!(no_term, "  leading_and_trailing  ");
 }
+
+#[test]
+fn test_binary_stream_preservation_and_credential_sanitization() {
+    use secretguard::vault::sanitize_stream_buffer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+
+    // 1. Pure binary with invalid UTF-8 bytes: must be preserved byte-for-byte
+    let raw_binary = vec![0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x00, 0x42];
+    let mut out_binary = Vec::new();
+    sanitize_stream_buffer(&raw_binary, &engine, &mut out_binary).unwrap();
+    assert_eq!(out_binary, raw_binary, "Clean binary chunks must be preserved unmodified byte-for-byte");
+
+    // 2. Binary with embedded ASCII credential: MUST detect and redact credential (cannot bypass)
+    let mut tainted_binary = vec![0x1f, 0x8b, 0x08];
+    tainted_binary.extend_from_slice(b"sk-proj-embeddedTokenInBinary01234567890abcdef");
+    tainted_binary.extend_from_slice(&[0x00, 0xff]);
+
+    let mut out_tainted = Vec::new();
+    sanitize_stream_buffer(&tainted_binary, &engine, &mut out_tainted).unwrap();
+    let out_str = String::from_utf8_lossy(&out_tainted);
+    assert!(!out_str.contains("sk-proj-embeddedTokenInBinary01234567890abcdef"), "Embedded credential in binary output MUST be redacted");
+    assert!(out_str.contains("[REDACTED_OPENAI_KEY]") || out_str.contains("[REDACTED"), "Credential must be redacted in output");
+}
