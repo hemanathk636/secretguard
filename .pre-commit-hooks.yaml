@@ -1,0 +1,23 @@
+- id: secretguard
+  name: SecretGuard Secret & Credential Scanner
+  description: Sub-millisecond (15µs) native secret interceptor and credential scanner for developers and AI agents.
+  entry: secretguard scan .
+  language: rust
+  pass_filenames: false
+  stages: [pre-commit, pre-push]
+
+- id: secretguard-radar
+  name: SecretGuard Trojan Source & Prompt Injection Radar
+  description: Detects Bidi Unicode overrides (CVE-2021-42574) and zero-width prompt injection tokens.
+  entry: secretguard shield radar .
+  language: rust
+  pass_filenames: false
+  stages: [pre-commit, pre-push]
+
+- id: secretguard-compliance
+  name: SecretGuard Compliance Auditor
+  description: Generates SOC 2, HIPAA, and GDPR compliance audit verification.
+  entry: secretguard audit report .
+  language: rust
+  pass_filenames: false
+  stages: [pre-push]

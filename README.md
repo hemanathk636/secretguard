@@ -208,6 +208,19 @@ When a developer attempts to commit an unmasked key or credential:
 Please redact credentials before committing. (Use 'git commit --no-verify' to bypass if intentional)
 ```
 
+### Using with the Official `pre-commit` Framework
+
+If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/hemanathk636/secretguard
+    rev: v0.3.0
+    hooks:
+      - id: secretguard
+      - id: secretguard-radar
+```
+
 ---
 
 ## 🔎 Codebase & Config File Scanner (`scan`)
