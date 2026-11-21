@@ -43,6 +43,7 @@ POPULAR SHORTCUTS (Fast Direct Access):
     panic [KEY]               Fast alias for 'audit panic' (Emergency lockdown kill-switch)
     doctor                    Runs instant diagnostics, latency benchmarks & health checks
     dashboard [--port 3737]   Launch live in-memory web security dashboard & sandbox
+    config [init|show|path]   Manage secretguard.toml, custom regexes & whitelists
 "#
     );
 }
@@ -1099,6 +1100,10 @@ fn main() {
         "dashboard" => {
             let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
             secretguard::dashboard::DashboardServer::run_cli(&target_args, &engine);
+        }
+        "config" => {
+            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            secretguard::config::SecretGuardConfig::run_cli(&target_args);
         }
         "scan" => {
             let json_mode = args.iter().any(|a| a == "--json");

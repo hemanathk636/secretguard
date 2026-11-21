@@ -3,6 +3,7 @@ pub mod canary;
 pub mod clipboard;
 pub mod compliance;
 pub mod completions;
+pub mod config;
 pub mod dashboard;
 pub mod docker;
 pub mod encoding;
@@ -39,17 +40,44 @@ pub struct ScanResult {
 
 pub struct SecretGuardEngine {
     patterns: Vec<SecretPattern>,
+    whitelist: Vec<String>,
 }
 
 impl SecretGuardEngine {
     pub fn new() -> Self {
+        let cfg = config::SecretGuardConfig::load();
+        let mut patterns = get_high_confidence_patterns();
+
+        for cp in &cfg.custom_patterns {
+            if let Ok(re) = regex::Regex::new(&cp.regex) {
+                patterns.push(SecretPattern {
+                    name: Box::leak(cp.name.clone().into_boxed_str()),
+                    description: Box::leak(cp.description.clone().unwrap_or_default().into_boxed_str()),
+                    regex: re,
+                });
+            }
+        }
+
         Self {
-            patterns: get_high_confidence_patterns(),
+            patterns,
+            whitelist: cfg.whitelist,
         }
     }
 
     /// Fast scan, sanitize (with redaction masks), and generate format-preserving synthetic mocks.
     pub fn scan_and_sanitize(&self, input: &str) -> ScanResult {
+        // Fast-path whitelist check
+        for w in &self.whitelist {
+            if !w.is_empty() && (input.trim() == w || input.contains(w)) {
+                return ScanResult {
+                    has_secret: false,
+                    sanitized_text: input.to_string(),
+                    synthetic_text: input.to_string(),
+                    matched_rules: Vec::new(),
+                };
+            }
+        }
+
         let mut sanitized = input.to_string();
         let mut synthetic = input.to_string();
         let mut matched_rules = Vec::new();
