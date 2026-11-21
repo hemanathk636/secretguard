@@ -21,6 +21,7 @@ USAGE:
     clipboard <SUBCOMMAND>    OS clipboard secret interceptor & auto-destruct timer (watch/clean).
     radar [DIR]               Trojan Source (CVE-2021-42574) & invisible prompt injection radar.
     docker [DOCKERFILE]       Docker & container image layer X-Ray (baked-in ENV/ARG leaks).
+    proxy [PORT]              Offline Mock API server (mock OpenAI & Stripe responses locally).
 
 📦 2. ZERO-KNOWLEDGE KEYSTORE & TEAM MESH:
     vault <SUBCOMMAND>        Zero-knowledge AES-256-GCM memory keystore (import-env / run).
@@ -881,6 +882,14 @@ fn main() {
                 Vec::new()
             };
             secretguard::docker::DockerScanner::run_cli(&target_args, &engine);
+        }
+        "proxy" | "mock-proxy" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::proxy::MockProxyServer::run_cli(&target_args);
         }
         _ => {
             print_usage();
