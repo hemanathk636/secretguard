@@ -92,5 +92,65 @@ pub fn get_high_confidence_patterns() -> Vec<SecretPattern> {
             description: "Postman Workspace API Token",
             regex: Regex::new(r"\bPMAK-[a-f0-9]{24}-[a-f0-9]{34}\b").unwrap(),
         },
+        // NPM Access Token
+        SecretPattern {
+            name: "NPM Access Token",
+            description: "Node Package Manager Automation/Publishing Token",
+            regex: Regex::new(r"\bnpm_[A-Za-z0-9]{36}\b").unwrap(),
+        },
+        // Twilio API Key
+        SecretPattern {
+            name: "Twilio API Key",
+            description: "Twilio Telephony & SMS API Key",
+            regex: Regex::new(r"\bSK[0-9a-fA-F]{32}\b").unwrap(),
+        },
+        // Resend API Key
+        SecretPattern {
+            name: "Resend API Key",
+            description: "Resend Email Service API Token",
+            regex: Regex::new(r"\bre_[a-zA-Z0-9]{32,}\b").unwrap(),
+        },
+        // Sentry Auth Token
+        SecretPattern {
+            name: "Sentry Auth Token",
+            description: "Sentry Error Monitoring Authentication Token",
+            regex: Regex::new(r"\bsntrys_[a-zA-Z0-9]{64}\b").unwrap(),
+        },
+        // Shopify Access Token
+        SecretPattern {
+            name: "Shopify Token",
+            description: "Shopify Admin/Storefront Access Token",
+            regex: Regex::new(r"\bshpat_[a-fA-F0-9]{32}\b").unwrap(),
+        },
+        // Square Access Token
+        SecretPattern {
+            name: "Square Access Token",
+            description: "Square Payments Merchant Access Token",
+            regex: Regex::new(r"\bsq0atp-[0-9A-Za-z\-_]{22}\b").unwrap(),
+        },
+        // PyPI API Token
+        SecretPattern {
+            name: "PyPI Token",
+            description: "Python Package Index Upload API Token",
+            regex: Regex::new(r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9\-_]{50,}\b").unwrap(),
+        },
+        // Discord Bot Token
+        SecretPattern {
+            name: "Discord Bot Token",
+            description: "Discord Application Bot Token",
+            regex: Regex::new(r"\b[MN][A-Za-z0-9]{23,25}\.[A-Za-z0-9-_]{6}\.[A-Za-z0-9-_]{27,38}\b").unwrap(),
+        },
+        // Grafana Service Account Token
+        SecretPattern {
+            name: "Grafana Token",
+            description: "Grafana Cloud / Service Account Token",
+            regex: Regex::new(r"\bglsa_[A-Za-z0-9]{32}_[A-Za-z0-9]{8}\b").unwrap(),
+        },
+        // Linear API Key
+        SecretPattern {
+            name: "Linear API Key",
+            description: "Linear Project Management Personal API Key",
+            regex: Regex::new(r"\blin_api_[a-zA-Z0-9]{40}\b").unwrap(),
+        },
     ]
 }

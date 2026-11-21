@@ -70,3 +70,43 @@ fn test_contextual_password_redaction() {
     assert!(res.has_secret);
     assert!(!res.sanitized_text.contains("X9#kLm!2$pQ8wZ10_live"));
 }
+
+#[test]
+fn test_cloud_providers_expansion() {
+    let engine = SecretGuardEngine::new();
+
+    // 1. NPM Automation Token
+    let npm_token = format!("{}_{}", "npm", "1234567890abcdef1234567890abcdef1234");
+    let npm_raw = format!("npm publish --token {}", npm_token);
+    let res = engine.scan_and_sanitize(&npm_raw);
+    assert!(res.has_secret);
+    assert!(res.matched_rules.contains(&"NPM Access Token".to_string()));
+
+    // 2. Resend API Key
+    let resend_token = format!("{}_{}", "re", "1234567890abcdef1234567890abcdef");
+    let resend_raw = format!("RESEND_API_KEY={}", resend_token);
+    let res = engine.scan_and_sanitize(&resend_raw);
+    assert!(res.has_secret);
+    assert!(res.matched_rules.contains(&"Resend API Key".to_string()));
+
+    // 3. Twilio API Key
+    let twilio_token = format!("{}{}", "SK", "1234567890abcdef1234567890abcdef");
+    let twilio_raw = format!("TWILIO_API_KEY={}", twilio_token);
+    let res = engine.scan_and_sanitize(&twilio_raw);
+    assert!(res.has_secret);
+    assert!(res.matched_rules.contains(&"Twilio API Key".to_string()));
+
+    // 4. Shopify Token
+    let shopify_token = format!("{}_{}", "shpat", "1234567890abcdef1234567890abcdef");
+    let shopify_raw = format!("SHOPIFY_TOKEN={}", shopify_token);
+    let res = engine.scan_and_sanitize(&shopify_raw);
+    assert!(res.has_secret);
+    assert!(res.matched_rules.contains(&"Shopify Token".to_string()));
+
+    // 5. Linear API Key
+    let linear_token = format!("{}_{}", "lin_api", "1234567890abcdef1234567890abcdef12345678");
+    let linear_raw = format!("LINEAR_KEY={}", linear_token);
+    let res = engine.scan_and_sanitize(&linear_raw);
+    assert!(res.has_secret);
+    assert!(res.matched_rules.contains(&"Linear API Key".to_string()));
+}

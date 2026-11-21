@@ -51,10 +51,28 @@ impl GhostVirtualizer {
             format!("sk-ghost-{}", &hash[0..36])
         } else if real_key.starts_with("AKIA") || real_key.starts_with("ASIA") {
             format!("AKIA_GHOST_{}", &hash[0..12].to_uppercase())
-        } else if real_key.starts_with("ghp_") {
+        } else if real_key.starts_with("ghp_") || real_key.starts_with("gho_") {
             format!("ghp_ghost_{}", &hash[0..32])
         } else if real_key.starts_with("sk_live_") || real_key.starts_with("sk_test_") {
             format!("sk_ghost_{}", &hash[0..28])
+        } else if real_key.starts_with("npm_") {
+            format!("npm_ghost_{}", &hash[0..32])
+        } else if real_key.starts_with("re_") {
+            format!("re_ghost_{}", &hash[0..30])
+        } else if real_key.starts_with("hf_") {
+            format!("hf_ghost_{}", &hash[0..30])
+        } else if real_key.starts_with("AIza") {
+            format!("AIza_GHOST_{}", &hash[0..28])
+        } else if real_key.starts_with("shpat_") {
+            format!("shpat_ghost_{}", &hash[0..26])
+        } else if real_key.starts_with("sntrys_") {
+            format!("sntrys_ghost_{}", &hash[0..32])
+        } else if real_key.starts_with("SG.") {
+            format!("SG.ghost_{}", &hash[0..32])
+        } else if real_key.starts_with("PMAK-") {
+            format!("PMAK-ghost-{}", &hash[0..24])
+        } else if real_key.starts_with("lin_api_") {
+            format!("lin_ghost_{}", &hash[0..32])
         } else {
             format!("ghost_sec_{}", &hash[0..24])
         }
