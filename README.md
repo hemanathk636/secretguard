@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.8)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.9)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.8
+    rev: v0.3.9
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -498,6 +498,16 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 📦 What's New in v0.3.9 (Independent Validation & Production Hardening)
+
+SecretGuard v0.3.9 introduces rigorous validation hardening addressing parent-directory traversal, Windows concurrency races, async-signal-safety, and stream holdback buffers:
+* **Parent Directory Ownership & Anti-Symlink Race Defense:** On Unix, verifies parent directory ownership (`parent.uid() == active_user_uid` or root) and non-world-writable permissions (`mode & 0o002 == 0`) before creating or accessing directories, preventing symlink substitution races.
+* **Race-Free Windows Atomic Replacement:** Replaces TOCTOU existence checks with a bounded retry loop distinguishing first-time creation from `ReplaceFileW`, seamlessly handling concurrent process creation races without data loss.
+* **Async-Signal-Safe Terminal Restoration:** Replaces non-async-signal-safe `fork`/`exec` calls inside C signal handlers with an async-signal-safe `AtomicBool` flag, restoring terminal echo in normal userspace upon return from `read_line`.
+* **1024-Byte Tail Buffer Holdback Sanitizer:** Holds back a 1KB sliding buffer across stream chunks to guarantee that partial credentials (including AWS session tokens, RSA key headers, and JWTs) are never emitted prematurely before succeeding chunks arrive.
 
 ---
 

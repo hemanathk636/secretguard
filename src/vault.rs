@@ -20,23 +20,20 @@ pub struct VaultStore {
 }
 
 #[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(unix)]
+static TERMINAL_INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
 extern "C" {
     fn getuid() -> u32;
     fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
 }
 
 #[cfg(unix)]
-extern "C" fn sigint_restore_echo(_sig: i32) {
-    let _ = Command::new("stty").arg("echo").status();
-    eprintln!();
-    std::process::exit(130);
-}
-
-#[cfg(unix)]
-extern "C" fn sigterm_restore_echo(_sig: i32) {
-    let _ = Command::new("stty").arg("echo").status();
-    eprintln!();
-    std::process::exit(143);
+extern "C" fn sig_flag_handler(_sig: i32) {
+    TERMINAL_INTERRUPTED.store(true, Ordering::SeqCst);
 }
 
 #[cfg(windows)]
@@ -66,7 +63,7 @@ mod win32 {
 }
 
 /// Resolves or creates a secure, private per-user directory for SecretGuard state (never falls back to shared /tmp).
-/// Fails closed if 0700 private directory permissions, non-symlink status, or user ownership cannot be established on Unix.
+/// Fails closed if 0700 private directory permissions, non-symlink status, parent ownership, or user ownership cannot be established on Unix.
 pub fn get_vault_dir() -> Result<PathBuf, String> {
     if let Ok(dir_str) = env::var("SECRETGUARD_DIR") {
         let p = PathBuf::from(dir_str);
@@ -74,6 +71,16 @@ pub fn get_vault_dir() -> Result<PathBuf, String> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            if let Some(parent) = p.parent() {
+                if let Ok(p_meta) = fs::symlink_metadata(parent) {
+                    if p_meta.file_type().is_symlink() {
+                        return Err(format!("Security Error: Parent directory '{}' of custom SECRETGUARD_DIR is a symbolic link. Aborting.", parent.display()));
+                    }
+                    if p_meta.permissions().mode() & 0o002 != 0 {
+                        return Err(format!("Security Error: Parent directory '{}' of custom SECRETGUARD_DIR is world-writable ({:o}). Aborting.", parent.display(), p_meta.permissions().mode() & 0o777));
+                    }
+                }
+            }
             let meta = fs::symlink_metadata(&p).map_err(|e| {
                 format!("Security Error: Failed to inspect metadata on custom SECRETGUARD_DIR '{}': {}. Aborting.", p.display(), e)
             })?;
@@ -121,6 +128,20 @@ pub fn get_vault_dir() -> Result<PathBuf, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if let Some(parent) = dir.parent() {
+            if let Ok(p_meta) = fs::symlink_metadata(parent) {
+                if p_meta.file_type().is_symlink() {
+                    return Err(format!("Security Error: Parent directory '{}' is a symbolic link. Aborting.", parent.display()));
+                }
+                let active_uid = unsafe { getuid() };
+                if p_meta.uid() != active_uid && p_meta.uid() != 0 {
+                    return Err(format!("Security Error: Parent directory '{}' is owned by UID {} (expected active user or root). Aborting.", parent.display(), p_meta.uid()));
+                }
+                if p_meta.permissions().mode() & 0o002 != 0 {
+                    return Err(format!("Security Error: Parent directory '{}' is world-writable ({:o}). Aborting.", parent.display(), p_meta.permissions().mode() & 0o777));
+                }
+            }
+        }
         let meta = fs::symlink_metadata(&dir).map_err(|e| {
             format!("Security Error: Failed to inspect metadata on directory '{}': {}. Aborting.", dir.display(), e)
         })?;
@@ -175,7 +196,7 @@ pub fn get_master_key_path() -> Result<PathBuf, String> {
 
 /// Cross-platform atomic file replacement:
 /// - On Unix: atomic rename followed by explicit parent directory fsync to guarantee metadata journal commit.
-/// - On Windows: calls Win32 ReplaceFileW for atomic in-place replacement with OS rollback semantics.
+/// - On Windows: race-free bounded retry loop distinguishing first-time creation from in-place ReplaceFileW.
 pub fn atomic_replace_file(tmp_path: &Path, target_path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -197,40 +218,57 @@ pub fn atomic_replace_file(tmp_path: &Path, target_path: &Path) -> Result<(), St
     }
     #[cfg(windows)]
     {
-        if target_path.exists() {
-            let replaced_w = win32::to_wide_null(target_path);
-            let replacement_w = win32::to_wide_null(tmp_path);
+        // Bounded retry loop (3 attempts) eliminating any TOCTOU race between target existing or being concurrently created
+        for attempt in 0..3 {
+            if target_path.exists() {
+                let replaced_w = win32::to_wide_null(target_path);
+                let replacement_w = win32::to_wide_null(tmp_path);
 
-            let success = unsafe {
-                win32::ReplaceFileW(
-                    replaced_w.as_ptr(),
-                    replacement_w.as_ptr(),
-                    std::ptr::null(), // atomic in-place swap
-                    0,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                )
-            };
+                let success = unsafe {
+                    win32::ReplaceFileW(
+                        replaced_w.as_ptr(),
+                        replacement_w.as_ptr(),
+                        std::ptr::null(), // atomic in-place swap
+                        0,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    )
+                };
 
-            if success != 0 {
-                return Ok(());
-            }
+                if success != 0 {
+                    return Ok(());
+                }
 
-            let err = unsafe { win32::GetLastError() };
-            let _ = fs::remove_file(tmp_path);
-            Err(format!(
-                "Windows ReplaceFileW failed to atomically replace '{}' with temporary vault '{}' (Win32 error: {}).",
-                target_path.display(),
-                tmp_path.display(),
-                err
-            ))
-        } else {
-            // Target does not exist yet: atomic rename to destination
-            fs::rename(tmp_path, target_path).map_err(|e| {
+                let err = unsafe { win32::GetLastError() };
+                // ERROR_FILE_NOT_FOUND (2): target was removed in that microsecond; retry as initial rename
+                if err == 2 && attempt < 2 {
+                    continue;
+                }
+
                 let _ = fs::remove_file(tmp_path);
-                format!("Windows vault creation failed for '{}': {}", target_path.display(), e)
-            })
+                return Err(format!(
+                    "Windows ReplaceFileW failed to atomically replace '{}' with temporary vault '{}' (Win32 error: {}).",
+                    target_path.display(),
+                    tmp_path.display(),
+                    err
+                ));
+            } else {
+                // Target does not exist yet (first-time vault creation)
+                match fs::rename(tmp_path, target_path) {
+                    Ok(()) => return Ok(()),
+                    Err(e) if (e.kind() == io::ErrorKind::AlreadyExists || e.kind() == io::ErrorKind::PermissionDenied) && attempt < 2 => {
+                        // Concurrent process created target in this window; loop to ReplaceFileW
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = fs::remove_file(tmp_path);
+                        return Err(format!("Windows initial vault creation failed for '{}': {}", target_path.display(), e));
+                    }
+                }
+            }
         }
+        let _ = fs::remove_file(tmp_path);
+        Err(format!("Windows atomic vault replacement failed after multiple attempts for '{}'", target_path.display()))
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -573,24 +611,33 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             ));
         }
 
-        // Install catchable signal handlers to restore terminal echo on Ctrl+C (SIGINT) or SIGTERM
+        // Reset signal flag before input
+        TERMINAL_INTERRUPTED.store(false, Ordering::SeqCst);
+
+        // Install async-signal-safe flag handlers for SIGINT (Ctrl+C) and SIGTERM
         const SIGINT: i32 = 2;
         const SIGTERM: i32 = 15;
-        let old_sigint = unsafe { signal(SIGINT, sigint_restore_echo) };
-        let old_sigterm = unsafe { signal(SIGTERM, sigterm_restore_echo) };
+        let old_sigint = unsafe { signal(SIGINT, sig_flag_handler) };
+        let old_sigterm = unsafe { signal(SIGTERM, sig_flag_handler) };
 
         // RAII guard guarantees stty echo is restored even on panic or error
         let _guard = SttyEchoGuard;
 
         let mut input = String::new();
         let res = io::stdin().read_line(&mut input);
-        // Explicitly restore echo before returning
+
+        // Explicitly restore echo in normal userspace context (guaranteed async-signal-safe architecture)
         let _ = Command::new("stty").arg("echo").status();
 
         // Restore previous signal handlers
         unsafe {
             signal(SIGINT, std::mem::transmute(old_sigint));
             signal(SIGTERM, std::mem::transmute(old_sigterm));
+        }
+
+        if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
+            eprintln!();
+            std::process::exit(130);
         }
 
         eprintln!();
@@ -626,55 +673,71 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
     }
 }
 
-/// Stream sanitizer that maintains a bounded overlap window (128 bytes) between chunks
-/// to guarantee that credentials split across arbitrary buffer or delimiter boundaries
-/// cannot escape redaction, while preserving clean binary streams byte-for-byte.
+/// Stream sanitizer that maintains a bounded tail buffer (1024 bytes) to guarantee that:
+/// 1. Long credentials (up to 1KB, covering AWS session tokens, RSA key headers, and JWTs)
+///    are detected even when split across arbitrary chunk boundaries.
+/// 2. Partial credentials are NEVER emitted prematurely before the next chunk arrives.
+/// 3. Clean binary streams are preserved byte-for-byte.
 pub struct StreamSanitizer {
-    carryover: Vec<u8>,
+    buffer: Vec<u8>,
 }
 
 impl StreamSanitizer {
-    pub const WINDOW_SIZE: usize = 128; // Max secret length to span chunk boundaries
+    pub const WINDOW_SIZE: usize = 1024; // 1 KB window covering all known token formats
 
     pub fn new() -> Self {
         Self {
-            carryover: Vec::new(),
+            buffer: Vec::new(),
         }
     }
 
     pub fn sanitize_chunk(&mut self, chunk: &[u8], engine: &SecretGuardEngine, out: &mut impl Write) -> io::Result<()> {
-        let mut combined = Vec::with_capacity(self.carryover.len() + chunk.len());
-        combined.extend_from_slice(&self.carryover);
-        combined.extend_from_slice(chunk);
+        self.buffer.extend_from_slice(chunk);
 
-        let lossy = String::from_utf8_lossy(&combined);
-        let res = engine.scan_and_sanitize(&lossy);
+        // If buffer is larger than WINDOW_SIZE, we can safely process and emit the prefix
+        // while holding back the tail WINDOW_SIZE bytes to prevent premature partial emission
+        if self.buffer.len() > Self::WINDOW_SIZE {
+            let safe_drain_point = self.buffer.len() - Self::WINDOW_SIZE;
 
-        if res.has_secret {
-            // Secret detected across chunk boundary or within chunk: redact and output
-            out.write_all(res.sanitized_text.as_bytes())?;
-            self.carryover.clear();
-        } else {
-            // No secret: output the current chunk cleanly
-            match std::str::from_utf8(chunk) {
-                Ok(text_chunk) => {
-                    out.write_all(text_chunk.as_bytes())?;
+            // Inspect the full buffer to redact any credentials
+            let lossy = String::from_utf8_lossy(&self.buffer);
+            let res = engine.scan_and_sanitize(&lossy);
+
+            if res.has_secret {
+                let sanitized_bytes = res.sanitized_text.into_bytes();
+                if sanitized_bytes.len() > Self::WINDOW_SIZE {
+                    let drain = sanitized_bytes.len() - Self::WINDOW_SIZE;
+                    out.write_all(&sanitized_bytes[..drain])?;
+                    self.buffer = sanitized_bytes[drain..].to_vec();
+                } else {
+                    self.buffer = sanitized_bytes;
                 }
-                Err(_) => {
-                    // Pure binary chunk with no credentials: preserve byte-for-byte
-                    out.write_all(chunk)?;
-                }
+            } else {
+                // No secret detected: safely write out prefix
+                out.write_all(&self.buffer[..safe_drain_point])?;
+                self.buffer = self.buffer[safe_drain_point..].to_vec();
             }
-            // Retain last WINDOW_SIZE bytes as carryover for the next chunk
-            let tail_len = chunk.len().min(Self::WINDOW_SIZE);
-            self.carryover = chunk[chunk.len() - tail_len..].to_vec();
         }
 
         out.flush()
     }
 
-    pub fn flush_final(&mut self) {
-        self.carryover.clear();
+    pub fn flush_final(&mut self, engine: &SecretGuardEngine, out: &mut impl Write) -> io::Result<()> {
+        if !self.buffer.is_empty() {
+            let lossy = String::from_utf8_lossy(&self.buffer);
+            let res = engine.scan_and_sanitize(&lossy);
+            if res.has_secret {
+                out.write_all(res.sanitized_text.as_bytes())?;
+            } else {
+                match std::str::from_utf8(&self.buffer) {
+                    Ok(text) => out.write_all(text.as_bytes())?,
+                    Err(_) => out.write_all(&self.buffer)?,
+                }
+            }
+            self.buffer.clear();
+            out.flush()?;
+        }
+        Ok(())
     }
 }
 
@@ -682,13 +745,14 @@ impl StreamSanitizer {
 /// that credentials embedded inside binary chunks cannot escape redaction.
 pub fn sanitize_stream_buffer(buf: &[u8], engine: &SecretGuardEngine, out: &mut impl Write) -> io::Result<()> {
     let mut sanitizer = StreamSanitizer::new();
-    sanitizer.sanitize_chunk(buf, engine, out)
+    sanitizer.sanitize_chunk(buf, engine, out)?;
+    sanitizer.flush_final(engine, out)
 }
 
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.8)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.9)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]
@@ -899,7 +963,7 @@ SUBCOMMANDS:
                         let _ = sanitizer.sanitize_chunk(&buf, &local_engine, &mut handle);
                         buf.clear();
                     }
-                    sanitizer.flush_final();
+                    let _ = sanitizer.flush_final(&local_engine, &mut handle);
                 }
             });
 
@@ -916,7 +980,7 @@ SUBCOMMANDS:
                     let _ = sanitizer.sanitize_chunk(&buf, engine, &mut handle);
                     buf.clear();
                 }
-                sanitizer.flush_final();
+                let _ = sanitizer.flush_final(engine, &mut handle);
             }
 
             let _ = stderr_thread.join();

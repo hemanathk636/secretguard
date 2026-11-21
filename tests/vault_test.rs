@@ -241,9 +241,10 @@ fn test_stream_sanitizer_split_chunk_credential_detection() {
     let chunk2 = b"67890suffixPartAbcdef0123456789\"\n";
     let mut out2 = Vec::new();
     sanitizer.sanitize_chunk(chunk2, &engine, &mut out2).unwrap();
-    sanitizer.flush_final();
+    sanitizer.flush_final(&engine, &mut out2).unwrap();
 
     let combined_out = format!("{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2));
+    assert!(out1.is_empty(), "Partial chunk within 1024-byte window must be held back to prevent leak");
     assert!(
         !combined_out.contains("sk-proj-prefixPart1234567890suffixPartAbcdef0123456789"),
         "Credential split across chunks MUST be redacted across boundary"
@@ -253,6 +254,44 @@ fn test_stream_sanitizer_split_chunk_credential_detection() {
         "Split credential must trigger redaction in output: {}",
         combined_out
     );
+}
+
+#[test]
+fn test_stream_sanitizer_large_stream_sliding_holdback() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // Stream 2KB of non-secret filler text
+    let filler = vec![b'A'; 1500];
+    let mut out1 = Vec::new();
+    sanitizer.sanitize_chunk(&filler, &engine, &mut out1).unwrap();
+    // out1 should have drained 1500 - 1024 = 476 bytes
+    assert_eq!(out1.len(), 1500 - StreamSanitizer::WINDOW_SIZE);
+
+    // Now inject split secret in chunk 2 and chunk 3
+    let chunk2 = b"prefix_filler ghp_1234567890";
+    let mut out2 = Vec::new();
+    sanitizer.sanitize_chunk(chunk2, &engine, &mut out2).unwrap();
+
+    let chunk3 = b"12345678901234567890123456 suffix_filler\n";
+    let mut out3 = Vec::new();
+    sanitizer.sanitize_chunk(chunk3, &engine, &mut out3).unwrap();
+
+    let mut out_final = Vec::new();
+    sanitizer.flush_final(&engine, &mut out_final).unwrap();
+
+    let total = format!(
+        "{}{}{}{}",
+        String::from_utf8_lossy(&out1),
+        String::from_utf8_lossy(&out2),
+        String::from_utf8_lossy(&out3),
+        String::from_utf8_lossy(&out_final)
+    );
+    assert!(!total.contains("ghp_123456789012345678901234567890123456"), "Split GitHub token across chunks must be redacted");
+    assert!(total.contains("[REDACTED_GITHUB_TOKEN]") || total.contains("[REDACTED]"));
 }
 
 #[test]
