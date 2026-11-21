@@ -1,0 +1,66 @@
+name: 🐛 Bug Report
+description: Report a bug, crash, or unexpected behavior in SecretGuard.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue! If this is a sensitive security vulnerability, please report it via [GitHub Security Advisories](https://github.com/hemanathk636/secretguard/security/advisories/new) instead of a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: SecretGuard Version
+      description: Run `secretguard --version` and paste the output.
+      placeholder: e.g., SecretGuard v0.3.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon / ARM64)
+        - macOS (Intel / x86_64)
+        - Linux (Ubuntu / Debian)
+        - Linux (Arch / Fedora)
+        - Windows 11 / 10 (PowerShell)
+        - Windows (WSL2)
+    validations:
+      required: true
+  - type: dropdown
+    id: shell
+    attributes:
+      label: Active Shell
+      options:
+        - Zsh
+        - Bash
+        - Fish
+        - Nushell
+        - PowerShell (pwsh)
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: What commands did you run?
+      placeholder: |
+        1. Ran 'secretguard init'
+        2. Executed '...'
+        3. Observed error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs Actual Behavior
+      description: What did you expect to happen versus what actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Terminal Logs / Doctor Output
+      description: Output of `secretguard doctor` or error traces (make sure any real credentials are redacted!).
+      render: shell

@@ -1,0 +1,41 @@
+name: 🔑 Request New Secret Pattern / Cloud Provider
+description: Suggest a new API key, token, or cloud provider pattern for SecretGuard to detect.
+title: "[Pattern]: Support <Provider / Token Name>"
+labels: ["enhancement", "patterns"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping expand SecretGuard's secret detection engine! Please fill out the details below so we can add a high-confidence regex pattern.
+  - type: input
+    id: provider
+    attributes:
+      label: Cloud Provider / Service Name
+      description: e.g. Neon Postgres, Resend, Supabase, Datadog, Anthropic
+      placeholder: e.g., Neon Postgres
+    validations:
+      required: true
+  - type: input
+    id: token_format
+    attributes:
+      label: Token Format & Prefix
+      description: What does the token start with? How long is it?
+      placeholder: e.g., Starts with 're_' followed by 32 alphanumeric characters
+    validations:
+      required: true
+  - type: textarea
+    id: example_token
+    attributes:
+      label: Redacted / Mock Example Token
+      description: DO NOT paste real production credentials! Provide an artificial mock key that matches the format.
+      placeholder: e.g., re_1234567890abcdef1234567890abcdef
+    validations:
+      required: true
+  - type: input
+    id: documentation
+    attributes:
+      label: Official Documentation URL
+      description: Link to developer documentation explaining the API key format (if public).
+      placeholder: https://docs.example.com/api-keys
+    validations:
+      required: false

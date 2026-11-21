@@ -1,0 +1,41 @@
+name: ✨ Feature Request
+description: Propose a new feature, pillar command, or workflow improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We welcome feature ideas that align with SecretGuard's mission: sub-millisecond ambient security for developers and AI agents!
+  - type: dropdown
+    id: pillar
+    attributes:
+      label: Target Security Pillar
+      options:
+        - "🛡️ Pillar 1: Ambient Shield & Runtime Defense (Terminal, AI Agent, TLS, Screen)"
+        - "🔐 Pillar 2: Zero-Knowledge Keystore & Team Mesh (Vault, Honeytokens)"
+        - "⚡ Pillar 3: Repository Auditing & Remediation (Scan, Git Time-Machine, Docker)"
+        - "🛠️ Core CLI / UX / Integrations (Shell, IDE, CI/CD)"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Use Case
+      description: What challenge or friction are you facing that SecretGuard could solve?
+      placeholder: e.g. When running local Docker containers, I want to automatically inject...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution / CLI Syntax
+      description: How should the command or capability look?
+      placeholder: e.g. secretguard shield ...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Are there any existing workarounds or tools you've tried?

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 GitHub Discussions
+    url: https://github.com/hemanathk636/secretguard/discussions
+    about: Ask questions, share ideas, and talk with the SecretGuard community.
+  - name: 🛡️ Security Vulnerability Reporting
+    url: https://github.com/hemanathk636/secretguard/security/advisories/new
+    about: Privately disclose sensitive security vulnerabilities.
