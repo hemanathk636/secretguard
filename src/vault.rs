@@ -32,6 +32,7 @@ extern "C" {
     fn getuid() -> u32;
     fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
     fn siginterrupt(signum: i32, flag: i32) -> i32;
+    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
 }
 
 #[cfg(unix)]
@@ -73,92 +74,126 @@ mod win32 {
     }
 }
 
-/// Validates that `path` and its parent directory meet strict security guarantees on Unix:
-/// 1. Parent directory must exist, must not be a symlink, and must be owned by active user or root.
-/// 2. Parent directory must not be group-writable or world-writable unless it is a root-owned sticky directory (e.g. /tmp with 0o1777).
-/// 3. The target itself must not be a symlink and must be owned by active user.
+/// Validates that `path` and all intermediate ancestor directories meet strict security guarantees on Unix:
+/// 1. Every existing path component chain must not be a symlink and must be owned by active user or root.
+/// 2. No intermediate path component may be group-writable (0o020) or world-writable (0o002) unless it is a root-owned sticky directory (e.g. /tmp with 0o1777).
+/// 3. The target itself (if existing) must not be a symlink and must be owned by active user.
 /// 4. Private permissions are strictly enforced (0o700 for directories, 0o600 for files) and re-verified.
-/// Fails closed upon any filesystem metadata inspection error.
+/// Fails closed upon any filesystem metadata inspection error (except NotFound for target).
 pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let active_uid = unsafe { getuid() };
 
-        // 1. Parent directory validation
+        // 1. Validate every path component in the chain from root down to parent
         if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                let p_meta = fs::symlink_metadata(parent).map_err(|e| {
-                    format!("Security Error: Failed to inspect metadata on parent directory '{}': {}. Aborting.", parent.display(), e)
-                })?;
-
-                if p_meta.file_type().is_symlink() {
-                    return Err(format!("Security Error: Parent directory '{}' is a symbolic link. Aborting.", parent.display()));
+            let mut ancestors = Vec::new();
+            let mut curr = Some(parent);
+            while let Some(p) = curr {
+                if !p.as_os_str().is_empty() && p != Path::new("/") {
+                    ancestors.push(p);
                 }
+                curr = p.parent();
+            }
+            ancestors.reverse();
 
-                if p_meta.uid() != active_uid && p_meta.uid() != 0 {
-                    return Err(format!(
-                        "Security Error: Parent directory '{}' is owned by UID {} (expected active user UID {} or root). Aborting.",
-                        parent.display(),
-                        p_meta.uid(),
-                        active_uid
-                    ));
-                }
+            for ancestor in ancestors {
+                match fs::symlink_metadata(ancestor) {
+                    Ok(p_meta) => {
+                        if p_meta.file_type().is_symlink() {
+                            return Err(format!(
+                                "Security Error: Path component '{}' is a symbolic link. Symbolic links are strictly prohibited for vault storage.",
+                                ancestor.display()
+                            ));
+                        }
 
-                let mode = p_meta.permissions().mode();
-                if p_meta.uid() == 0 {
-                    let is_sticky = (mode & 0o1000) != 0;
-                    if !is_sticky && (mode & 0o022) != 0 {
-                        return Err(format!(
-                            "Security Error: Root-owned parent directory '{}' is writable by group/others ({:o}) without sticky bit. Aborting.",
-                            parent.display(),
-                            mode & 0o777
-                        ));
+                        if p_meta.uid() != active_uid && p_meta.uid() != 0 {
+                            return Err(format!(
+                                "Security Error: Path component '{}' is owned by UID {} (expected active user UID {} or root). Aborting.",
+                                ancestor.display(),
+                                p_meta.uid(),
+                                active_uid
+                            ));
+                        }
+
+                        let mode = p_meta.permissions().mode();
+                        if p_meta.uid() == 0 {
+                            let is_sticky = (mode & 0o1000) != 0;
+                            if !is_sticky && (mode & 0o022) != 0 {
+                                return Err(format!(
+                                    "Security Error: Root-owned path component '{}' is writable by group/others ({:o}) without sticky bit. Aborting.",
+                                    ancestor.display(),
+                                    mode & 0o777
+                                ));
+                            }
+                        } else if (mode & 0o022) != 0 {
+                            return Err(format!(
+                                "Security Error: Path component '{}' has insecure permissions ({:o}, group/world-writable). Aborting.",
+                                ancestor.display(),
+                                mode & 0o777
+                            ));
+                        }
                     }
-                } else {
-                    if (mode & 0o022) != 0 {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // Component does not exist yet (will be created in verified parent)
+                        break;
+                    }
+                    Err(e) => {
                         return Err(format!(
-                            "Security Error: Parent directory '{}' has insecure permissions ({:o}, group/world-writable). Aborting.",
-                            parent.display(),
-                            mode & 0o777
+                            "Security Error: Failed to inspect metadata on path component '{}': {}. Aborting.",
+                            ancestor.display(),
+                            e
                         ));
                     }
                 }
             }
         }
 
-        // 2. Target path validation (if already existing)
-        if let Ok(meta) = fs::symlink_metadata(path) {
-            if meta.file_type().is_symlink() {
-                return Err(format!(
-                    "Security Error: Target path '{}' is a symbolic link. Symbolic links are strictly prohibited for vault storage.",
-                    path.display()
-                ));
+        // 2. Target path validation with explicit error handling (fails closed on all errors except NotFound)
+        match fs::symlink_metadata(path) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    return Err(format!(
+                        "Security Error: Target path '{}' is a symbolic link. Symbolic links are strictly prohibited for vault storage.",
+                        path.display()
+                    ));
+                }
+
+                if meta.uid() != active_uid {
+                    return Err(format!(
+                        "Security Error: Target path '{}' is owned by UID {} but active user is UID {}. Aborting.",
+                        path.display(),
+                        meta.uid(),
+                        active_uid
+                    ));
+                }
+
+                let target_mode = if is_file { 0o600 } else { 0o700 };
+                fs::set_permissions(path, fs::Permissions::from_mode(target_mode)).map_err(|e| {
+                    format!("Security Error: Failed to enforce {:o} permissions on '{}': {}. Aborting.", target_mode, path.display(), e)
+                })?;
+
+                let re_meta = fs::symlink_metadata(path).map_err(|e| {
+                    format!("Security Error: Failed to re-verify permissions on '{}': {}. Aborting.", path.display(), e)
+                })?;
+
+                if re_meta.permissions().mode() & 0o077 != 0 {
+                    return Err(format!(
+                        "Security Error: Target path '{}' permissions are insecure ({:o}). Operation aborted.",
+                        path.display(),
+                        re_meta.permissions().mode() & 0o777
+                    ));
+                }
             }
-
-            if meta.uid() != active_uid {
-                return Err(format!(
-                    "Security Error: Target path '{}' is owned by UID {} but active user is UID {}. Aborting.",
-                    path.display(),
-                    meta.uid(),
-                    active_uid
-                ));
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Target does not exist yet (first-time creation); verified safe to create
             }
-
-            let target_mode = if is_file { 0o600 } else { 0o700 };
-            fs::set_permissions(path, fs::Permissions::from_mode(target_mode)).map_err(|e| {
-                format!("Security Error: Failed to enforce {:o} permissions on '{}': {}. Aborting.", target_mode, path.display(), e)
-            })?;
-
-            let re_meta = fs::symlink_metadata(path).map_err(|e| {
-                format!("Security Error: Failed to re-verify permissions on '{}': {}. Aborting.", path.display(), e)
-            })?;
-
-            if re_meta.permissions().mode() & 0o077 != 0 {
+            Err(e) => {
                 return Err(format!(
-                    "Security Error: Target path '{}' permissions are insecure ({:o}). Operation aborted.",
+                    "Security Error: Cannot inspect target '{}': {}. Aborting.",
                     path.display(),
-                    re_meta.permissions().mode() & 0o777
+                    e
                 ));
             }
         }
@@ -172,7 +207,10 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
 pub fn get_vault_dir() -> Result<PathBuf, String> {
     if let Ok(dir_str) = env::var("SECRETGUARD_DIR") {
         let p = PathBuf::from(dir_str);
+        // Pre-validate existing parent components before creation to eliminate TOCTOU races
+        validate_secure_path(&p, false)?;
         fs::create_dir_all(&p).map_err(|e| format!("Failed to create SECRETGUARD_DIR at '{}': {}", p.display(), e))?;
+        // Post-validate created directory to enforce 0700 mode
         validate_secure_path(&p, false)?;
         return Ok(p);
     }
@@ -182,6 +220,8 @@ pub fn get_vault_dir() -> Result<PathBuf, String> {
         .map_err(|_| "Environment Error: Neither HOME nor USERPROFILE is set. SecretGuard cannot securely locate the private user directory. Refusing to use a shared directory.".to_string())?;
 
     let dir = Path::new(&base_dir).join(".secretguard");
+    // Pre-validate existing parent components before creation
+    validate_secure_path(&dir, false)?;
     fs::create_dir_all(&dir).map_err(|e| {
         format!("Failed to create secure user directory at '{}': {}", dir.display(), e)
     })?;
@@ -659,8 +699,31 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         // RAII guard guarantees stty echo is restored even on panic or error
         let _guard = SttyEchoGuard;
 
+        // Check if a signal arrived before read started (eliminates race condition)
+        if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
+            let sig = RECEIVED_SIGNAL.load(Ordering::SeqCst);
+            let exit_code = if sig == SIGTERM { 143 } else if sig == SIGINT { 130 } else { 128 + sig };
+            let _ = Command::new("stty").arg("echo").status();
+            eprintln!();
+            std::process::exit(exit_code);
+        }
+
         let mut input = String::new();
-        let res = io::stdin().read_line(&mut input);
+        let mut byte = [0u8; 1];
+        loop {
+            if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
+                break;
+            }
+            let n = unsafe { read(0, byte.as_mut_ptr(), 1) };
+            if n <= 0 {
+                // Interrupted system call (EINTR) or EOF: break immediately without retry
+                break;
+            }
+            if byte[0] == b'\n' || byte[0] == b'\r' {
+                break;
+            }
+            input.push(byte[0] as char);
+        }
 
         // Explicitly restore echo in normal userspace context (guaranteed async-signal-safe architecture)
         let _ = Command::new("stty").arg("echo").status();
@@ -685,7 +748,6 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         }
 
         eprintln!();
-        res?;
         strip_line_terminator(&mut input);
         Ok(input)
     }
@@ -834,7 +896,7 @@ pub fn sanitize_stream_buffer(buf: &[u8], engine: &SecretGuardEngine, out: &mut 
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.10)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.11)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]

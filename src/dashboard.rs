@@ -334,7 +334,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         </div>
 
         <footer>
-            <p>SecretGuard (v0.3.10) • Dual-Licensed under MIT and Apache-2.0 • 100% Free and Open Source • <a href="https://github.com/hemanathk636/secretguard" target="_blank">GitHub Repository</a> • <a href="https://crates.io/crates/secretguard" target="_blank">Crates.io</a></p>
+            <p>SecretGuard (v0.3.11) • Dual-Licensed under MIT and Apache-2.0 • 100% Free and Open Source • <a href="https://github.com/hemanathk636/secretguard" target="_blank">GitHub Repository</a> • <a href="https://crates.io/crates/secretguard" target="_blank">Crates.io</a></p>
         </footer>
     </div>
 

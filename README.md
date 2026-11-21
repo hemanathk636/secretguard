@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.10)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.11)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.10
+    rev: v0.3.11
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -498,6 +498,17 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 📦 What's New in v0.3.11 (Full Ancestor Path Validation & Concurrency Hardening)
+
+SecretGuard v0.3.11 resolves critical filesystem verification and cross-platform concurrency gaps:
+* **Full Ancestor Path Traversal & Intermediate Symlink Defense:** Iterates through every component along `path.ancestors()` up to the filesystem root via `validate_secure_path`, rejecting intermediate symlinks and enforcing strict ownership (`parent.uid() == active_uid || parent.uid() == 0`) and permission policies (allowing root-owned sticky directories like `/tmp` with `0o1000`). Pre-validates existing parent components in `get_vault_dir()` *before* calling directory creation, eliminating creation races.
+* **Explicit Target Metadata Error Handling:** Replaces permissive metadata checks with an explicit match on `fs::symlink_metadata(path)`: fails closed on all permission/IO errors while only treating `std::io::ErrorKind::NotFound` as initial creation.
+* **Concurrent Windows First-Creation Verification:** Formally verifies multi-threaded collision safety on Windows (`test_windows_concurrent_first_creation_race`) where all 8 concurrent racing threads succeed without file corruption or `AlreadyExists` unhandled errors, ensuring atomic handoff to `ReplaceFileW`.
+* **Direct Unbuffered Stdin with Signal Interruption:** Implements direct libc `read(0, ...)` single-byte loops with atomic flag pre-checks and `siginterrupt(sig, 1)` during hidden password entry, bypassing stdio internal restart loops on `EINTR` and cleanly distinguishing `SIGINT` (exit code 130) from `SIGTERM` (exit code 143).
+* **Extended Split-Chunk Stream Sanitizer Coverage:** Validates 4KB streaming sanitizer with full, realistic 2048-bit RSA PEM key blocks (~1.7KB across 3 chunks) and 1.2KB+ JWT tokens across split chunk boundaries, alongside byte-for-byte non-UTF8 binary sequence preservation.
 
 ---
 

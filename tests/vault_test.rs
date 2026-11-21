@@ -302,9 +302,19 @@ fn test_stream_sanitizer_long_pem_and_jwt_split_chunk() {
     let engine = SecretGuardEngine::new();
     let mut sanitizer = StreamSanitizer::new();
 
-    // 1. Long RSA PEM private key header split across chunk boundary
-    let chunk_pem1 = b"-----BEGIN RSA PRIVATE ";
-    let chunk_pem2 = b"KEY-----\nMIIEowIBAAKCAQEA0Y5k1v...\n-----END RSA PRIVATE KEY-----\n";
+    // 1. Full 2048-bit RSA PEM private key block (~1.7 KB) split across 3 chunks
+    let mut full_pem = String::from("-----BEGIN RSA PRIVATE KEY-----\n");
+    for i in 0..24 {
+        full_pem.push_str(&format!("MIIEowIBAAKCAQEA0Y5k1vABCD{}EFGH{}IJKL{}MNOP{}QRST{}UVWX{}YZab1234567890=\n", i, i, i, i, i, i));
+    }
+    full_pem.push_str("-----END RSA PRIVATE KEY-----\n");
+    assert!(full_pem.len() > 1500, "Full PEM must be a realistic 1.5KB+ key block");
+
+    let split_point1 = 500;
+    let split_point2 = 1100;
+    let chunk_pem1 = &full_pem.as_bytes()[..split_point1];
+    let chunk_pem2 = &full_pem.as_bytes()[split_point1..split_point2];
+    let chunk_pem3 = &full_pem.as_bytes()[split_point2..];
 
     let mut out_pem1 = Vec::new();
     sanitizer.sanitize_chunk(chunk_pem1, &engine, &mut out_pem1).unwrap();
@@ -312,28 +322,40 @@ fn test_stream_sanitizer_long_pem_and_jwt_split_chunk() {
 
     let mut out_pem2 = Vec::new();
     sanitizer.sanitize_chunk(chunk_pem2, &engine, &mut out_pem2).unwrap();
-    sanitizer.flush_final(&engine, &mut out_pem2).unwrap();
 
-    let pem_out = format!("{}{}", String::from_utf8_lossy(&out_pem1), String::from_utf8_lossy(&out_pem2));
-    assert!(!pem_out.contains("-----BEGIN RSA PRIVATE KEY-----"), "Split PEM key header must be redacted");
-    assert!(pem_out.contains("[REDACTED]"), "Sanitizer must redact split PEM block");
+    let mut out_pem3 = Vec::new();
+    sanitizer.sanitize_chunk(chunk_pem3, &engine, &mut out_pem3).unwrap();
+    sanitizer.flush_final(&engine, &mut out_pem3).unwrap();
 
-    // 2. Large JWT token split across chunks
+    let pem_out = format!("{}{}{}", String::from_utf8_lossy(&out_pem1), String::from_utf8_lossy(&out_pem2), String::from_utf8_lossy(&out_pem3));
+    assert!(!pem_out.contains("-----BEGIN RSA PRIVATE KEY-----"), "Full PEM key header must be redacted");
+    assert!(pem_out.contains("[REDACTED]"), "Sanitizer must redact full PEM block");
+
+    // 2. Large JWT token (1.2KB) split across 3 chunk boundaries
     let mut jwt_sanitizer = StreamSanitizer::new();
-    let jwt_part1 = b"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.";
-    let jwt_part2 = b"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c_extra_long_payload_suffix\n";
+    let mut full_jwt = String::from("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.");
+    for _ in 0..15 {
+        full_jwt.push_str("eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ");
+    }
+    full_jwt.push_str(".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c_final_signature\n");
+    assert!(full_jwt.len() > 1000, "JWT must be realistic 1KB+ token");
 
+    let jwt_split1 = 350;
+    let jwt_split2 = 750;
     let mut out_jwt1 = Vec::new();
-    jwt_sanitizer.sanitize_chunk(jwt_part1, &engine, &mut out_jwt1).unwrap();
+    jwt_sanitizer.sanitize_chunk(&full_jwt.as_bytes()[..jwt_split1], &engine, &mut out_jwt1).unwrap();
     assert!(out_jwt1.is_empty(), "Partial JWT within window must be held back");
 
     let mut out_jwt2 = Vec::new();
-    jwt_sanitizer.sanitize_chunk(jwt_part2, &engine, &mut out_jwt2).unwrap();
-    jwt_sanitizer.flush_final(&engine, &mut out_jwt2).unwrap();
+    jwt_sanitizer.sanitize_chunk(&full_jwt.as_bytes()[jwt_split1..jwt_split2], &engine, &mut out_jwt2).unwrap();
 
-    let jwt_out = format!("{}{}", String::from_utf8_lossy(&out_jwt1), String::from_utf8_lossy(&out_jwt2));
-    assert!(!jwt_out.contains("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"), "Split JWT token must be redacted");
-    assert!(jwt_out.contains("[REDACTED]"), "Split JWT must be redacted");
+    let mut out_jwt3 = Vec::new();
+    jwt_sanitizer.sanitize_chunk(&full_jwt.as_bytes()[jwt_split2..], &engine, &mut out_jwt3).unwrap();
+    jwt_sanitizer.flush_final(&engine, &mut out_jwt3).unwrap();
+
+    let jwt_out = format!("{}{}{}", String::from_utf8_lossy(&out_jwt1), String::from_utf8_lossy(&out_jwt2), String::from_utf8_lossy(&out_jwt3));
+    assert!(!jwt_out.contains("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"), "Split large JWT token must be redacted");
+    assert!(jwt_out.contains("[REDACTED]"), "Split large JWT must be redacted");
 }
 
 #[test]
@@ -410,7 +432,7 @@ fn test_windows_concurrent_first_creation_race() {
     fs::create_dir_all(&*temp_dir).unwrap();
     let target = Arc::new(temp_dir.join("vault.enc"));
 
-    // Spawn 8 concurrent threads racing to be the first to create target
+    // Spawn 8 concurrent threads racing to create/replace target
     let mut handles = Vec::new();
     for i in 0..8 {
         let target_clone = Arc::clone(&target);
@@ -425,13 +447,12 @@ fn test_windows_concurrent_first_creation_race() {
 
     let mut successes = 0;
     for h in handles {
-        let res = h.join().unwrap();
-        if res.is_ok() {
-            successes += 1;
-        }
+        let res = h.join().expect("Thread joined successfully");
+        assert!(res.is_ok(), "Concurrent replacement failed with error: {:?}", res.err());
+        successes += 1;
     }
 
-    assert!(successes > 0, "At least one concurrent creation must succeed");
+    assert_eq!(successes, 8, "All 8 concurrent threads must succeed without error or contention failure");
     assert!(target.exists(), "Target file must exist after concurrent race");
     let final_content = fs::read_to_string(&*target).unwrap();
     assert!(final_content.starts_with("content from thread "), "Final content must be valid thread payload: {}", final_content);
@@ -462,8 +483,32 @@ fn test_secure_path_validation_and_symlink_defense() {
     let target_file = temp_dir.join("test_vault.enc");
     fs::write(&target_file, b"test content").unwrap();
 
-    // Path inside trusted temp_dir must pass validation
+    // 1. Path inside trusted temp_dir must pass validation
     assert!(validate_secure_path(&target_file, true).is_ok(), "Valid path inside temp_dir must pass");
+
+    // 2. Non-existent target (first creation) must pass
+    let non_existent = temp_dir.join("non_existent_vault.enc");
+    assert!(validate_secure_path(&non_existent, true).is_ok(), "Non-existent target must pass pre-creation checks");
+
+    // 3. Symlink target defense (on platforms supporting symlinks)
+    #[cfg(unix)]
+    {
+        let symlink_path = temp_dir.join("symlink_vault.enc");
+        if std::os::unix::fs::symlink(&target_file, &symlink_path).is_ok() {
+            let res = validate_secure_path(&symlink_path, true);
+            assert!(res.is_err(), "Symlinked target must be rejected");
+            assert!(res.unwrap_err().contains("symbolic link"));
+        }
+
+        // 4. Intermediate path component symlink defense
+        let link_parent = temp_dir.join("link_parent");
+        if std::os::unix::fs::symlink(&temp_dir, &link_parent).is_ok() {
+            let nested_path = link_parent.join("vault.enc");
+            let res = validate_secure_path(&nested_path, true);
+            assert!(res.is_err(), "Path with intermediate symlink component must be rejected");
+            assert!(res.unwrap_err().contains("symbolic link"));
+        }
+    }
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
