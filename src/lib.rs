@@ -9,6 +9,7 @@ pub mod mcp;
 pub mod mesh;
 pub mod panic;
 pub mod patterns;
+pub mod pii;
 pub mod proxy;
 pub mod radar;
 pub mod swapper;

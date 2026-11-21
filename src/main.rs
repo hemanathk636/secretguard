@@ -22,6 +22,7 @@ USAGE:
     radar [DIR]               Trojan Source (CVE-2021-42574) & invisible prompt injection radar.
     docker [DOCKERFILE]       Docker & container image layer X-Ray (baked-in ENV/ARG leaks).
     proxy [PORT]              Offline Mock API server (mock OpenAI & Stripe responses locally).
+    scrub-pii "<TEXT>"        Sanitizes Credit Cards, SSNs, and IBANs before prompting LLMs.
 
 📦 2. ZERO-KNOWLEDGE KEYSTORE & TEAM MESH:
     vault <SUBCOMMAND>        Zero-knowledge AES-256-GCM memory keystore (import-env / run).
@@ -890,6 +891,14 @@ fn main() {
                 Vec::new()
             };
             secretguard::proxy::MockProxyServer::run_cli(&target_args);
+        }
+        "scrub-pii" | "pii" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::pii::PiiScrubber::run_cli(&target_args, &engine);
         }
         _ => {
             print_usage();
