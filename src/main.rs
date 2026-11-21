@@ -17,6 +17,7 @@ USAGE:
     hook <SHELL>              Prints instant shell hook (zsh | bash | fish | nushell | powershell).
     wrap <COMMAND...>         Executes command and masks leaked stdout/stderr in real time.
     agent-firewall <CMD...>   AI Agent Terminal & Egress Firewall (Blocks rm -rf, curl @.env).
+    shield <SUBCOMMAND>       Live screen-share privacy shield (auto-masks output during Zoom/Meet).
     tun <SUBCOMMAND>          Zero-Knowledge TLS Secret Swapper (in-flight network token injection).
     clipboard <SUBCOMMAND>    OS clipboard secret interceptor & auto-destruct timer (watch/clean).
     radar [DIR]               Trojan Source (CVE-2021-42574) & invisible prompt injection radar.
@@ -899,6 +900,14 @@ fn main() {
                 Vec::new()
             };
             secretguard::pii::PiiScrubber::run_cli(&target_args, &engine);
+        }
+        "shield" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::shield::ScreenShield::run_cli(&target_args, &engine);
         }
         _ => {
             print_usage();

@@ -12,6 +12,7 @@ pub mod patterns;
 pub mod pii;
 pub mod proxy;
 pub mod radar;
+pub mod shield;
 pub mod swapper;
 pub mod synthetic;
 pub mod timemachine;
