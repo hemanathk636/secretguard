@@ -1,0 +1,47 @@
+{
+  "name": "secretguard-vscode",
+  "displayName": "SecretGuard - Sub-millisecond Secret & Privacy Guard",
+  "description": "Zero-latency real-time secret scanner, prompt injection shield, and zero-knowledge vault for VS Code and Cursor.",
+  "version": "0.2.0",
+  "publisher": "hemanath",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hemanathk636/secretguard"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Security",
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "secret scanner",
+    "api keys",
+    "security",
+    "claude code",
+    "cursor",
+    "privacy"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "secretguard.scanWorkspace",
+        "title": "SecretGuard: Scan Workspace for Exposed Secrets"
+      },
+      {
+        "command": "secretguard.generateMock",
+        "title": "SecretGuard: Replace Selection with Format-Preserving Mock Token"
+      },
+      {
+        "command": "secretguard.complianceReport",
+        "title": "SecretGuard: Generate SOC 2 / HIPAA Compliance Certificate"
+      }
+    ]
+  }
+}
