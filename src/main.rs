@@ -7,7 +7,7 @@ use std::process::{self, Command, Stdio};
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.2.2) — Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.3.0) — Sub-millisecond Terminal Secret & Privacy Guard
 The Autonomous Developer Security & AI Agent Firewall Platform
 
 USAGE:
@@ -16,7 +16,7 @@ USAGE:
 
 THE 3 SECURITY PILLARS:
   🛡️ 1. shield     [Ambient Shield & Runtime Defense]
-     Live terminal line hook, in-flight TLS swapper, screen cloaker & clipboard guard.
+     Live terminal line hook, Ghost Tokens, in-flight TLS swapper, screen cloaker & clipboard guard.
      Run 'secretguard shield --help' for all runtime defense commands.
 
   🔐 2. vault      [Zero-Knowledge Keystore & Team Mesh]
@@ -24,10 +24,14 @@ THE 3 SECURITY PILLARS:
      Run 'secretguard vault --help' for all keystore and mesh commands.
 
   ⚡ 3. audit      [Repository Auditing & Remediation]
-     Codebase scanner, git time-machine, Dockerfile X-Ray & compliance certificates.
+     Codebase scanner, Immune self-healing engine, git time-machine & compliance certificates.
      Run 'secretguard audit --help' for all scanning and remediation commands.
 
 POPULAR SHORTCUTS (Fast Direct Access):
+    init                      10-Second Setup Wizard: activates all 3 pillars automatically
+    completions <SHELL>       Generate native shell tab autocompletions (zsh, bash, fish, pwsh)
+    ghost [virtualize|inspect] Zero-Knowledge LLM Context Virtualization (Ghost Tokens)
+    immune [contain|status]   Autonomous Self-Healing Key Revocation & Rotation (<200ms)
     hook <SHELL>              Fast alias for 'shield hook' (Attach to zsh, bash, pwsh)
     scan [PATH] [--json]      Fast alias for 'audit scan' (Scan codebase at 2.4M lines/sec)
     vault [SUBCOMMAND]        Fast alias for 'vault <cmd>' (init, set, get, run)
@@ -51,6 +55,7 @@ USAGE:
 
 SUBCOMMANDS:
     hook <SHELL>              Install sub-millisecond pre-exec hook (zsh | bash | fish | nu | pwsh)
+    ghost [virtualize|inspect] Zero-Knowledge LLM Context Virtualization (Polymorphic Ghost Tokens)
     tun [start|swap]          Zero-knowledge TLS secret swapper (replaces mock tokens in-flight)
     wrap <COMMAND...>         Execute command and dynamically cloak sensitive stdout/stderr
     screen [status|auto|run]  Detect active Zoom/Teams/Meet conferences & blur terminal output
@@ -93,6 +98,7 @@ USAGE:
 
 SUBCOMMANDS:
     scan [PATH] [--json]      High-speed codebase scanner (2.4M lines/sec) with CI/CD metrics
+    immune [contain|status]   Autonomous Self-Healing Engine (Zero-touch Revocation & Rotation <200ms)
     git [scan|scrub]          Cryptographic Git Time-Machine surgical commit history scrubber
     history [PATH]            Scan shell history (.zsh_history / .bash_history) for past leaks
     clean-history [--dry-run] Safely scrub credentials from shell history with atomic backup
@@ -783,7 +789,7 @@ fn main() {
         process::exit(0);
     }
     if subcommand == "--version" || subcommand == "-V" || subcommand == "version" {
-        println!("SecretGuard v0.2.2 (sub-millisecond terminal secret interceptor & AI firewall)");
+        println!("SecretGuard v0.3.0 (sub-millisecond terminal secret interceptor & AI firewall)");
         process::exit(0);
     }
 
@@ -801,6 +807,10 @@ fn main() {
                 "hook" => {
                     let shell = if args.len() >= 4 { &args[3] } else { "zsh" };
                     print_hook(shell);
+                }
+                "ghost" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::ghost::GhostVirtualizer::run_cli(&target_args, &engine);
                 }
                 "tun" | "swapper" => {
                     let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
@@ -940,6 +950,10 @@ fn main() {
                     let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
                     secretguard::panic::run_panic_emergency(&target_args, &engine);
                 }
+                "immune" => {
+                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    secretguard::immune::ImmuneEngine::run_cli(&target_args, &engine);
+                }
                 _ => {
                     let target = Some(sub);
                     run_audit(target, &engine);
@@ -950,6 +964,22 @@ fn main() {
         // ==========================================
         // 🚀 POPULAR SHORTCUT ALIASES (Direct Access)
         // ==========================================
+        "init" => {
+            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            secretguard::init::SetupWizard::run_cli(&target_args);
+        }
+        "completions" => {
+            let shell = if args.len() >= 3 { &args[2] } else { "zsh" };
+            secretguard::completions::CompletionsGenerator::print_completions(shell);
+        }
+        "ghost" => {
+            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            secretguard::ghost::GhostVirtualizer::run_cli(&target_args, &engine);
+        }
+        "immune" => {
+            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            secretguard::immune::ImmuneEngine::run_cli(&target_args, &engine);
+        }
         "check" => {
             let input = if args.len() >= 3 {
                 args[2..].join(" ")

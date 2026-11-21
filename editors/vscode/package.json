@@ -1,8 +1,8 @@
 {
   "name": "secretguard-vscode",
   "displayName": "SecretGuard - Sub-millisecond Secret & Privacy Guard",
-  "description": "Zero-latency real-time secret scanner, prompt injection shield, and zero-knowledge vault for VS Code and Cursor.",
-  "version": "0.2.2",
+  "description": "Zero-latency real-time secret scanner, prompt injection shield, ghost tokens, and zero-knowledge vault for VS Code and Cursor.",
+  "version": "0.3.0",
   "publisher": "hemanath",
   "repository": {
     "type": "git",
