@@ -141,6 +141,11 @@ pub fn emergency_scrub_git_head(engine: &SecretGuardEngine) -> Result<usize, Str
     Ok(scrubbed_files)
 }
 
+/// Comprehensive Git history scrubber: rewrites all reachable commits in history
+pub fn emergency_deep_history_scrub(engine: &SecretGuardEngine) -> Result<crate::timemachine::TimeMachineScrubResult, String> {
+    crate::timemachine::TimeMachine::scrub_history(engine, None, false)
+}
+
 pub fn emergency_clean_shell_history(engine: &SecretGuardEngine) -> usize {
     let home = env::var("USERPROFILE")
         .or_else(|_| env::var("HOME"))
@@ -209,20 +214,33 @@ pub fn run_panic_emergency(args: &[String], engine: &SecretGuardEngine) {
     } else {
         None
     };
+    let deep_mode = args.iter().any(|a| a == "--deep" || a == "-d");
 
     println!("⚡ Initiating 4-Stage Immediate Leak Remediation...\n");
 
-    // STAGE 1: Git Head Commit Surgical Scrub
-    print!("1️⃣  Inspecting latest Git commit... ");
-    match emergency_scrub_git_head(engine) {
-        Ok(count) if count > 0 => {
-            println!("🔒 Surgically scrubbed and amended {} file(s) in HEAD with synthetic mocks!", count);
+    // STAGE 1: Git Commit Surgical Scrub
+    if deep_mode {
+        print!("1️⃣  Rewriting Git history across all commits... ");
+        match emergency_deep_history_scrub(engine) {
+            Ok(res) => {
+                println!("🔒 Scrubbed {} tainted commit(s)! Backup branch preserved: {}", res.commits_scrubbed, res.backup_ref);
+            }
+            Err(e) => {
+                println!("ℹ️  Git history scrub skipped: {}", e);
+            }
         }
-        Ok(_) => {
-            println!("✅ Clean (No unmasked secrets in latest commit).");
-        }
-        Err(e) => {
-            println!("ℹ️  Git check skipped: {}", e);
+    } else {
+        print!("1️⃣  Inspecting latest Git commit (use --deep for all commits)... ");
+        match emergency_scrub_git_head(engine) {
+            Ok(count) if count > 0 => {
+                println!("🔒 Surgically scrubbed and amended {} file(s) in HEAD with synthetic mocks!", count);
+            }
+            Ok(_) => {
+                println!("✅ Clean (No unmasked secrets in latest commit).");
+            }
+            Err(e) => {
+                println!("ℹ️  Git check skipped: {}", e);
+            }
         }
     }
 

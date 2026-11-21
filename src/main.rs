@@ -8,7 +8,7 @@ use std::thread;
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.3.1) — Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v0.3.2) — Sub-millisecond Terminal Secret & Privacy Guard
 The Autonomous Developer Security & AI Agent Firewall Platform
 
 USAGE:
@@ -689,21 +689,24 @@ zshaddhistory() {
         ),
         "bash" => print!(
             "{}",
-            r#"# SecretGuard Bash Hook (Zero-History Interceptor)
+            r#"# SecretGuard Native Bash Pre-Execution Hook (Readline Buffer Interceptor)
 # Add to ~/.bashrc: eval "$(secretguard hook bash)"
 export HISTCONTROL=ignorespace:erasedups
-_secretguard_bash_preexec() {
-    local last_hist
-    last_hist=$(history 1 | sed 's/^[ ]*[0-9]*[ ]*//')
-    if [ -n "$last_hist" ] && ! secretguard check "$last_hist" >/dev/null 2>&1; then
-        history -d $(history 1 | awk '{print $1}')
-        echo -e "\033[1;33m[secretguard]\033[0m 🚨 Secret intercepted! Automatically purged from Bash history." >&2
+_secretguard_bash_enter_hook() {
+    local cmd="$READLINE_LINE"
+    if [ -n "$cmd" ] && [ ${#cmd} -ge 15 ]; then
+        if ! secretguard check "$cmd" >/dev/null 2>&1; then
+            echo -e "\n\033[1;31m[secretguard]\033[0m 🚨 Secret intercepted in Bash buffer before execution!" >&2
+            echo -e "\033[0;33mCommand canceled: raw credentials never executed or saved to history.\033[0m" >&2
+            READLINE_LINE="" # Zeroes the line buffer before execution
+            return 1
+        fi
     fi
 }
-case "$PROMPT_COMMAND" in
-    *_secretguard_bash_preexec*) ;;
-    *) PROMPT_COMMAND="_secretguard_bash_preexec; ${PROMPT_COMMAND:-}" ;;
-esac
+if [[ $- == *i* ]]; then
+    bind -x '"\C-m": _secretguard_bash_enter_hook' 2>/dev/null || true
+    bind -x '"\C-j": _secretguard_bash_enter_hook' 2>/dev/null || true
+fi
 "#
         ),
         "fish" => print!(
