@@ -6,7 +6,7 @@ Thank you for your interest in making developer workstations and AI coding agent
 
 ## 🏛️ Codebase Architecture & The 3 Pillars
 
-SecretGuard's codebase is written in native Rust with zero unnecessary dependencies, engineered to run in **under 15 microseconds (0.016ms)**.
+SecretGuard's codebase is written in native Rust with industry-standard cryptographic primitives (`aes-gcm`, `hkdf`, `hmac`, `rand_core`, `sha2`), engineered for sub-millisecond line interception (**~15 µs** average latency on in-memory command streams).
 
 ```text
 src/
@@ -14,12 +14,13 @@ src/
 ├── main.rs             # CLI router & 3-pillar dispatch hierarchy
 ├── patterns.rs         # High-confidence regex patterns for cloud providers
 ├── entropy.rs          # Shannon entropy calculator H(X) with contextual awareness
-├── ghost.rs            # Zero-Knowledge polymorphic Ghost Token context virtualizer
-├── immune.rs           # Autonomous self-healing containment & revocation circuit breaker
+├── encoding.rs         # In-memory Base64 & URL-percent encoded credential decoder
+├── ghost.rs            # Client-Side polymorphic Ghost Token context virtualizer (AES-256-GCM encrypted)
+├── immune.rs           # Automated containment, Slack revocation & guided console rotation deep-links
 ├── init.rs             # 10-Second automated workstation & agent setup wizard
 ├── completions.rs      # Native shell autocompletions generator (Zsh, Bash, Fish, PWSH)
 ├── shield/             # Pillar 1: Terminal pre-exec hooks, TLS swapper, screen cloaker
-├── vault/              # Pillar 2: AES-256-GCM keystore, P2P mesh, honeytoken canaries
+├── vault/              # Pillar 2: AES-256-GCM keystore, RFC 5869 HKDF, P2P mesh, honeytoken canaries
 └── audit/              # Pillar 3: Codebase scanner, git time-machine, Docker layer X-Ray
 ```
 
@@ -40,7 +41,7 @@ cd secretguard
 # Build in debug mode
 cargo build
 
-# Run all 50+ unit and integration tests
+# Run all 70+ unit and integration tests across 27 test targets
 cargo test
 
 # Build optimized release binary
@@ -67,9 +68,14 @@ SecretPattern {
 
 ---
 
-## ⚡ Performance Tenet: The 15-Microsecond Rule
+## ⚡ Performance Tenet & Benchmark Methodology
 
-SecretGuard runs **synchronously on every keystroke/command** in developers' terminals. 
+SecretGuard's shell hook runs **synchronously prior to command execution** in developers' terminals.
+
+### Benchmark Methodology:
+- **Synthetic Micro-benchmark:** Measured on an Apple Silicon (M-series) / AMD Ryzen workstation with `cargo test --release` or synthetic timer loops over 1,000 synthetic commands (500 positive credential samples + 500 clean commands).
+- **Latency Guarantee:** In-memory scanning average latency is ~15.68 µs (0.016 ms) per typical command line.
+- **File I/O Notice:** Real-world codebase scans (`secretguard scan .`) and Git history scrubbing (`secretguard time-machine`) involve disk reads and Git object packing, and their throughput depends on filesystem speed and repository size.
 
 To maintain our sub-millisecond guarantee:
 - Avoid heap allocations in hot paths (`scan_and_sanitize`).

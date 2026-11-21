@@ -1,10 +1,12 @@
 use crate::SecretGuardEngine;
 use aes_gcm::{
-    aead::{rand_core::RngCore, Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
+use hkdf::Hkdf;
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File};
@@ -101,71 +103,12 @@ pub fn get_or_generate_master_key() -> [u8; 32] {
     key
 }
 
-/// RFC 2104 compliant HMAC-SHA256
-pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
-    let mut k = [0u8; 64];
-    if key.len() > 64 {
-        let mut hasher = Sha256::new();
-        hasher.update(key);
-        let hash = hasher.finalize();
-        k[..32].copy_from_slice(&hash);
-    } else {
-        k[..key.len()].copy_from_slice(key);
-    }
-
-    let mut ipad = [0x36u8; 64];
-    let mut opad = [0x5cu8; 64];
-    for i in 0..64 {
-        ipad[i] ^= k[i];
-        opad[i] ^= k[i];
-    }
-
-    let mut inner = Sha256::new();
-    inner.update(&ipad);
-    inner.update(data);
-    let inner_hash = inner.finalize();
-
-    let mut outer = Sha256::new();
-    outer.update(&opad);
-    outer.update(&inner_hash);
-    let outer_hash = outer.finalize();
-
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&outer_hash);
-    result
-}
-
-/// RFC 5869 HKDF-Extract(salt, ikm) -> PRK
-pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
-    let default_salt = [0u8; 32];
-    let s = if salt.is_empty() { &default_salt[..] } else { salt };
-    hmac_sha256(s, ikm)
-}
-
-/// RFC 5869 HKDF-Expand(prk, info, length) -> OKM
-pub fn hkdf_expand(prk: &[u8; 32], info: &[u8], out_len: usize) -> Vec<u8> {
-    let mut okm = Vec::with_capacity(out_len);
-    let mut t = Vec::new();
-    let mut counter = 1u8;
-
-    while okm.len() < out_len {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(&t);
-        msg.extend_from_slice(info);
-        msg.push(counter);
-        let step = hmac_sha256(prk, &msg);
-        t = step.to_vec();
-        let take = (out_len - okm.len()).min(32);
-        okm.extend_from_slice(&step[..take]);
-        counter += 1;
-    }
-    okm
-}
-
-/// RFC 5869 HKDF-SHA256 (Extract and Expand)
+/// RFC 5869 HKDF-SHA256 (Extract and Expand) using official audited `hkdf` crate
 pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], length: usize) -> Vec<u8> {
-    let prk = hkdf_extract(salt, ikm);
-    hkdf_expand(&prk, info, length)
+    let hk = Hkdf::<Sha256>::new(if salt.is_empty() { None } else { Some(salt) }, ikm);
+    let mut okm = vec![0u8; length];
+    hk.expand(info, &mut okm).expect("Valid length for HKDF-SHA256 expansion");
+    okm
 }
 
 pub fn derive_vault_key(passphrase: Option<&str>) -> [u8; 32] {

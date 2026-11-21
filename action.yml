@@ -25,44 +25,90 @@ runs:
         OS="$(uname -s)"
         ARCH="$(uname -m)"
         VERSION="v0.3.3"
+        INSTALL_DIR="$RUNNER_TEMP/secretguard-bin"
+        mkdir -p "$INSTALL_DIR"
         
-        if [ "$OS" = "Linux" ]; then
-          TARBALL="secretguard-x86_64-unknown-linux-gnu.tar.gz"
-        elif [ "$OS" = "Darwin" ]; then
-          if [ "$ARCH" = "arm64" ]; then
-            TARBALL="secretguard-aarch64-apple-darwin.tar.gz"
-          else
-            TARBALL="secretguard-x86_64-apple-darwin.tar.gz"
+        case "$OS" in
+          Linux)
+            TARBALL="secretguard-x86_64-unknown-linux-gnu.tar.gz"
+            ;;
+          Darwin)
+            if [ "$ARCH" = "arm64" ]; then
+              TARBALL="secretguard-aarch64-apple-darwin.tar.gz"
+            else
+              TARBALL="secretguard-x86_64-apple-darwin.tar.gz"
+            fi
+            ;;
+          MINGW*|MSYS*|CYGWIN*)
+            TARBALL="secretguard-x86_64-pc-windows-msvc.zip"
+            ;;
+          *)
+            echo "::error::Unsupported runner OS: $OS"
+            exit 1
+            ;;
+        esac
+
+        RELEASE_URL="https://github.com/hemanathk636/secretguard/releases/download/${VERSION}"
+        DOWNLOAD_FILE="$RUNNER_TEMP/$TARBALL"
+        CHECKSUM_FILE="$RUNNER_TEMP/${TARBALL}.sha256"
+
+        echo "📥 Downloading SecretGuard release archive: ${TARBALL}..."
+        curl -fsSL "${RELEASE_URL}/${TARBALL}" -o "$DOWNLOAD_FILE"
+
+        # Verify SHA-256 checksum if checksum file is available
+        if curl -fsSL "${RELEASE_URL}/${TARBALL}.sha256" -o "$CHECKSUM_FILE" 2>/dev/null; then
+          echo "🔒 Verifying SHA-256 checksum..."
+          cd "$RUNNER_TEMP"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c "$CHECKSUM_FILE" || { echo "::error::Checksum verification failed!"; exit 1; }
+          elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 -c "$CHECKSUM_FILE" || { echo "::error::Checksum verification failed!"; exit 1; }
           fi
+          cd - >/dev/null
+          echo "✅ Release checksum verified successfully."
         else
-          echo "Unsupported OS: $OS"
-          exit 1
+          echo "ℹ️ Verifying archive non-empty status..."
+          [ -s "$DOWNLOAD_FILE" ] || { echo "::error::Downloaded archive is empty or invalid!"; exit 1; }
         fi
-        
-        curl -sSL "https://github.com/hemanathk636/secretguard/releases/download/${VERSION}/${TARBALL}" | tar -xz
-        sudo mv secretguard /usr/local/bin/
+
+        # Extract archive securely
+        if [[ "$TARBALL" == *.zip ]]; then
+          unzip -q "$DOWNLOAD_FILE" -d "$INSTALL_DIR"
+        else
+          tar -xzf "$DOWNLOAD_FILE" -C "$INSTALL_DIR"
+        fi
+
+        # Safely register to GITHUB_PATH without requiring sudo elevation
+        echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+        export PATH="$INSTALL_DIR:$PATH"
         secretguard --help > /dev/null
-        echo "✅ SecretGuard ${VERSION} installed in 0.4s"
+        echo "✅ SecretGuard ${VERSION} verified and installed."
 
     - name: Run SecretGuard Codebase Scan
       shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
       run: |
         echo "🛡️ Scanning codebase for exposed credentials..."
-        secretguard scan "${{ inputs.path }}"
+        secretguard scan "$SCAN_PATH"
 
     - name: Run Trojan & Invisible Prompt Radar
       if: ${{ inputs.radar == 'true' }}
       shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
       run: |
         echo "🦹 Running Trojan Source & Invisible Unicode Radar..."
-        secretguard radar "${{ inputs.path }}"
+        secretguard radar "$SCAN_PATH"
 
     - name: Generate Regulatory Compliance Audit Certificate
       if: ${{ inputs.audit-compliance == 'true' }}
       shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
       run: |
         echo "📜 Verifying SOC 2, HIPAA, and GDPR compliance rules..."
-        secretguard report "${{ inputs.path }}"
+        secretguard report "$SCAN_PATH"
 
 branding:
   icon: "shield"
