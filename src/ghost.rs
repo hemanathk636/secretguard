@@ -89,15 +89,17 @@ impl GhostVirtualizer {
         let mut count = 0;
         let mut output = input.to_string();
 
-        // Scan words/tokens
-        for word in input.split_whitespace() {
-            let clean_word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.');
-            let res = engine.scan_and_sanitize(clean_word);
-            if res.has_secret && clean_word.len() >= 16 {
-                let ghost = Self::create_ghost_token(clean_word);
-                output = output.replace(clean_word, &ghost);
-                session.mappings.insert(ghost, clean_word.to_string());
-                count += 1;
+        // Scan tokens (splitting on whitespace, assignment, quotes, and commas)
+        for part in input.split(|c: char| c.is_whitespace() || c == '=' || c == '"' || c == '\'' || c == ',') {
+            let clean_word = part.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.');
+            if clean_word.len() >= 16 {
+                let res = engine.scan_and_sanitize(clean_word);
+                if res.has_secret {
+                    let ghost = Self::create_ghost_token(clean_word);
+                    output = output.replace(clean_word, &ghost);
+                    session.mappings.insert(ghost, clean_word.to_string());
+                    count += 1;
+                }
             }
         }
 
