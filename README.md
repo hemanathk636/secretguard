@@ -64,7 +64,37 @@ Traditional secret scanners (like GitGuardian, TruffleHog, and pre-commit hooks)
 
 ---
 
-## 🔍 Instant Day-1 Audit (`audit`)
+## 🏛️ The 3 Security Pillars Architecture
+
+SecretGuard is organized into 3 clear, dedicated security pillars. Run commands through their dedicated pillar namespace or use fast direct shortcuts:
+
+```bash
+# 🛡️ Pillar 1: Ambient Shield & Runtime Defense
+secretguard shield hook zsh              # Attach sub-millisecond line interceptor
+secretguard shield tun start             # In-flight TLS secret swapper
+secretguard shield wrap npm run dev      # Cloak sensitive output during demos
+secretguard shield clipboard watch       # Clipboard auto-destruct guardian
+secretguard shield radar ./src           # Trojan Source & prompt injection radar
+
+# 🔐 Pillar 2: Zero-Knowledge Keystore & Team Mesh
+secretguard vault init                   # Initialize AES-256-GCM local keystore
+secretguard vault set STRIPE_KEY sk_...  # Encrypt and store credential
+secretguard vault run -- npm start       # Inject secrets directly into memory
+secretguard vault mesh init              # Serverless P2P team secret sync
+secretguard vault canary plant           # Plant decoy honeytoken tripwires
+
+# ⚡ Pillar 3: Repository Auditing & Remediation
+secretguard audit scan . --json          # Codebase scan with lines/sec throughput
+secretguard audit git scan               # Surgical Git history time-machine
+secretguard audit report . --standard soc2 # SOC 2, HIPAA, GDPR compliance audit
+secretguard audit docker Dockerfile      # Multi-stage Dockerfile X-Ray
+secretguard audit verify sk-proj-...     # Token validity & permission inspector
+secretguard audit panic --force          # Instant developer lockdown kill-switch
+```
+
+*Fast Shortcuts:* Direct root commands (`secretguard scan`, `secretguard hook`, `secretguard doctor`, etc.) work seamlessly as direct aliases!
+
+---
 
 Audit your entire existing shell history for past credential exposures in seconds:
 
