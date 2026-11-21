@@ -2,6 +2,7 @@ pub mod blastradius;
 pub mod canary;
 pub mod clipboard;
 pub mod compliance;
+pub mod docker;
 pub mod entropy;
 pub mod firewall;
 pub mod mcp;
