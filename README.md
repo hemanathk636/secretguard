@@ -14,6 +14,10 @@
 *Intercepts command buffers and stdout streams in real time, preventing API keys, credentials, and database passwords from ever hitting `.zsh_history`, screen shares, or AI assistant logs.*
 
 <br/>
+<img src=".github/assets/social-preview.png" alt="SecretGuard Banner" width="850"/>
+<br/>
+
+<br/>
 <img src="assets/demo.svg" alt="SecretGuard Terminal Demo" width="750"/>
 <br/>
 
