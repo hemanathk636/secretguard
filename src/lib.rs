@@ -4,6 +4,7 @@ pub mod clipboard;
 pub mod compliance;
 pub mod completions;
 pub mod docker;
+pub mod encoding;
 pub mod entropy;
 pub mod firewall;
 pub mod ghost;
@@ -91,6 +92,24 @@ impl SecretGuardEngine {
                     sanitized = sanitized.replace(&secret_val, "[REDACTED]");
                 }
                 synthetic = synthetic.replace(&secret_val, &mock_val);
+            }
+        }
+
+        // Tier 3: In-Memory Encoded Secret Inspection (Base64 & URL percent-encoding)
+        let encoded_candidates = encoding::find_encoded_candidates(input);
+        for (encoded_str, decoded_str) in encoded_candidates {
+            for p in &self.patterns {
+                if p.regex.is_match(&decoded_str) {
+                    matched_rules.push(format!("Encoded ({})", p.name));
+                    let mask = if encoded_str.len() > 10 {
+                        format!("{}[REDACTED_ENCODED_SECRET]", &encoded_str[..4])
+                    } else {
+                        "[REDACTED_ENCODED_SECRET]".to_string()
+                    };
+                    sanitized = sanitized.replace(&encoded_str, &mask);
+                    synthetic = synthetic.replace(&encoded_str, "[SYNTHETIC_MOCK_ENCODED_TOKEN]");
+                    break;
+                }
             }
         }
 
