@@ -27,13 +27,13 @@ impl BlastRadiusScanner {
         let mut affected_files = Vec::new();
         let mut total_scanned = 0;
 
-        let search_pattern = if query.len() > 8 {
-            &query[..8]
+        let search_pattern: String = if query.chars().count() > 8 {
+            query.chars().take(8).collect()
         } else {
-            query
+            query.to_string()
         };
 
-        Self::walk_and_scan(root, search_pattern, &mut affected_files, &mut total_scanned);
+        Self::walk_and_scan(root, &search_pattern, &mut affected_files, &mut total_scanned);
 
         let files_count = affected_files.len();
         let risk_score = if files_count == 0 {
