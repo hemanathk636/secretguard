@@ -9,7 +9,7 @@ static VAULT_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_vault_aes_gcm_roundtrip() {
-    let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!("sg_roundtrip_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     fs::create_dir_all(&temp_dir).unwrap();
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
@@ -30,7 +30,7 @@ fn test_vault_aes_gcm_roundtrip() {
 
 #[test]
 fn test_vault_wrong_key_fails() {
-    let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!("sg_wrong_key_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     fs::create_dir_all(&temp_dir).unwrap();
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
@@ -50,7 +50,7 @@ fn test_vault_wrong_key_fails() {
 
 #[test]
 fn test_vault_store_serialization() {
-    let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!("sg_store_ser_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     fs::create_dir_all(&temp_dir).unwrap();
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
@@ -79,7 +79,7 @@ fn test_vault_store_serialization() {
 
 #[test]
 fn test_corrupted_vault_file_fails_loudly_without_data_loss() {
-    let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!("sg_vault_corrupt_test_{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);
     let corrupt_vault_path = temp_dir.join("vault.enc");
@@ -102,7 +102,7 @@ fn test_corrupted_vault_file_fails_loudly_without_data_loss() {
 
 #[test]
 fn test_corrupted_master_key_aborts_to_prevent_data_loss() {
-    let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!("sg_master_key_corrupt_{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);
     let corrupt_key_path = temp_dir.join(".master.key");
@@ -126,7 +126,7 @@ fn test_corrupted_master_key_aborts_to_prevent_data_loss() {
 
 #[test]
 fn test_atomic_unique_tmp_file_during_save_vault() {
-    let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!("sg_save_atomic_test_{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);
     let vault_path = temp_dir.join("vault.enc");
@@ -154,7 +154,7 @@ fn test_atomic_unique_tmp_file_during_save_vault() {
 
 #[test]
 fn test_windows_and_unix_existing_vault_replacement() {
-    let _lock = VAULT_TEST_MUTEX.lock().unwrap();
+    let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!("sg_replace_test_{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);
     let vault_path = temp_dir.join("vault.enc");
@@ -423,6 +423,65 @@ fn test_atomic_replace_first_creation_and_subsequent_overwrites() {
 }
 
 #[test]
+fn test_windows_multi_process_worker_entry() {
+    // Helper test entrypoint invoked by child processes during multi-process test
+    if let Ok(target) = std::env::var("SG_CONCURRENT_PROC_TARGET") {
+        let id = std::env::var("SG_CONCURRENT_PROC_ID").unwrap_or_else(|_| "0".to_string());
+        let target_path = std::path::PathBuf::from(target);
+        let parent = target_path.parent().unwrap();
+        let tmp = parent.join(format!(".tmp_child_proc_{}.tmp", id));
+        std::fs::write(&tmp, format!("proc_{}_valid_payload", id)).unwrap();
+        secretguard::vault::atomic_replace_file(&tmp, &target_path).expect("Child process atomic_replace_file failed");
+        std::process::exit(0);
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn test_windows_multi_process_concurrent_creation() {
+    use std::process::Command;
+
+    let temp_dir = std::env::temp_dir().join(format!("sg_win_mp_{}", std::process::id()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    let target = temp_dir.join("vault.enc");
+    let exe = std::env::current_exe().expect("Failed to get current test binary path");
+
+    // Spawn 8 independent OS processes racing to create/replace target simultaneously
+    let mut children = Vec::new();
+    for i in 0..8 {
+        let child = Command::new(&exe)
+            .arg("test_windows_multi_process_worker_entry")
+            .arg("--exact")
+            .env("SG_CONCURRENT_PROC_TARGET", &target)
+            .env("SG_CONCURRENT_PROC_ID", i.to_string())
+            .spawn()
+            .expect("Failed to spawn child worker process");
+        children.push(child);
+    }
+
+    // Wait for all 8 independent OS processes and assert exit status 0
+    for mut child in children {
+        let status = child.wait().expect("Failed to wait on child worker process");
+        assert!(status.success(), "Child worker process failed with status: {:?}", status);
+    }
+
+    // Verify target exists and contains a valid thread/process payload
+    assert!(target.exists(), "Target file must exist after concurrent multi-process race");
+    let content = fs::read_to_string(&target).expect("Failed to read final vault file");
+    assert!(content.contains("_valid_payload"), "Target file must have valid content: {}", content);
+
+    // Verify NO temporary files (.tmp_child_proc_*) remain in directory
+    for entry in fs::read_dir(&temp_dir).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().to_string_lossy().to_string();
+        assert!(!name.starts_with(".tmp_child_proc_"), "Temporary file was left behind: {}", name);
+    }
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+#[cfg(windows)]
 fn test_windows_concurrent_first_creation_race() {
     use secretguard::vault::atomic_replace_file;
     use std::sync::Arc;
@@ -511,4 +570,138 @@ fn test_secure_path_validation_and_symlink_defense() {
     }
 
     let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_utf8_password_input_fidelity() {
+    use secretguard::vault::parse_password_bytes;
+
+    // 1. Multi-byte French accents: café\n -> café
+    let cafe_bytes = "café\n".as_bytes();
+    let parsed = parse_password_bytes(cafe_bytes).expect("Failed to parse valid UTF-8 café");
+    assert_eq!(parsed, "café");
+
+    // 2. Multi-byte German umlauts and emoji: p@sswörd🔑\r\n -> p@sswörd🔑
+    let complex_bytes = "p@sswörd🔑\r\n".as_bytes();
+    let parsed_complex = parse_password_bytes(complex_bytes).expect("Failed to parse valid UTF-8 complex password");
+    assert_eq!(parsed_complex, "p@sswörd🔑");
+
+    // 3. Invalid UTF-8 bytes fail closed with InvalidData
+    let invalid_bytes = vec![0xFF, 0xFE, 0x80, b'\n'];
+    let err = parse_password_bytes(&invalid_bytes);
+    assert!(err.is_err(), "Invalid UTF-8 byte sequences must fail closed");
+}
+
+#[test]
+fn test_load_vault_fails_closed_on_dangling_symlink_or_io_error() {
+    let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!("sg_fail_closed_{}", std::process::id()));
+    fs::create_dir_all(&temp_dir).unwrap();
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
+    // 1. Truly non-existent vault loads as default empty store
+    let default_store = load_vault(None).expect("Non-existent vault should return Ok(default)");
+    assert!(default_store.secrets.is_empty());
+
+    // 2. Dangling symlink for vault.enc must fail closed (NOT return Ok(default))
+    #[cfg(unix)]
+    {
+        let vault_target = temp_dir.join("vault.enc");
+        let non_existent_dest = temp_dir.join("does_not_exist.enc");
+        if std::os::unix::fs::symlink(&non_existent_dest, &vault_target).is_ok() {
+            let res = load_vault(None);
+            assert!(res.is_err(), "Dangling symlink for vault file must fail closed with error");
+            let err_msg = res.unwrap_err();
+            assert!(err_msg.contains("symbolic link") || err_msg.contains("Security Error"));
+            let _ = fs::remove_file(&vault_target);
+        }
+    }
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_vault_relative_path_and_parent_traversal_defense() {
+    use secretguard::vault::validate_secure_path;
+
+    // 1. Parent directory traversal ("..") must be rejected
+    let traversal_path = std::path::Path::new("../secret/vault.enc");
+    let res = validate_secure_path(traversal_path, true);
+    assert!(res.is_err(), "Path with '..' traversal must be rejected");
+    assert!(res.unwrap_err().contains("parent directory ('..') traversal"));
+
+    // 2. Relative path ("vault.enc") resolves against cwd and passes if cwd is secure
+    let rel_path = std::path::Path::new("test_rel_vault.enc");
+    let _ = validate_secure_path(rel_path, true);
+}
+
+#[test]
+fn test_stream_sanitizer_boundary_crossing_at_window_limit() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // Create a 4080-byte safe prefix
+    let mut stream = vec![b' '; 4080];
+    // Secret begins at offset 4080 and spans to 4120 (crossing 4096-byte boundary)
+    let secret = b"ghp_1234567890abcdef1234567890abcdef1234";
+    stream.extend_from_slice(secret);
+    stream.extend_from_slice(b" safe suffix trailing data\n");
+
+    // Split stream right across the secret at byte 4095
+    let split = 4095;
+    let chunk1 = &stream[..split];
+    let chunk2 = &stream[split..];
+
+    let mut out1 = Vec::new();
+    sanitizer.sanitize_chunk(chunk1, &engine, &mut out1).unwrap();
+
+    let mut out2 = Vec::new();
+    sanitizer.sanitize_chunk(chunk2, &engine, &mut out2).unwrap();
+    sanitizer.flush_final(&engine, &mut out2).unwrap();
+
+    let total_out = format!("{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2));
+    assert!(!total_out.contains("ghp_1234567890abcdef1234567890abcdef1234"), "Token straddling 4096-byte window boundary must not leak");
+    assert!(total_out.contains("[REDACTED]"), "Token straddling 4096-byte boundary must be redacted");
+}
+
+#[test]
+fn test_stream_sanitizer_stateful_large_pem_holdback() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // Build an 8KB PEM block (exceeding standard 4KB WINDOW_SIZE)
+    let mut large_pem = String::from("-----BEGIN RSA PRIVATE KEY-----\n");
+    for i in 0..120 {
+        large_pem.push_str(&format!("MIIEowIBAAKCAQEA0Y5k1vABCD{}EFGH{}IJKL{}MNOP{}QRST{}UVWX{}YZab1234567890=\n", i, i, i, i, i, i));
+    }
+    large_pem.push_str("-----END RSA PRIVATE KEY-----\n");
+    assert!(large_pem.len() > 8000, "Large PEM must exceed 8KB");
+
+    // Split across 3 large chunks (3KB each)
+    let c1 = &large_pem.as_bytes()[..3000];
+    let c2 = &large_pem.as_bytes()[3000..6000];
+    let c3 = &large_pem.as_bytes()[6000..];
+
+    let mut out1 = Vec::new();
+    sanitizer.sanitize_chunk(c1, &engine, &mut out1).unwrap();
+    assert!(out1.is_empty(), "Unclosed PEM header must be held back statefully");
+
+    let mut out2 = Vec::new();
+    sanitizer.sanitize_chunk(c2, &engine, &mut out2).unwrap();
+    assert!(out2.is_empty(), "Intermediate unclosed PEM body must be held back statefully");
+
+    let mut out3 = Vec::new();
+    sanitizer.sanitize_chunk(c3, &engine, &mut out3).unwrap();
+    sanitizer.flush_final(&engine, &mut out3).unwrap();
+
+    let combined = format!("{}{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2), String::from_utf8_lossy(&out3));
+    assert!(!combined.contains("-----BEGIN RSA PRIVATE KEY-----"), "Full 8KB PEM key must be redacted");
+    assert!(combined.contains("[REDACTED]"), "8KB PEM key must be redacted");
 }

@@ -35,7 +35,7 @@ esac
 
 LATEST_TAG=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$LATEST_TAG" ]; then
-  LATEST_TAG="v0.3.11"
+  LATEST_TAG="v0.3.12"
 fi
 
 ARCHIVE="secretguard-${TARGET}.tar.gz"

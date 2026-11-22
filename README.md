@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.11)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.12)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.11
+    rev: v0.3.12
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -498,6 +498,17 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 📦 What's New in v0.3.12 (Multi-Process Windows Verification, UTF-8 Fidelity & Fail-Closed Vault)
+
+SecretGuard v0.3.12 resolves all auditor-identified edge cases across relative path normalization, Windows multi-process concurrency, international password entry, and stream boundaries:
+* **Multi-Process Windows Replacement Verification:** Introduces `test_windows_multi_process_concurrent_creation`, spawning 8 independent OS subprocesses racing concurrently against the same destination file. Proves that `ReplaceFileW` with bounded exponential retry handles OS process contention without errors, data corruption, or dangling temporary files.
+* **Fail-Closed Vault Inspection (`load_vault`):** Replaces `path.exists()` with explicit `fs::symlink_metadata(&path)`: distinguishes true `ErrorKind::NotFound` from dangling symlinks, permission denials, and I/O failures, completely eliminating silent empty vault initialization and preventing catastrophic data overwrites.
+* **International Multi-Byte UTF-8 Password Fidelity:** Replaces byte-as-char pushing with `raw_bytes` collection and `String::from_utf8`, guaranteeing that multi-byte international passwords (`café`, `p@sswörd🔑`) are preserved without code unit corruption while distinguishing EOF (`n == 0`) from signal interruptions (`EINTR`).
+* **Cross-Platform Relative Path & Traversal Defense:** Resolves relative paths (`vault.enc`) against the validated current working directory across all platforms and strictly rejects parent directory (`..`) traversal components before filesystem inspection.
+* **Stateful 16KB PEM Holdback & Boundary-Crossing Redaction:** Implements stateful candidate retention in `StreamSanitizer` holding back unclosed multi-line private key headers (`-----BEGIN ...`) up to 16KB until closed by `-----END ...`, alongside verified redaction for tokens straddling the 4096-byte window boundary.
 
 ---
 

@@ -75,19 +75,41 @@ mod win32 {
 }
 
 /// Validates that `path` and all intermediate ancestor directories meet strict security guarantees on Unix:
-/// 1. Every existing path component chain must not be a symlink and must be owned by active user or root.
-/// 2. No intermediate path component may be group-writable (0o020) or world-writable (0o002) unless it is a root-owned sticky directory (e.g. /tmp with 0o1777).
-/// 3. The target itself (if existing) must not be a symlink and must be owned by active user.
-/// 4. Private permissions are strictly enforced (0o700 for directories, 0o600 for files) and re-verified.
+/// 1. Relative paths are securely resolved against the validated current working directory.
+/// 2. Parent directory traversal (`..`) is strictly rejected.
+/// 3. Every existing path component chain must not be a symlink and must be owned by active user or root.
+/// 4. No intermediate path component may be group-writable (0o020) or world-writable (0o002) unless it is a root-owned sticky directory (e.g. /tmp with 0o1777).
+/// 5. The target itself (if existing) must not be a symlink and must be owned by active user.
+/// 6. Private permissions are strictly enforced (0o700 for directories, 0o600 for files) and re-verified.
 /// Fails closed upon any filesystem metadata inspection error (except NotFound for target).
 pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
+    // 0. Reject dangerous parent directory traversal components ("..") across all platforms
+    for comp in path.components() {
+        if comp == std::path::Component::ParentDir {
+            return Err(format!(
+                "Security Error: Path '{}' contains parent directory ('..') traversal. Aborting.",
+                path.display()
+            ));
+        }
+    }
+
+    // Resolve relative paths against validated current working directory across all platforms
+    let resolved_path = if path.is_relative() {
+        let cwd = std::env::current_dir().map_err(|e| {
+            format!("Security Error: Cannot determine current working directory: {}. Aborting.", e)
+        })?;
+        cwd.join(path)
+    } else {
+        path.to_path_buf()
+    };
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let active_uid = unsafe { getuid() };
 
         // 1. Validate every path component in the chain from root down to parent
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = resolved_path.parent() {
             let mut ancestors = Vec::new();
             let mut curr = Some(parent);
             while let Some(p) = curr {
@@ -151,37 +173,37 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
         }
 
         // 2. Target path validation with explicit error handling (fails closed on all errors except NotFound)
-        match fs::symlink_metadata(path) {
+        match fs::symlink_metadata(&resolved_path) {
             Ok(meta) => {
                 if meta.file_type().is_symlink() {
                     return Err(format!(
                         "Security Error: Target path '{}' is a symbolic link. Symbolic links are strictly prohibited for vault storage.",
-                        path.display()
+                        resolved_path.display()
                     ));
                 }
 
                 if meta.uid() != active_uid {
                     return Err(format!(
                         "Security Error: Target path '{}' is owned by UID {} but active user is UID {}. Aborting.",
-                        path.display(),
+                        resolved_path.display(),
                         meta.uid(),
                         active_uid
                     ));
                 }
 
                 let target_mode = if is_file { 0o600 } else { 0o700 };
-                fs::set_permissions(path, fs::Permissions::from_mode(target_mode)).map_err(|e| {
-                    format!("Security Error: Failed to enforce {:o} permissions on '{}': {}. Aborting.", target_mode, path.display(), e)
+                fs::set_permissions(&resolved_path, fs::Permissions::from_mode(target_mode)).map_err(|e| {
+                    format!("Security Error: Failed to enforce {:o} permissions on '{}': {}. Aborting.", target_mode, resolved_path.display(), e)
                 })?;
 
-                let re_meta = fs::symlink_metadata(path).map_err(|e| {
-                    format!("Security Error: Failed to re-verify permissions on '{}': {}. Aborting.", path.display(), e)
+                let re_meta = fs::symlink_metadata(&resolved_path).map_err(|e| {
+                    format!("Security Error: Failed to re-verify permissions on '{}': {}. Aborting.", resolved_path.display(), e)
                 })?;
 
                 if re_meta.permissions().mode() & 0o077 != 0 {
                     return Err(format!(
                         "Security Error: Target path '{}' permissions are insecure ({:o}). Operation aborted.",
-                        path.display(),
+                        resolved_path.display(),
                         re_meta.permissions().mode() & 0o777
                     ));
                 }
@@ -191,14 +213,14 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
             }
             Err(e) => {
                 return Err(format!(
-                    "Security Error: Cannot inspect target '{}': {}. Aborting.",
-                    path.display(),
+                    "Security Error: Cannot inspect target '{}': {}. Aborting to fail closed.",
+                    resolved_path.display(),
                     e
                 ));
             }
         }
     }
-    let _ = (path, is_file);
+    let _ = (path, is_file, &resolved_path);
     Ok(())
 }
 
@@ -279,7 +301,7 @@ pub fn atomic_replace_file(tmp_path: &Path, target_path: &Path) -> Result<(), St
     {
         // Bounded retry loop (5 attempts) eliminating any TOCTOU race between target existing or being concurrently created
         for attempt in 0..5 {
-            if target_path.exists() {
+            if fs::symlink_metadata(target_path).is_ok() {
                 let replaced_w = win32::to_wide_null(target_path);
                 let replacement_w = win32::to_wide_null(tmp_path);
 
@@ -358,6 +380,19 @@ pub fn strip_line_terminator(s: &mut String) {
     } else if s.ends_with('\n') || s.ends_with('\r') {
         s.truncate(s.len() - 1);
     }
+}
+
+/// Parses and validates raw terminal password bytes into a valid UTF-8 string,
+/// preserving international multi-byte UTF-8 sequences and stripping line terminators.
+pub fn parse_password_bytes(bytes: &[u8]) -> io::Result<String> {
+    let mut input = String::from_utf8(bytes.to_vec()).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Password input contains invalid UTF-8 bytes: {}", e),
+        )
+    })?;
+    strip_line_terminator(&mut input);
+    Ok(input)
 }
 
 /// Retrieves or generates a genuine 256-bit cryptographically secure random master key via CSPRNG (OsRng)
@@ -579,8 +614,25 @@ pub fn decrypt_vault_payload(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, Str
 
 pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
     let path = get_vault_path()?;
-    if !path.exists() {
-        return Ok(VaultStore::default());
+    match fs::symlink_metadata(&path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "Security Error: Vault file '{}' is a symbolic link. Aborting.",
+                    path.display()
+                ));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(VaultStore::default());
+        }
+        Err(e) => {
+            return Err(format!(
+                "Security Error: Cannot inspect vault file '{}': {}. Aborting to prevent data loss.",
+                path.display(),
+                e
+            ));
+        }
     }
 
     let data = fs::read(&path).map_err(|e| format!("Failed to read vault file at '{}': {}", path.display(), e))?;
@@ -708,21 +760,31 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             std::process::exit(exit_code);
         }
 
-        let mut input = String::new();
+        let mut raw_bytes = Vec::new();
         let mut byte = [0u8; 1];
         loop {
             if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
                 break;
             }
             let n = unsafe { read(0, byte.as_mut_ptr(), 1) };
-            if n <= 0 {
-                // Interrupted system call (EINTR) or EOF: break immediately without retry
+            if n == 0 {
+                // EOF reached on stdin
                 break;
+            } else if n < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted || TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
+                    // Interrupted system call (EINTR) from delivered signal
+                    break;
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Terminal read error: {}", err),
+                ));
             }
             if byte[0] == b'\n' || byte[0] == b'\r' {
                 break;
             }
-            input.push(byte[0] as char);
+            raw_bytes.push(byte[0]);
         }
 
         // Explicitly restore echo in normal userspace context (guaranteed async-signal-safe architecture)
@@ -748,6 +810,12 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         }
 
         eprintln!();
+        let mut input = String::from_utf8(raw_bytes).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Password input contains invalid UTF-8 bytes: {}", e),
+            )
+        })?;
         strip_line_terminator(&mut input);
         Ok(input)
     }
@@ -802,19 +870,24 @@ pub fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<
     result
 }
 
-/// Stream sanitizer that maintains a bounded tail holdback buffer (4096 bytes) to guarantee that:
-/// 1. Long credentials (up to 4KB, covering 4096-bit RSA private key PEM headers/blocks, extended JWTs,
-///    and AWS temporary session tokens) are detected even when split across arbitrary chunk boundaries.
-/// 2. Partial credentials are NEVER emitted prematurely before succeeding chunks arrive.
-/// 3. Clean binary streams are preserved byte-for-byte.
-/// 4. Binary streams containing embedded credentials preserve all surrounding non-secret invalid UTF-8 bytes.
+/// Stream sanitizer that maintains a bounded tail holdback buffer (4096 bytes) and stateful candidate
+/// retention to guarantee that:
+/// 1. Standard Cloud API Keys (AWS, GitHub, OpenAI, etc., 20-128 bytes) and Extended JWTs (up to 4096 bytes)
+///    are detected even when split across arbitrary chunk boundaries.
+/// 2. Multi-line PEM Private Key blocks (RSA up to 4096-bit, EC, OpenSSH) are statefully retained up to
+///    16KB until their closing boundary (`-----END ...`) is established, preventing premature emission.
+/// 3. Partial credentials are NEVER emitted prematurely before succeeding chunks arrive.
+/// 4. Clean binary streams are preserved byte-for-byte.
+/// 5. Binary streams containing embedded credentials preserve all surrounding non-secret invalid UTF-8 bytes.
 pub struct StreamSanitizer {
     buffer: Vec<u8>,
 }
 
 impl StreamSanitizer {
-    /// Maximum supported credential length across stream boundaries (4096 bytes / 4 KB).
+    /// Maximum supported credential length across sliding window chunk boundaries (4096 bytes / 4 KB).
     pub const WINDOW_SIZE: usize = 4096;
+    /// Maximum holdback ceiling for stateful multi-line candidates such as PEM private key blocks (16384 bytes / 16 KB).
+    pub const MAX_STATEFUL_HOLD_LIMIT: usize = 16384;
 
     pub fn new() -> Self {
         Self {
@@ -848,6 +921,15 @@ impl StreamSanitizer {
 
     pub fn sanitize_chunk(&mut self, chunk: &[u8], engine: &SecretGuardEngine, out: &mut impl Write) -> io::Result<()> {
         self.buffer.extend_from_slice(chunk);
+
+        // Stateful candidate retention: If buffer contains an unclosed multi-line PEM block header
+        // (e.g. -----BEGIN RSA PRIVATE KEY-----), hold back candidate until closing boundary
+        // (-----END ...) is received (up to MAX_STATEFUL_HOLD_LIMIT), preventing premature emission.
+        let has_unclosed_pem = self.buffer.windows(11).any(|w| w == b"-----BEGIN ")
+            && !self.buffer.windows(9).any(|w| w == b"-----END ");
+        if has_unclosed_pem && self.buffer.len() < Self::MAX_STATEFUL_HOLD_LIMIT {
+            return out.flush();
+        }
 
         // If buffer is larger than WINDOW_SIZE, process and emit the prefix
         // while holding back the tail WINDOW_SIZE bytes to prevent premature partial emission
@@ -896,7 +978,7 @@ pub fn sanitize_stream_buffer(buf: &[u8], engine: &SecretGuardEngine, out: &mut 
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.11)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.12)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]
