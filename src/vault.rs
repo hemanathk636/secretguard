@@ -13,6 +13,13 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
+use std::sync::Mutex;
+
+/// Process-wide reentrancy lock for terminal hidden input.
+/// Guarantees that concurrent calls across threads are strictly serialized,
+/// preventing race conditions on terminal echo state, global signal handlers,
+/// and terminal interruption atomic flags.
+pub static TERMINAL_INPUT_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct VaultStore {
@@ -38,7 +45,7 @@ extern "C" {
     fn close(fd: i32) -> i32;
     fn sigemptyset(set: *mut sigset_t) -> i32;
     fn sigaddset(set: *mut sigset_t, signum: i32) -> i32;
-    fn sigprocmask(how: i32, set: *const sigset_t, oldset: *mut sigset_t) -> i32;
+    fn pthread_sigmask(how: i32, set: *const sigset_t, oldset: *mut sigset_t) -> i32;
 }
 
 #[cfg(unix)]
@@ -50,15 +57,43 @@ struct sigset_t {
 
 #[cfg(unix)]
 pub mod unix_signal_constants {
-    #[cfg(target_os = "macos")]
+    #[cfg(target_os = "linux")]
+    pub const SIG_BLOCK: i32 = 0;
+    #[cfg(target_os = "linux")]
+    pub const SIG_SETMASK: i32 = 2;
+
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "solaris",
+        target_os = "illumos"
+    ))]
     pub const SIG_BLOCK: i32 = 1;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "solaris",
+        target_os = "illumos"
+    ))]
     pub const SIG_SETMASK: i32 = 3;
 
-    #[cfg(not(target_os = "macos"))]
-    pub const SIG_BLOCK: i32 = 0;
-    #[cfg(not(target_os = "macos"))]
-    pub const SIG_SETMASK: i32 = 2;
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+        target_os = "solaris",
+        target_os = "illumos"
+    )))]
+    compile_error!("Unsupported Unix platform for signal mask constants. Explicit OS-specific support required.");
 }
 
 #[cfg(unix)]
@@ -1835,13 +1870,34 @@ impl Drop for SignalDispositionGuard {
 }
 
 /// Reads a password or secret from the terminal with terminal echo disabled (zero external dependencies).
+///
+/// # Thread-Safety & Multithreading Architecture
+/// - **Global Input Serialization**: Concurrent calls to `read_password_hidden` across threads are
+///   strictly serialized via an internal process-wide mutex (`TERMINAL_INPUT_LOCK`). This eliminates races
+///   on the terminal echo state, global interruption flags, and signal handler installations.
+/// - **POSIX Signal Masking (`pthread_sigmask`)**: During terminal setup (before `stty -echo`), `SIGINT`
+///   and `SIGTERM` are masked on the calling thread via `pthread_sigmask(SIG_BLOCK, ...)`, with an RAII guard
+///   ensuring restoration on all exit paths. Signals are unmasked only after handlers and echo guards are armed.
+/// - **Library Multithreading Contract**: In POSIX, signal dispositions (`signal()`) and process-directed
+///   signals (`kill(pid, sig)`) affect the entire process, while signal masks are per-thread. When embedding
+///   SecretGuard in multithreaded applications:
+///   1. For interactive CLI prompts, terminal interaction should be managed on a dedicated thread (or worker
+///      threads should mask `SIGINT`/`SIGTERM` so signals target the main/interactive thread).
+///   2. For automated, background, or multi-threaded service workloads, developers should use SecretGuard's
+///      programmatic APIs ([`load_vault_with_key`], [`save_vault_with_key`]), which operate entirely in-memory
+///      with zero terminal or signal interactions.
+///
 /// Fails closed if terminal echo cannot be disabled. On Unix, terminal echo is restored both explicitly,
-/// via an RAII drop guard for stack unwinding, and via catchable signal handlers (SIGINT / SIGTERM).
+/// via an RAII drop guard for stack unwinding, and via catchable signal handlers (`SIGINT` / `SIGTERM`).
 ///
 /// Note on termination: Uncatchable OS-level signals (such as SIGKILL/SIGSTOP) or release panic=abort
 /// cannot execute userspace unwinding destructors. In such unexpected crash conditions, users can reset
 /// their terminal with the standard `reset` or `stty sane` command.
 pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
+    // Acquire process-wide terminal input lock to serialize concurrent calls across threads.
+    // This eliminates races on terminal echo state, global signal interruption flags, and signal handlers.
+    let _input_lock = TERMINAL_INPUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     #[cfg(unix)]
     {
         use unix_signal_constants::{SIG_BLOCK, SIG_SETMASK};
@@ -1855,21 +1911,26 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
 
         // 1. Block SIGINT and SIGTERM during terminal configuration to eliminate the race window
         // where a signal could arrive while terminal echo is disabled but before signal handlers are armed.
+        // Uses POSIX-compliant pthread_sigmask for robust multi-threaded signal masking.
         let mut block_mask = unsafe { std::mem::zeroed::<sigset_t>() };
         let mut orig_mask = unsafe { std::mem::zeroed::<sigset_t>() };
         if unsafe { sigemptyset(&mut block_mask) } != 0
             || unsafe { sigaddset(&mut block_mask, SIGINT) } != 0
             || unsafe { sigaddset(&mut block_mask, SIGTERM) } != 0
-            || unsafe { sigprocmask(SIG_BLOCK, &block_mask, &mut orig_mask) } != 0
         {
             return Err(io::Error::last_os_error());
+        }
+
+        let mask_res = unsafe { pthread_sigmask(SIG_BLOCK, &block_mask, &mut orig_mask) };
+        if mask_res != 0 {
+            return Err(io::Error::from_raw_os_error(mask_res));
         }
 
         // RAII signal mask guard ensures the original signal mask is restored on ANY exit path
         struct SigmaskGuard(sigset_t);
         impl Drop for SigmaskGuard {
             fn drop(&mut self) {
-                unsafe { sigprocmask(SIG_SETMASK, &self.0, std::ptr::null_mut()); }
+                unsafe { pthread_sigmask(SIG_SETMASK, &self.0, std::ptr::null_mut()); }
             }
         }
         let mask_guard = SigmaskGuard(orig_mask);

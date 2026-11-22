@@ -501,14 +501,17 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 
 ---
 
-## 📦 What's New in v0.3.13 (Windows Reparse Point Defense, Fail-Closed PEM Overflow & RAII Signal Restoration)
+## 📦 What's New in v0.3.13 (Production Security Hardening & Platform Baseline)
 
 SecretGuard v0.3.13 eliminates remaining cross-platform path security gaps, private-key overflow vectors, and signal restoration leaks:
+* **Multi-Threaded Terminal Input Serialization:** Introduces `TERMINAL_INPUT_LOCK` to strictly serialize concurrent calls to `read_password_hidden()`, eliminating race conditions on terminal echo states, global signal dispositions, and interruption flags in multithreaded applications.
+* **POSIX `pthread_sigmask` Signal Masking:** Masks `SIGINT` (2) and `SIGTERM` (15) via `pthread_sigmask(SIG_BLOCK, ...)` before `stty -echo` and unmasks only after signal handlers and RAII echo restoration guards are armed, completely closing the unprotected window during terminal setup.
+* **Standard Integer Signal FFI (Zero `transmute`):** Replaces invalid function pointer FFI representations of POSIX sentinels (`SIG_DFL`, `SIG_IGN`) with `fn signal(signum: i32, handler: usize) -> usize`, eliminating all `transmute` calls and undefined behavior.
+* **Explicit Platform Architecture & Scoping:** Tier-1 support for Linux, macOS, and Windows (verified in CI matrix); Tier-2 support for BSD systems (FreeBSD, OpenBSD, NetBSD, DragonFly BSD) with explicit OS-specific `Termios` layouts and signal constants, refusing unverified Unix targets with compile-time assertions.
+* **Bounded PTY Test Synchronization:** Hardens PTY signal delivery integration tests with a 5-second `poll()` deadline and automatic child process cleanup, preventing hung runners in CI while verifying terminal echo restoration via target-specific `Termios` structures.
 * **Windows Reparse Point & Junction Defense:** Extends `validate_secure_path` on Windows to inspect `FILE_ATTRIBUTE_REPARSE_POINT` (0x400) without following links across the entire ancestor directory hierarchy and the target file, strictly prohibiting Windows directory junctions, volume mount points, and symlinks.
+* **Windows Production Ancestor Anchoring:** Production API `anchor_ancestor_directories()` holds open read-sharing ancestor directory handles during target file operations, preventing concurrent directory rename or reparenting attacks.
 * **Fail-Closed PEM Holdback Overflow:** Updates `StreamSanitizer` so that unclosed multi-line private key candidates exceeding `MAX_STATEFUL_HOLD_LIMIT` (16KB) are redacted in place (`[REDACTED_PRIVATE_KEY_BLOCK]\n`) instead of falling through to sliding window drains, guaranteeing that unclosed candidates up to 32KB+ never leak raw private key prefixes.
-* **Unconditional RAII Signal Restoration:** Introduces `SignalDispositionGuard` in `read_password_hidden`, guaranteeing that original `SIGINT` and `SIGTERM` dispositions are restored on all code paths (success, error returns, or panic unwinding).
-* **Multi-Process Vault Encryption Verification:** Hardens `test_windows_multi_process_concurrent_creation` with genuine AES-256-GCM vault serialization and decryption across 8 racing OS processes, verifying that the final file is a clean, decryptable vault with 0 orphaned temporary files.
-* **File-Descriptor Security:** Eliminates TOCTOU metadata gaps in `load_vault()` by performing validations on opened file handles before decryption.
 
 ---
 

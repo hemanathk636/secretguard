@@ -1396,15 +1396,32 @@ fn test_real_signal_delivery_and_disposition_restoration() {
             c_ospeed: usize,
         }
 
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(any(
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
         #[repr(C)]
         struct Termios {
             c_iflag: u32,
             c_oflag: u32,
             c_cflag: u32,
             c_lflag: u32,
-            c_cc: [u8; 32],
+            c_cc: [u8; 20],
+            c_ispeed: u32,
+            c_ospeed: u32,
         }
+
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
+        compile_error!("Unsupported Unix platform for Termios struct layout. Explicit OS-specific struct required.");
 
         extern "C" {
             fn posix_openpt(oflag: i32) -> i32;
@@ -1425,8 +1442,22 @@ fn test_real_signal_delivery_and_disposition_restoration() {
             const O_NOCTTY: i32 = 0o400;
             #[cfg(target_os = "macos")]
             const O_NOCTTY: i32 = 0x20000;
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            const O_NOCTTY: i32 = 0o400;
+            #[cfg(any(
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            const O_NOCTTY: i32 = 0x8000;
+            #[cfg(not(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            )))]
+            compile_error!("Unsupported Unix platform for O_NOCTTY constant.");
 
             const O_RDWR: i32 = 2;
 
@@ -1604,6 +1635,34 @@ fn test_real_signal_delivery_and_disposition_restoration() {
         unsafe { signal(SIGINT, current_disp); }
         assert_ne!(current_disp, !0usize, "Signal disposition must be queryable and restored");
     }
+}
+
+#[test]
+fn test_read_password_hidden_multithread_serialization() {
+    use secretguard::vault::TERMINAL_INPUT_LOCK;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::new();
+
+    for _ in 0..8 {
+        let cnt = Arc::clone(&counter);
+        handles.push(thread::spawn(move || {
+            let _lock = TERMINAL_INPUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = cnt.fetch_add(1, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(5));
+            let curr = cnt.load(Ordering::SeqCst);
+            assert_eq!(curr, prev + 1, "Serialized terminal lock must enforce mutual exclusion");
+        }));
+    }
+
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 8);
 }
 
 #[test]
