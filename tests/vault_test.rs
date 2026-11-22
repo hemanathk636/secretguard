@@ -1340,8 +1340,8 @@ fn test_real_signal_delivery_and_disposition_restoration() {
     {
         if let Ok(worker) = std::env::var("SG_SIGNAL_TEST_WORKER") {
             if worker == "read_password" {
-                // Signal explicit readiness to parent by writing prompt "READY\n" to stderr
-                let res = secretguard::vault::read_password_hidden("READY\n");
+                // Execute SecretGuard's production read_password_hidden
+                let res = secretguard::vault::read_password_hidden("Password: ");
                 std::process::exit(if res.is_ok() { 0 } else { 1 });
             }
         }
@@ -1363,20 +1363,6 @@ fn test_real_signal_delivery_and_disposition_restoration() {
         use std::os::unix::io::FromRawFd;
         use std::io::Read;
 
-        struct UnixPty {
-            master: i32,
-            slave: i32,
-        }
-
-        impl Drop for UnixPty {
-            fn drop(&mut self) {
-                unsafe {
-                    if self.master >= 0 { close(self.master); }
-                    if self.slave >= 0 { close(self.slave); }
-                }
-            }
-        }
-
         extern "C" {
             fn posix_openpt(oflag: i32) -> i32;
             fn grantpt(fd: i32) -> i32;
@@ -1384,12 +1370,13 @@ fn test_real_signal_delivery_and_disposition_restoration() {
             fn ptsname(fd: i32) -> *const std::os::raw::c_char;
             fn open(path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
             fn close(fd: i32) -> i32;
+            fn dup(fd: i32) -> i32;
             fn kill(pid: i32, sig: i32) -> i32;
             fn tcgetattr(fd: i32, termios_p: *mut std::ffi::c_void) -> i32;
             fn signal(signum: i32, handler: usize) -> usize;
         }
 
-        fn open_test_pty() -> Result<UnixPty, String> {
+        fn open_test_pty() -> Result<(i32, i32), String> {
             #[cfg(target_os = "linux")]
             const O_NOCTTY: i32 = 0o400;
             #[cfg(target_os = "macos")]
@@ -1421,92 +1408,102 @@ fn test_real_signal_delivery_and_disposition_restoration() {
                 unsafe { close(master); }
                 return Err("open slave pty failed".into());
             }
-            Ok(UnixPty { master, slave })
+            Ok((master, slave))
         }
 
         let exe = std::env::current_exe().expect("Must have current test binary path");
 
-        // Helper closure to test signal delivery on PTY
         let run_signal_test = |sig_to_send: i32, expected_exit_code: i32| {
-            if let Ok(pty) = open_test_pty() {
-                let slave_in = unsafe { fs::File::from_raw_fd(pty.slave) };
-                let slave_out = slave_in.try_clone().expect("Failed to clone slave fd");
-                let slave_err = slave_in.try_clone().expect("Failed to clone slave fd");
+            let (master_fd, slave_fd) = open_test_pty().expect("PTY allocation must succeed to test terminal signal handling");
 
-                let mut master_file = unsafe { fs::File::from_raw_fd(pty.master) };
+            // Duplicate slave descriptor into an independent observer descriptor.
+            // This observer descriptor is held exclusively by the parent test process
+            // so tcgetattr() can inspect terminal state after the child exits without
+            // using a descriptor transferred to or closed by the child.
+            let observer_fd = unsafe { dup(slave_fd) };
+            assert!(observer_fd >= 0, "dup(slave_fd) must succeed to create observer descriptor");
 
-                let mut child = Command::new(&exe)
-                    .arg("test_real_signal_delivery_and_disposition_restoration")
-                    .env("SG_SIGNAL_TEST_WORKER", "read_password")
-                    .stdin(Stdio::from(slave_in))
-                    .stdout(Stdio::from(slave_out))
-                    .stderr(Stdio::from(slave_err))
-                    .spawn()
-                    .expect("Failed to spawn child worker");
+            // Convert slave_fd into File instances for child standard streams
+            let slave_in = unsafe { fs::File::from_raw_fd(slave_fd) };
+            let slave_out = slave_in.try_clone().expect("Failed to clone slave fd for stdout");
+            let slave_err = slave_in.try_clone().expect("Failed to clone slave fd for stderr");
 
-                // Explicit worker-ready synchronization:
-                // Wait for the worker to print "READY\n" from read_password_hidden,
-                // proving that stty -echo succeeded and signal handlers are armed.
-                let mut ready_buf = [0u8; 16];
-                let mut total_read = 0;
-                while total_read < 6 {
-                    match master_file.read(&mut ready_buf[total_read..]) {
-                        Ok(0) => break,
-                        Ok(n) => total_read += n,
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(_) => break,
-                    }
+            let mut master_file = unsafe { fs::File::from_raw_fd(master_fd) };
+
+            let mut child = Command::new(&exe)
+                .arg("test_real_signal_delivery_and_disposition_restoration")
+                .env("SG_SIGNAL_TEST_WORKER", "read_password")
+                .env("SG_SIGNAL_TEST_ARMED", "1") // Requests deterministic readiness notification
+                .stdin(Stdio::from(slave_in))
+                .stdout(Stdio::from(slave_out))
+                .stderr(Stdio::from(slave_err))
+                .spawn()
+                .expect("Failed to spawn child worker with slave PTY");
+
+            // Deterministic synchronization:
+            // Read from master PTY until child writes "SG_ARMED\n".
+            // "SG_ARMED" is emitted ONLY AFTER stty -echo succeeds and signal handlers are actively armed.
+            let mut ready_buf = Vec::new();
+            let mut single = [0u8; 1];
+            while !ready_buf.windows(8).any(|w| w == b"SG_ARMED") {
+                match master_file.read(&mut single) {
+                    Ok(0) => break,
+                    Ok(1) => ready_buf.push(single[0]),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                 }
-                assert!(
-                    &ready_buf[..total_read].starts_with(b"READY"),
-                    "Child must signal readiness by printing prompt before signal delivery"
-                );
+            }
+            assert!(
+                ready_buf.windows(8).any(|w| w == b"SG_ARMED"),
+                "Child must deterministically notify SG_ARMED before signal is sent. Output received: {:?}",
+                String::from_utf8_lossy(&ready_buf)
+            );
 
-                // Ensure child has entered the read(0, ...) system call
-                std::thread::sleep(std::time::Duration::from_millis(50));
+            // Send target signal to child process
+            unsafe { kill(child.id() as i32, sig_to_send); }
 
-                // Send the target signal
-                unsafe { kill(child.id() as i32, sig_to_send); }
+            // Await child termination
+            let status = child.wait().expect("Child must terminate upon receiving signal");
+            let code = status.code().unwrap_or_else(|| status.signal().map(|s| 128 + s).unwrap_or(0));
+            assert_eq!(
+                code,
+                expected_exit_code,
+                "Child interrupted by signal {} must exit with code {} (received code: {})",
+                sig_to_send,
+                expected_exit_code,
+                code
+            );
 
-                let status = child.wait().expect("Child must exit after signal delivery");
-                let code = status.code().unwrap_or_else(|| status.signal().map(|s| 128 + s).unwrap_or(0));
-                assert_eq!(
-                    code,
-                    expected_exit_code,
-                    "Child interrupted by signal {} must exit with code {}",
-                    sig_to_send,
-                    expected_exit_code
-                );
+            // Inspect terminal echo restoration using the independent observer descriptor.
+            // tcgetattr failure is a hard test failure (no silent skipping).
+            let mut termios_buf = vec![0u8; 256];
+            let tc_res = unsafe { tcgetattr(observer_fd, termios_buf.as_mut_ptr() as *mut std::ffi::c_void) };
+            assert_eq!(
+                tc_res,
+                0,
+                "tcgetattr() must succeed on observer descriptor after child termination"
+            );
 
-                // Verify terminal echo restoration on the PTY
-                // In Linux termios, ECHO bit is 0o000010 (8)
-                let mut termios_buf = vec![0u8; 256];
-                let tc_res = unsafe { tcgetattr(pty.slave, termios_buf.as_mut_ptr() as *mut std::ffi::c_void) };
-                if tc_res == 0 {
-                    let c_lflag = unsafe { *(termios_buf.as_ptr().offset(12) as *const u32) };
-                    assert!((c_lflag & 0o000010) != 0, "Terminal echo must be restored after signal handling");
-                }
+            // In POSIX termios, local modes flag (c_lflag) is at offset 12 on Linux/BSD,
+            // with ECHO bit defined as 0o000010 (8).
+            let c_lflag = unsafe { *(termios_buf.as_ptr().offset(12) as *const u32) };
+            assert!(
+                (c_lflag & 0o000010) != 0,
+                "Terminal echo (ECHO bit in c_lflag) must be restored after signal interruption"
+            );
 
-                std::mem::forget(master_file);
-            } else {
-                // Fallback for minimal container environments without /dev/ptmx
-                let output = Command::new("sh")
-                    .arg("-c")
-                    .arg(format!("kill -{} $$", if sig_to_send == 2 { "INT" } else { "TERM" }))
-                    .output()
-                    .expect("Failed to execute sh");
-                let code = output.status.signal().map(|s| 128 + s).or_else(|| output.status.code());
-                assert_eq!(code, Some(expected_exit_code));
+            unsafe {
+                close(observer_fd);
             }
         };
 
-        // Test SIGINT (Ctrl+C): must exit with 130
+        // Test SIGINT (Ctrl+C): child must handle signal, restore dispositions, restore echo, and exit with 130
         run_signal_test(2, 130);
 
-        // Test SIGTERM: must exit with 143
+        // Test SIGTERM: child must handle signal, restore dispositions, restore echo, and exit with 143
         run_signal_test(15, 143);
 
-        // Verify parent signal dispositions are intact
+        // Verify parent process signal dispositions are intact
         let current_disp = unsafe { signal(SIGINT, 0) };
         unsafe { signal(SIGINT, current_disp); }
         assert_ne!(current_disp, !0usize, "Signal disposition must be queryable and restored");

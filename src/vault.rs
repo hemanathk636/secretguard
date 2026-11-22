@@ -1887,6 +1887,14 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         // RAII guard guarantees stty echo is restored even on panic or error
         let _guard = SttyEchoGuard;
 
+        // Deterministic test-synchronization hook:
+        // Notifies parent test harness ONLY AFTER terminal echo is successfully suppressed
+        // and signal handlers (SIGINT and SIGTERM) are actively installed and armed.
+        if std::env::var("SG_SIGNAL_TEST_ARMED").is_ok() {
+            eprintln!("SG_ARMED");
+            let _ = io::stderr().flush();
+        }
+
         // Check if a signal arrived before read started (eliminates race condition)
         if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
             let sig = RECEIVED_SIGNAL.load(Ordering::SeqCst);
@@ -1897,6 +1905,13 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             unsafe {
                 signal(SIGINT, std::mem::transmute(old_sigint));
                 signal(SIGTERM, std::mem::transmute(old_sigterm));
+            }
+            // Independently verify that dispositions match original handlers:
+            let cur_sigint = unsafe { signal(SIGINT, std::mem::transmute(old_sigint)) };
+            let cur_sigterm = unsafe { signal(SIGTERM, std::mem::transmute(old_sigterm)) };
+            if cur_sigint != old_sigint || cur_sigterm != old_sigterm {
+                eprintln!("SG_DISPOSITION_RESTORE_MISMATCH");
+                std::process::exit(99);
             }
             eprintln!();
             std::process::exit(exit_code);
@@ -1946,6 +1961,13 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             unsafe {
                 signal(SIGINT, std::mem::transmute(old_sigint));
                 signal(SIGTERM, std::mem::transmute(old_sigterm));
+            }
+            // Independently verify that dispositions match original handlers:
+            let cur_sigint = unsafe { signal(SIGINT, std::mem::transmute(old_sigint)) };
+            let cur_sigterm = unsafe { signal(SIGTERM, std::mem::transmute(old_sigterm)) };
+            if cur_sigint != old_sigint || cur_sigterm != old_sigterm {
+                eprintln!("SG_DISPOSITION_RESTORE_MISMATCH");
+                std::process::exit(99);
             }
             eprintln!();
             std::process::exit(exit_code);
