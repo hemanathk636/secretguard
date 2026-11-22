@@ -909,6 +909,85 @@ fn validate_unix_dir_descriptor(fd: i32, name: &str, active_uid: u32) -> Result<
     Ok(())
 }
 
+#[cfg(windows)]
+/// Anchors every ancestor directory in `resolved_path` by opening each directory handle strictly
+/// omitting `FILE_SHARE_DELETE`. This causes the Windows NTFS kernel to reject any concurrent
+/// rename, move, unlink, or deletion attempt across the entire ancestor hierarchy with
+/// `ERROR_SHARING_VIOLATION` (32). Returns an `AncestorGuards` RAII collection that keeps
+/// all ancestor handles open until dropped.
+pub fn anchor_ancestor_directories(resolved_path: &Path) -> Result<AncestorGuards, String> {
+    let mut ancestor_guards = AncestorGuards(Vec::new());
+    if let Some(parent) = resolved_path.parent() {
+        let mut ancestors = Vec::new();
+        let mut curr = Some(parent);
+        while let Some(p) = curr {
+            if !p.as_os_str().is_empty() {
+                ancestors.push(p);
+            }
+            curr = p.parent();
+        }
+        ancestors.reverse();
+
+        for ancestor in ancestors {
+            let wide = win32::to_wide_null(ancestor);
+            let h_dir = unsafe {
+                win32::CreateFileW(
+                    wide.as_ptr(),
+                    win32::GENERIC_READ | win32::READ_CONTROL,
+                    win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE, // Strictly omit FILE_SHARE_DELETE
+                    std::ptr::null_mut(),
+                    win32::OPEN_EXISTING,
+                    win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                    std::ptr::null_mut(),
+                )
+            };
+
+            if h_dir != (-1isize as *mut c_void) && !h_dir.is_null() {
+                let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
+                let info_ok = unsafe { win32::GetFileInformationByHandle(h_dir, &mut file_info) };
+                if info_ok == 0 {
+                    unsafe { win32::CloseHandle(h_dir); }
+                    return Err(format!(
+                        "Security Error: Failed to query attributes on open handle for '{}'. Aborting.",
+                        ancestor.display()
+                    ));
+                }
+
+                if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                    unsafe { win32::CloseHandle(h_dir); }
+                    return Err(format!(
+                        "Security Error: Path component '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
+                        ancestor.display()
+                    ));
+                }
+
+                if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) == 0 {
+                    unsafe { win32::CloseHandle(h_dir); }
+                    return Err(format!(
+                        "Security Error: Path component '{}' is not a directory. Aborting.",
+                        ancestor.display()
+                    ));
+                }
+
+                let val_res = win32::validate_windows_security_descriptor_handle(h_dir, ancestor, false);
+                if let Err(e) = val_res {
+                    unsafe { win32::CloseHandle(h_dir); }
+                    return Err(e);
+                }
+                ancestor_guards.0.push(h_dir);
+            } else {
+                let err = unsafe { win32::GetLastError() };
+                return Err(format!(
+                    "Security Error: Cannot open directory handle for path component '{}' (Win32 error: {}). Aborting to fail closed.",
+                    ancestor.display(),
+                    err
+                ));
+            }
+        }
+    }
+    Ok(ancestor_guards)
+}
+
 /// Opens a file securely for reading, guaranteeing immunity against symlink and TOCTOU directory swap attacks:
 /// - On Unix: walks all ancestor directories descriptor-relatively using `openat` with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`,
 ///   verifying UID ownership and non-writable permissions on each descriptor, and opens the target file relative to the
@@ -1079,78 +1158,16 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
     {
         use std::os::windows::io::FromRawHandle;
 
-        let mut ancestor_guards = AncestorGuards(Vec::new());
-        if let Some(parent) = resolved_path.parent() {
-            let mut ancestors = Vec::new();
-            let mut curr = Some(parent);
-            while let Some(p) = curr {
-                if !p.as_os_str().is_empty() {
-                    ancestors.push(p);
+        let ancestor_guards = match anchor_ancestor_directories(&resolved_path) {
+            Ok(guards) => guards,
+            Err(e) => {
+                let err = unsafe { win32::GetLastError() };
+                if err == 2 || err == 3 {
+                    return Ok(None);
                 }
-                curr = p.parent();
+                return Err(e);
             }
-            ancestors.reverse();
-
-            for ancestor in ancestors {
-                let wide = win32::to_wide_null(ancestor);
-                let h_dir = unsafe {
-                    win32::CreateFileW(
-                        wide.as_ptr(),
-                        win32::GENERIC_READ | win32::READ_CONTROL,
-                        win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE, // Omit FILE_SHARE_DELETE to prevent rename/delete races
-                        std::ptr::null_mut(),
-                        win32::OPEN_EXISTING,
-                        win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
-                        std::ptr::null_mut(),
-                    )
-                };
-
-                if h_dir != (-1isize as *mut c_void) && !h_dir.is_null() {
-                    let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
-                    let info_ok = unsafe { win32::GetFileInformationByHandle(h_dir, &mut file_info) };
-                    if info_ok == 0 {
-                        unsafe { win32::CloseHandle(h_dir); }
-                        return Err(format!(
-                            "Security Error: Failed to query attributes on open handle for '{}'. Aborting.",
-                            ancestor.display()
-                        ));
-                    }
-
-                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
-                        unsafe { win32::CloseHandle(h_dir); }
-                        return Err(format!(
-                            "Security Error: Path component '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
-                            ancestor.display()
-                        ));
-                    }
-
-                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) == 0 {
-                        unsafe { win32::CloseHandle(h_dir); }
-                        return Err(format!(
-                            "Security Error: Path component '{}' is not a directory. Aborting.",
-                            ancestor.display()
-                        ));
-                    }
-
-                    let val_res = win32::validate_windows_security_descriptor_handle(h_dir, ancestor, false);
-                    if let Err(e) = val_res {
-                        unsafe { win32::CloseHandle(h_dir); }
-                        return Err(e);
-                    }
-                    ancestor_guards.0.push(h_dir);
-                } else {
-                    let err = unsafe { win32::GetLastError() };
-                    if err == 2 || err == 3 {
-                        return Ok(None);
-                    }
-                    return Err(format!(
-                        "Security Error: Cannot open directory handle for path component '{}' (Win32 error: {}). Aborting to fail closed.",
-                        ancestor.display(),
-                        err
-                    ));
-                }
-            }
-        }
+        };
 
         // WHILE ancestor handles are actively held (locking path against TOCTOU rename/delete), open target file handle
         let wide_target = win32::to_wide_null(&resolved_path);
@@ -1371,75 +1388,7 @@ pub fn create_secure_file_exclusive(path: &Path, mode: u32) -> Result<fs::File, 
         use std::os::windows::io::FromRawHandle;
         let _ = mode;
 
-        let mut ancestor_guards = AncestorGuards(Vec::new());
-        if let Some(parent) = resolved_path.parent() {
-            let mut ancestors = Vec::new();
-            let mut curr = Some(parent);
-            while let Some(p) = curr {
-                if !p.as_os_str().is_empty() {
-                    ancestors.push(p);
-                }
-                curr = p.parent();
-            }
-            ancestors.reverse();
-
-            for ancestor in ancestors {
-                let wide = win32::to_wide_null(ancestor);
-                let h_dir = unsafe {
-                    win32::CreateFileW(
-                        wide.as_ptr(),
-                        win32::GENERIC_READ | win32::READ_CONTROL,
-                        win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE, // Omit FILE_SHARE_DELETE to prevent rename/delete races
-                        std::ptr::null_mut(),
-                        win32::OPEN_EXISTING,
-                        win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
-                        std::ptr::null_mut(),
-                    )
-                };
-
-                if h_dir != (-1isize as *mut c_void) && !h_dir.is_null() {
-                    let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
-                    let info_ok = unsafe { win32::GetFileInformationByHandle(h_dir, &mut file_info) };
-                    if info_ok == 0 {
-                        unsafe { win32::CloseHandle(h_dir); }
-                        return Err(format!(
-                            "Security Error: Failed to query attributes on open handle for '{}'. Aborting.",
-                            ancestor.display()
-                        ));
-                    }
-
-                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
-                        unsafe { win32::CloseHandle(h_dir); }
-                        return Err(format!(
-                            "Security Error: Path component '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
-                            ancestor.display()
-                        ));
-                    }
-
-                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) == 0 {
-                        unsafe { win32::CloseHandle(h_dir); }
-                        return Err(format!(
-                            "Security Error: Path component '{}' is not a directory. Aborting.",
-                            ancestor.display()
-                        ));
-                    }
-
-                    let val_res = win32::validate_windows_security_descriptor_handle(h_dir, ancestor, false);
-                    if let Err(e) = val_res {
-                        unsafe { win32::CloseHandle(h_dir); }
-                        return Err(e);
-                    }
-                    ancestor_guards.0.push(h_dir);
-                } else {
-                    let err = unsafe { win32::GetLastError() };
-                    return Err(format!(
-                        "Security Error: Cannot open directory handle for path component '{}' (Win32 error: {}). Aborting to fail closed.",
-                        ancestor.display(),
-                        err
-                    ));
-                }
-            }
-        }
+        let ancestor_guards = anchor_ancestor_directories(&resolved_path)?;
 
         // WHILE ancestor handles are actively held, open new target file exclusively
         let wide_target = win32::to_wide_null(&resolved_path);

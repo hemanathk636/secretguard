@@ -1340,9 +1340,9 @@ fn test_real_signal_delivery_and_disposition_restoration() {
     {
         if let Ok(worker) = std::env::var("SG_SIGNAL_TEST_WORKER") {
             if worker == "read_password" {
-                // Execute SecretGuard's production read_password_hidden
-                let _ = secretguard::vault::read_password_hidden("Enter secret: ");
-                std::process::exit(0);
+                // Signal explicit readiness to parent by writing prompt "READY\n" to stderr
+                let res = secretguard::vault::read_password_hidden("READY\n");
+                std::process::exit(if res.is_ok() { 0 } else { 1 });
             }
         }
     }
@@ -1360,60 +1360,156 @@ fn test_real_signal_delivery_and_disposition_restoration() {
     {
         use std::process::{Command, Stdio};
         use std::os::unix::process::ExitStatusExt;
+        use std::os::unix::io::FromRawFd;
+        use std::io::Read;
 
-        if let Ok(exe) = std::env::current_exe() {
-            // Test 1: Delivery of SIGINT to child executing SecretGuard's read_password_hidden
-            let child = Command::new(&exe)
-                .arg("test_real_signal_delivery_and_disposition_restoration")
-                .env("SG_SIGNAL_TEST_WORKER", "read_password")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn();
+        struct UnixPty {
+            master: i32,
+            slave: i32,
+        }
 
-            if let Ok(mut c) = child {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                unsafe { libc::kill(c.id() as i32, SIGINT); }
-                if let Ok(status) = c.wait() {
-                    let code = status.code().unwrap_or_else(|| status.signal().map(|s| 128 + s).unwrap_or(0));
-                    if code == 130 {
-                        assert_eq!(code, 130, "Child executing read_password_hidden interrupted by SIGINT must exit with code 130");
-                    }
-                }
-            }
-
-            // Test 2: Delivery of SIGTERM to child executing SecretGuard's read_password_hidden
-            let child_term = Command::new(&exe)
-                .arg("test_real_signal_delivery_and_disposition_restoration")
-                .env("SG_SIGNAL_TEST_WORKER", "read_password")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn();
-
-            if let Ok(mut c) = child_term {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                unsafe { libc::kill(c.id() as i32, SIGTERM); }
-                if let Ok(status) = c.wait() {
-                    let code = status.code().unwrap_or_else(|| status.signal().map(|s| 128 + s).unwrap_or(0));
-                    if code == 143 {
-                        assert_eq!(code, 143, "Child executing read_password_hidden interrupted by SIGTERM must exit with code 143");
-                    }
+        impl Drop for UnixPty {
+            fn drop(&mut self) {
+                unsafe {
+                    if self.master >= 0 { close(self.master); }
+                    if self.slave >= 0 { close(self.slave); }
                 }
             }
         }
 
-        // Test 3: Kernel signal verification
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg("kill -INT $$")
-            .output();
-
-        if let Ok(out) = output {
-            let status = out.status;
-            let code = status.signal().map(|s| 128 + s).or_else(|| status.code());
-            assert_eq!(code, Some(130), "Child process receiving SIGINT must yield exit code 130");
+        extern "C" {
+            fn posix_openpt(oflag: i32) -> i32;
+            fn grantpt(fd: i32) -> i32;
+            fn unlockpt(fd: i32) -> i32;
+            fn ptsname(fd: i32) -> *const std::os::raw::c_char;
+            fn open(path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
+            fn close(fd: i32) -> i32;
+            fn kill(pid: i32, sig: i32) -> i32;
+            fn tcgetattr(fd: i32, termios_p: *mut std::ffi::c_void) -> i32;
+            fn signal(signum: i32, handler: usize) -> usize;
         }
+
+        fn open_test_pty() -> Result<UnixPty, String> {
+            #[cfg(target_os = "linux")]
+            const O_NOCTTY: i32 = 0o400;
+            #[cfg(target_os = "macos")]
+            const O_NOCTTY: i32 = 0x20000;
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            const O_NOCTTY: i32 = 0o400;
+
+            const O_RDWR: i32 = 2;
+
+            let master = unsafe { posix_openpt(O_RDWR | O_NOCTTY) };
+            if master < 0 {
+                return Err("posix_openpt failed".into());
+            }
+            if unsafe { grantpt(master) } != 0 {
+                unsafe { close(master); }
+                return Err("grantpt failed".into());
+            }
+            if unsafe { unlockpt(master) } != 0 {
+                unsafe { close(master); }
+                return Err("unlockpt failed".into());
+            }
+            let pts = unsafe { ptsname(master) };
+            if pts.is_null() {
+                unsafe { close(master); }
+                return Err("ptsname returned null".into());
+            }
+            let slave = unsafe { open(pts, O_RDWR, 0) };
+            if slave < 0 {
+                unsafe { close(master); }
+                return Err("open slave pty failed".into());
+            }
+            Ok(UnixPty { master, slave })
+        }
+
+        let exe = std::env::current_exe().expect("Must have current test binary path");
+
+        // Helper closure to test signal delivery on PTY
+        let run_signal_test = |sig_to_send: i32, expected_exit_code: i32| {
+            if let Ok(pty) = open_test_pty() {
+                let slave_in = unsafe { fs::File::from_raw_fd(pty.slave) };
+                let slave_out = slave_in.try_clone().expect("Failed to clone slave fd");
+                let slave_err = slave_in.try_clone().expect("Failed to clone slave fd");
+
+                let mut master_file = unsafe { fs::File::from_raw_fd(pty.master) };
+
+                let mut child = Command::new(&exe)
+                    .arg("test_real_signal_delivery_and_disposition_restoration")
+                    .env("SG_SIGNAL_TEST_WORKER", "read_password")
+                    .stdin(Stdio::from(slave_in))
+                    .stdout(Stdio::from(slave_out))
+                    .stderr(Stdio::from(slave_err))
+                    .spawn()
+                    .expect("Failed to spawn child worker");
+
+                // Explicit worker-ready synchronization:
+                // Wait for the worker to print "READY\n" from read_password_hidden,
+                // proving that stty -echo succeeded and signal handlers are armed.
+                let mut ready_buf = [0u8; 16];
+                let mut total_read = 0;
+                while total_read < 6 {
+                    match master_file.read(&mut ready_buf[total_read..]) {
+                        Ok(0) => break,
+                        Ok(n) => total_read += n,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+                assert!(
+                    &ready_buf[..total_read].starts_with(b"READY"),
+                    "Child must signal readiness by printing prompt before signal delivery"
+                );
+
+                // Ensure child has entered the read(0, ...) system call
+                std::thread::sleep(std::time::Duration::from_millis(50));
+
+                // Send the target signal
+                unsafe { kill(child.id() as i32, sig_to_send); }
+
+                let status = child.wait().expect("Child must exit after signal delivery");
+                let code = status.code().unwrap_or_else(|| status.signal().map(|s| 128 + s).unwrap_or(0));
+                assert_eq!(
+                    code,
+                    expected_exit_code,
+                    "Child interrupted by signal {} must exit with code {}",
+                    sig_to_send,
+                    expected_exit_code
+                );
+
+                // Verify terminal echo restoration on the PTY
+                // In Linux termios, ECHO bit is 0o000010 (8)
+                let mut termios_buf = vec![0u8; 256];
+                let tc_res = unsafe { tcgetattr(pty.slave, termios_buf.as_mut_ptr() as *mut std::ffi::c_void) };
+                if tc_res == 0 {
+                    let c_lflag = unsafe { *(termios_buf.as_ptr().offset(12) as *const u32) };
+                    assert!((c_lflag & 0o000010) != 0, "Terminal echo must be restored after signal handling");
+                }
+
+                std::mem::forget(master_file);
+            } else {
+                // Fallback for minimal container environments without /dev/ptmx
+                let output = Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("kill -{} $$", if sig_to_send == 2 { "INT" } else { "TERM" }))
+                    .output()
+                    .expect("Failed to execute sh");
+                let code = output.status.signal().map(|s| 128 + s).or_else(|| output.status.code());
+                assert_eq!(code, Some(expected_exit_code));
+            }
+        };
+
+        // Test SIGINT (Ctrl+C): must exit with 130
+        run_signal_test(2, 130);
+
+        // Test SIGTERM: must exit with 143
+        run_signal_test(15, 143);
+
+        // Verify parent signal dispositions are intact
+        let current_disp = unsafe { signal(SIGINT, 0) };
+        unsafe { signal(SIGINT, current_disp); }
+        assert_ne!(current_disp, !0usize, "Signal disposition must be queryable and restored");
     }
 }
 
@@ -1421,10 +1517,11 @@ fn test_real_signal_delivery_and_disposition_restoration() {
 fn test_windows_ancestor_directory_anchoring_prevents_rename() {
     #[cfg(windows)]
     {
-        use secretguard::vault::{create_secure_file_exclusive, open_secure_file_for_read, win32};
-        use std::ffi::c_void;
+        use secretguard::vault::{anchor_ancestor_directories, create_secure_file_exclusive, open_secure_file_for_read};
         use std::fs;
         use std::io::{Read, Write};
+        use std::sync::mpsc;
+        use std::thread;
 
         let pid = std::process::id();
         let base = std::env::temp_dir().join(format!("sg_anchor_test_{}", pid));
@@ -1435,7 +1532,7 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&ancestor_dir).unwrap();
 
-        // 1. Direct Production API Test: create_secure_file_exclusive
+        // 1. Production API Test: create_secure_file_exclusive
         // Traverses ancestors, anchors directory handles without FILE_SHARE_DELETE,
         // validates intermediate security descriptors, creates target exclusively,
         // validates target security descriptor, and automatically releases ancestor locks upon completion.
@@ -1445,7 +1542,7 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
         created_file.flush().expect("Flush must succeed");
         drop(created_file);
 
-        // 2. Direct Production API Test: open_secure_file_for_read
+        // 2. Production API Test: open_secure_file_for_read
         // Anchors ancestor directory handles, validates permissions and descriptors,
         // opens target file, and releases ancestor locks upon completion.
         let mut opened_file = open_secure_file_for_read(&target_file)
@@ -1458,54 +1555,60 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
 
         // 3. Verify handle cleanup on success path:
         // Ancestor handles held during production operations must be fully released by AncestorGuards drop.
-        // To verify this, renaming the ancestor directory must succeed immediately.
         let rename_after_success = fs::rename(&ancestor_dir, &renamed_dir);
         assert!(rename_after_success.is_ok(), "Ancestor directory must be unlocked and renameable after production function returns");
         fs::rename(&renamed_dir, &ancestor_dir).expect("Restoring original directory name must succeed");
 
         // 4. Verify handle cleanup on error paths:
-        // Invoking open_secure_file_for_read on a directory target must fail closed.
-        // It must drop all acquired ancestor handles in its AncestorGuards RAII destructor so no handles leak.
         let err_target = open_secure_file_for_read(&ancestor_dir);
         assert!(err_target.is_err(), "Opening directory as file must fail");
         assert!(err_target.unwrap_err().contains("directory"), "Error must state target is a directory");
 
-        // Prove handles were cleaned up: rename succeeds immediately after error return
         let rename_after_error = fs::rename(&ancestor_dir, &renamed_dir);
         assert!(rename_after_error.is_ok(), "Ancestor directory handles must be dropped even on error return paths");
         fs::rename(&renamed_dir, &ancestor_dir).expect("Restoring original directory name must succeed");
 
-        // 5. Windows Kernel Anti-Rename Semantic Verification:
-        // Demonstrate directly that holding an ancestor directory handle without FILE_SHARE_DELETE
-        // causes the Windows kernel to reject concurrent renames and deletions with ERROR_SHARING_VIOLATION (32).
-        let wide = win32::to_wide_null(&ancestor_dir);
-        let h_dir = unsafe {
-            win32::CreateFileW(
-                wide.as_ptr(),
-                win32::GENERIC_READ | win32::READ_CONTROL,
-                win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE, // Strictly omit FILE_SHARE_DELETE
-                std::ptr::null_mut(),
-                win32::OPEN_EXISTING,
-                win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
-                std::ptr::null_mut(),
-            )
-        };
-        assert!(h_dir != (-1isize as *mut c_void) && !h_dir.is_null(), "Failed to open ancestor handle");
+        // 5. Synchronization-based Concurrent Test:
+        // Spawns an attacker thread attempting to rename the ancestor directory
+        // WHILE the production operation (anchor_ancestor_directories) is actively holding
+        // ancestor handles without FILE_SHARE_DELETE.
+        let (tx_ready, rx_ready) = mpsc::channel();
+        let (tx_done, rx_done) = mpsc::channel();
+        let ancestor_dir_clone = ancestor_dir.clone();
+        let renamed_dir_clone = renamed_dir.clone();
 
-        // While handle is open without FILE_SHARE_DELETE, rename must be rejected with ERROR_SHARING_VIOLATION (32)
-        let rename_locked = fs::rename(&ancestor_dir, &renamed_dir);
-        assert!(rename_locked.is_err(), "Renaming locked directory must fail");
-        let err = rename_locked.unwrap_err();
+        let attacker_thread = thread::spawn(move || {
+            // Wait for production operation to acquire handles
+            rx_ready.recv().expect("Failed to receive ready signal");
+            // Attempt rename while production ancestor handles are actively held
+            let rename_res = fs::rename(&ancestor_dir_clone, &renamed_dir_clone);
+            tx_done.send(rename_res).expect("Failed to send rename result");
+        });
+
+        // Production operation actively anchors ancestor directories:
+        let guards = anchor_ancestor_directories(&target_file)
+            .expect("anchor_ancestor_directories must succeed on valid path");
+
+        // Signal attacker thread that production operation is actively holding handles
+        tx_ready.send(()).expect("Failed to signal attacker");
+
+        // Attacker's rename must be blocked by Windows kernel with ERROR_SHARING_VIOLATION (32)
+        let rename_during = rx_done.recv().expect("Failed to receive rename attempt result");
+        assert!(rename_during.is_err(), "Concurrent rename while production handles are held MUST be rejected");
+        let err = rename_during.unwrap_err();
         assert_eq!(
             err.raw_os_error(),
-            Some(32), // ERROR_SHARING_VIOLATION
-            "Kernel must return ERROR_SHARING_VIOLATION (32)"
+            Some(32),
+            "Windows kernel must return ERROR_SHARING_VIOLATION (32) during active production operation"
         );
 
-        // Close the handle and verify rename now succeeds
-        unsafe { win32::CloseHandle(h_dir); }
+        // Production operation finishes and drops its ancestor handles:
+        drop(guards);
+        attacker_thread.join().expect("Attacker thread failed to join");
+
+        // Verify that after production operation releases handles, rename succeeds immediately
         let rename_unlocked = fs::rename(&ancestor_dir, &renamed_dir);
-        assert!(rename_unlocked.is_ok(), "Renaming must succeed after releasing directory handle");
+        assert!(rename_unlocked.is_ok(), "Rename must succeed once production ancestor handles are released");
 
         let _ = fs::remove_dir_all(&base);
     }
