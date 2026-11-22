@@ -414,7 +414,7 @@ pub mod win32 {
                 // Unknown or complex ACE types (callback ACEs, object ACEs) fail closed on target
                 if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE && ace.Header.AceType != ACCESS_DENIED_ACE_TYPE {
                     return Err(format!(
-                        "Security Error: Insecure permissions on target '{}': Non-allowlisted or unsupported ACE type {} detected. Aborting to fail closed.",
+                        "Security Error: Insecure permissions on target file '{}': Unsupported or complex ACE type {} (e.g. object/callback ACE) detected. Aborting to fail closed.",
                         path.display(),
                         ace.Header.AceType
                     ));
@@ -435,55 +435,42 @@ pub mod win32 {
                 }
             }
         } else {
-            // For ancestor directories: reject any dangerous write/delete/modify permissions
-            // granted to non-owner/group principals (Everyone, Users, Authenticated Users, Network, Interactive, Anonymous)
-            let mut world_sid_buf = vec![0u8; 68];
-            let mut cb_world = 68u32;
-            unsafe { CreateWellKnownSid(WinWorldSid, std::ptr::null(), world_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_world) };
-
-            let mut users_sid_buf = vec![0u8; 68];
-            let mut cb_users = 68u32;
-            unsafe { CreateWellKnownSid(WinBuiltinUsersSid, std::ptr::null(), users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_users) };
-
-            let mut auth_users_sid_buf = vec![0u8; 68];
-            let mut cb_auth_users = 68u32;
-            unsafe { CreateWellKnownSid(WinAuthenticatedUserSid, std::ptr::null(), auth_users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_auth_users) };
-
-            let mut network_sid_buf = vec![0u8; 68];
-            let mut cb_network = 68u32;
-            unsafe { CreateWellKnownSid(WinNetworkSid, std::ptr::null(), network_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_network) };
-
-            let mut interactive_sid_buf = vec![0u8; 68];
-            let mut cb_interactive = 68u32;
-            unsafe { CreateWellKnownSid(WinInteractiveSid, std::ptr::null(), interactive_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_interactive) };
-
-            let mut anonymous_sid_buf = vec![0u8; 68];
-            let mut cb_anon = 68u32;
-            unsafe { CreateWellKnownSid(WinAnonymousSid, std::ptr::null(), anonymous_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_anon) };
-
+            // For ancestor directories:
+            // 1. Any unsupported or complex ACE type (such as callback ACEs, object ACEs) fails closed.
+            // 2. Only active user, BUILTIN\Administrators, and NT AUTHORITY\SYSTEM may hold write permissions (DANGEROUS_WRITE_MASK).
+            //    Any ACE granting write/modify/delete permissions to ANY other principal (Everyone, Users, Authenticated Users,
+            //    Network, Interactive, Anonymous, or ANY custom group / third-party SID) is strictly rejected to fail closed.
+            //    Non-write permissions (read, traverse, execute) for groups like Users or Authenticated Users are permitted.
             for i in 0..acl_size.AceCount {
                 let mut p_ace = std::ptr::null_mut();
-                if unsafe { GetAce(p_dacl, i, &mut p_ace) } != 0 {
-                    let ace = unsafe { &*(p_ace as *const ACCESS_ALLOWED_ACE) };
-                    if ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE {
+                if unsafe { GetAce(p_dacl, i, &mut p_ace) } == 0 {
+                    return Err(format!("Security Error: Failed to retrieve ACE {} on directory '{}'.", i, path.display()));
+                }
+                let ace = unsafe { &*(p_ace as *const ACCESS_ALLOWED_ACE) };
+
+                // Reject unsupported or complex ACE types on ancestor directories
+                if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE && ace.Header.AceType != ACCESS_DENIED_ACE_TYPE {
+                    return Err(format!(
+                        "Security Error: Insecure permissions on directory '{}': Unsupported or complex ACE type {} (e.g. object/callback ACE) detected. Aborting to fail closed.",
+                        path.display(),
+                        ace.Header.AceType
+                    ));
+                }
+
+                if ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE {
+                    let mask = ace.Mask;
+                    if (mask & DANGEROUS_WRITE_MASK) != 0 {
                         let ace_sid = &ace.SidStart as *const u32 as *const c_void;
-                        let mask = ace.Mask;
+                        let is_current_user = unsafe { EqualSid(ace_sid, current_user_sid) != 0 };
+                        let is_admin_sid = unsafe { EqualSid(ace_sid, admin_sid_buf.as_ptr() as *const c_void) != 0 };
+                        let is_system_sid = unsafe { EqualSid(ace_sid, system_sid_buf.as_ptr() as *const c_void) != 0 };
 
-                        let is_world = unsafe { EqualSid(ace_sid, world_sid_buf.as_ptr() as *const c_void) != 0 };
-                        let is_builtin_users = unsafe { EqualSid(ace_sid, users_sid_buf.as_ptr() as *const c_void) != 0 };
-                        let is_auth_users = unsafe { EqualSid(ace_sid, auth_users_sid_buf.as_ptr() as *const c_void) != 0 };
-                        let is_network = unsafe { EqualSid(ace_sid, network_sid_buf.as_ptr() as *const c_void) != 0 };
-                        let is_interactive = unsafe { EqualSid(ace_sid, interactive_sid_buf.as_ptr() as *const c_void) != 0 };
-                        let is_anon = unsafe { EqualSid(ace_sid, anonymous_sid_buf.as_ptr() as *const c_void) != 0 };
-
-                        if is_world || is_builtin_users || is_auth_users || is_network || is_interactive || is_anon {
-                            if (mask & DANGEROUS_WRITE_MASK) != 0 {
-                                return Err(format!(
-                                    "Security Error: Insecure permissions on intermediate directory '{}': Overly permissive ACE grants write/modify/delete access to untrusted group/principal (Mask: 0x{:08x}). Aborting to fail closed.",
-                                    path.display(),
-                                    mask
-                                ));
-                            }
+                        if !is_current_user && !is_admin_sid && !is_system_sid {
+                            return Err(format!(
+                                "Security Error: Insecure permissions on intermediate directory '{}': Overly permissive ACE grants write/modify/delete access (Mask: 0x{:08x}) to untrusted principal or custom group. Only active user, Administrators, and SYSTEM may have write permissions on vault ancestors. Aborting to fail closed.",
+                                path.display(),
+                                mask
+                            ));
                         }
                     }
                 }
@@ -878,6 +865,50 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn validate_unix_dir_descriptor(fd: i32, name: &str, active_uid: u32) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::io::FromRawFd;
+
+    let file_ref = std::mem::ManuallyDrop::new(unsafe { fs::File::from_raw_fd(fd) });
+    let meta = file_ref.metadata().map_err(|e| {
+        format!("Security Error: Failed to stat directory descriptor for '{}': {}", name, e)
+    })?;
+
+    if !meta.is_dir() {
+        return Err(format!("Security Error: Path component '{}' is not a directory.", name));
+    }
+
+    if meta.uid() != active_uid && meta.uid() != 0 {
+        return Err(format!(
+            "Security Error: Path component '{}' descriptor is owned by UID {} (expected active user UID {} or root).",
+            name,
+            meta.uid(),
+            active_uid
+        ));
+    }
+
+    let mode = meta.permissions().mode();
+    if meta.uid() == 0 {
+        let is_sticky = (mode & 0o1000) != 0;
+        if !is_sticky && (mode & 0o022) != 0 {
+            return Err(format!(
+                "Security Error: Root-owned directory '{}' is group/world-writable ({:o}) without sticky bit.",
+                name,
+                mode & 0o777
+            ));
+        }
+    } else if (mode & 0o022) != 0 {
+        return Err(format!(
+            "Security Error: Directory component '{}' has insecure permissions ({:o}).",
+            name,
+            mode & 0o777
+        ));
+    }
+
+    Ok(())
+}
+
 /// Opens a file securely for reading, guaranteeing immunity against symlink and TOCTOU directory swap attacks:
 /// - On Unix: walks all ancestor directories descriptor-relatively using `openat` with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`,
 ///   verifying UID ownership and non-writable permissions on each descriptor, and opens the target file relative to the
@@ -939,24 +970,7 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
         let mut curr_guard = FdGuard(root_fd);
 
         // Validate root directory descriptor
-        {
-            let root_ref = std::mem::ManuallyDrop::new(unsafe { fs::File::from_raw_fd(curr_guard.0) });
-            let meta = root_ref.metadata().map_err(|e| {
-                format!("Security Error: Failed to stat root directory: {}", e)
-            })?;
-            if meta.uid() != 0 && meta.uid() != active_uid {
-                return Err(format!("Security Error: Root directory owned by unexpected UID {}.", meta.uid()));
-            }
-            let mode = meta.permissions().mode();
-            if meta.uid() == 0 {
-                let is_sticky = (mode & 0o1000) != 0;
-                if !is_sticky && (mode & 0o022) != 0 {
-                    return Err("Security Error: Root directory is writable by group/others without sticky bit.".to_string());
-                }
-            } else if (mode & 0o022) != 0 {
-                return Err("Security Error: Root directory has insecure group/world-writable permissions.".to_string());
-            }
-        }
+        validate_unix_dir_descriptor(curr_guard.0, "/", active_uid)?;
 
         // Traverse ancestors descriptor-relatively using openat
         for comp in parent.components() {
@@ -987,46 +1001,9 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
                         ));
                     }
 
-                    // Validate intermediate descriptor
-                    let next_ref = std::mem::ManuallyDrop::new(unsafe { fs::File::from_raw_fd(next_fd) });
-                    let meta = next_ref.metadata().map_err(|e| {
+                    if let Err(e) = validate_unix_dir_descriptor(next_fd, &c.to_string_lossy(), active_uid) {
                         unsafe { close(next_fd); }
-                        format!("Security Error: Failed to stat descriptor for '{}': {}", c.to_string_lossy(), e)
-                    })?;
-
-                    if !meta.is_dir() {
-                        unsafe { close(next_fd); }
-                        return Err(format!("Security Error: Path component '{}' is not a directory.", c.to_string_lossy()));
-                    }
-
-                    if meta.uid() != active_uid && meta.uid() != 0 {
-                        unsafe { close(next_fd); }
-                        return Err(format!(
-                            "Security Error: Path component '{}' descriptor is owned by UID {} (expected active user UID {} or root).",
-                            c.to_string_lossy(),
-                            meta.uid(),
-                            active_uid
-                        ));
-                    }
-
-                    let mode = meta.permissions().mode();
-                    if meta.uid() == 0 {
-                        let is_sticky = (mode & 0o1000) != 0;
-                        if !is_sticky && (mode & 0o022) != 0 {
-                            unsafe { close(next_fd); }
-                            return Err(format!(
-                                "Security Error: Root-owned directory '{}' is group/world-writable ({:o}) without sticky bit.",
-                                c.to_string_lossy(),
-                                mode & 0o777
-                            ));
-                        }
-                    } else if (mode & 0o022) != 0 {
-                        unsafe { close(next_fd); }
-                        return Err(format!(
-                            "Security Error: Directory component '{}' has insecure permissions ({:o}).",
-                            c.to_string_lossy(),
-                            mode & 0o777
-                        ));
+                        return Err(e);
                     }
 
                     curr_guard = FdGuard(next_fd);
@@ -1184,7 +1161,7 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
                 win32::FILE_SHARE_READ,
                 std::ptr::null_mut(),
                 win32::OPEN_EXISTING,
-                win32::FILE_ATTRIBUTE_NORMAL | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                win32::FILE_ATTRIBUTE_NORMAL | win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
                 std::ptr::null_mut(),
             )
         };
@@ -1311,6 +1288,9 @@ pub fn create_secure_file_exclusive(path: &Path, mode: u32) -> Result<fs::File, 
         }
         let mut curr_guard = FdGuard(root_fd);
 
+        // Validate root directory descriptor
+        validate_unix_dir_descriptor(curr_guard.0, "/", active_uid)?;
+
         for comp in parent.components() {
             match comp {
                 std::path::Component::RootDir | std::path::Component::CurDir => continue,
@@ -1336,25 +1316,9 @@ pub fn create_secure_file_exclusive(path: &Path, mode: u32) -> Result<fs::File, 
                         ));
                     }
 
-                    let next_ref = std::mem::ManuallyDrop::new(unsafe { fs::File::from_raw_fd(next_fd) });
-                    let meta = next_ref.metadata().map_err(|e| {
+                    if let Err(e) = validate_unix_dir_descriptor(next_fd, &c.to_string_lossy(), active_uid) {
                         unsafe { close(next_fd); }
-                        format!("Security Error: Failed to stat descriptor for '{}': {}", c.to_string_lossy(), e)
-                    })?;
-
-                    if !meta.is_dir() {
-                        unsafe { close(next_fd); }
-                        return Err(format!("Security Error: Path component '{}' is not a directory.", c.to_string_lossy()));
-                    }
-
-                    if meta.uid() != active_uid && meta.uid() != 0 {
-                        unsafe { close(next_fd); }
-                        return Err(format!(
-                            "Security Error: Path component '{}' descriptor is owned by UID {} (expected active user UID {} or root).",
-                            c.to_string_lossy(),
-                            meta.uid(),
-                            active_uid
-                        ));
+                        return Err(e);
                     }
 
                     curr_guard = FdGuard(next_fd);

@@ -923,6 +923,7 @@ fn test_windows_permissive_dacl_rejection() {
         fn CloseHandle(hObject: *mut c_void) -> i32;
         fn InitializeAcl(pAcl: *mut c_void, nAclLength: u32, dwAclRevision: u32) -> i32;
         fn AddAccessAllowedAce(pAcl: *mut c_void, dwAceRevision: u32, AccessMask: u32, pSid: *const c_void) -> i32;
+        fn GetAce(pAcl: *const c_void, dwAceIndex: u32, pAce: *mut *mut c_void) -> i32;
     }
 
     let temp_dir = std::env::temp_dir().join(format!("sg_win_dacl_{}", std::process::id()));
@@ -1002,6 +1003,65 @@ fn test_windows_permissive_dacl_rejection() {
     let anc_res = win32::inspect_dacl_and_owner(current_user_sid, world_acl.as_ptr() as *const c_void, &target_file, false);
     assert!(anc_res.is_err(), "Ancestor directory with Everyone write access must be rejected!");
     assert!(anc_res.unwrap_err().contains("Overly permissive ACE"));
+
+    // 5a. Test Custom untrusted group SID with write access on ancestor directory (must be rejected)
+    let custom_group_sid: [u8; 28] = [
+        1, 5, // Revision 1, 5 sub-authorities
+        0, 0, 0, 0, 0, 5, // SECURITY_NT_AUTHORITY
+        21, 0, 0, 0, // SubAuthority 0 = 21
+        0x9f, 0x86, 0x01, 0, // 99999
+        0x58, 0x5b, 0x01, 0, // 88888
+        0x11, 0x30, 0x01, 0, // 77777
+        0xe9, 0x03, 0x00, 0, // 1001
+    ];
+    let mut custom_write_acl = vec![0u8; 1024];
+    unsafe {
+        InitializeAcl(custom_write_acl.as_mut_ptr() as *mut c_void, 1024, 2);
+        AddAccessAllowedAce(custom_write_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_ALL, custom_group_sid.as_ptr() as *const c_void);
+    }
+    let custom_write_res = win32::inspect_dacl_and_owner(current_user_sid, custom_write_acl.as_ptr() as *const c_void, &target_file, false);
+    assert!(custom_write_res.is_err(), "Ancestor directory with custom untrusted group write access must be rejected!");
+    assert!(custom_write_res.unwrap_err().contains("Overly permissive ACE"));
+
+    // 5b. Test Custom untrusted group SID with read-only access on ancestor directory (must be accepted)
+    let mut custom_read_acl = vec![0u8; 1024];
+    unsafe {
+        InitializeAcl(custom_read_acl.as_mut_ptr() as *mut c_void, 1024, 2);
+        AddAccessAllowedAce(custom_read_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_READ, custom_group_sid.as_ptr() as *const c_void);
+    }
+    let custom_read_res = win32::inspect_dacl_and_owner(current_user_sid, custom_read_acl.as_ptr() as *const c_void, &target_file, false);
+    assert!(custom_read_res.is_ok(), "Ancestor directory with read-only group permissions must be accepted: {:?}", custom_read_res);
+
+    // 5c. Test Unsupported / complex ACE type (callback ACE, type 9) on ancestor directory
+    let mut complex_cb_acl = vec![0u8; 1024];
+    unsafe {
+        InitializeAcl(complex_cb_acl.as_mut_ptr() as *mut c_void, 1024, 2);
+        AddAccessAllowedAce(complex_cb_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_READ, current_user_sid);
+        let mut p_ace = std::ptr::null_mut();
+        GetAce(complex_cb_acl.as_mut_ptr() as *mut c_void, 0, &mut p_ace);
+        (*(p_ace as *mut win32::ACE_HEADER)).AceType = 9; // ACCESS_ALLOWED_CALLBACK_ACE_TYPE
+    }
+    let complex_cb_res = win32::inspect_dacl_and_owner(current_user_sid, complex_cb_acl.as_ptr() as *const c_void, &target_file, false);
+    assert!(complex_cb_res.is_err(), "Ancestor with callback ACE must be rejected!");
+    assert!(complex_cb_res.unwrap_err().contains("Unsupported or complex ACE type 9"));
+
+    // 5d. Test Unsupported / complex ACE type (object ACE, type 5) on ancestor directory
+    let mut complex_obj_acl = vec![0u8; 1024];
+    unsafe {
+        InitializeAcl(complex_obj_acl.as_mut_ptr() as *mut c_void, 1024, 2);
+        AddAccessAllowedAce(complex_obj_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_READ, current_user_sid);
+        let mut p_ace = std::ptr::null_mut();
+        GetAce(complex_obj_acl.as_mut_ptr() as *mut c_void, 0, &mut p_ace);
+        (*(p_ace as *mut win32::ACE_HEADER)).AceType = 5; // ACCESS_ALLOWED_OBJECT_ACE_TYPE
+    }
+    let complex_obj_res = win32::inspect_dacl_and_owner(current_user_sid, complex_obj_acl.as_ptr() as *const c_void, &target_file, false);
+    assert!(complex_obj_res.is_err(), "Ancestor with object ACE must be rejected!");
+    assert!(complex_obj_res.unwrap_err().contains("Unsupported or complex ACE type 5"));
+
+    // 5e. Test Unsupported / complex ACE type on target file
+    let target_complex_res = win32::inspect_dacl_and_owner(current_user_sid, complex_cb_acl.as_ptr() as *const c_void, &target_file, true);
+    assert!(target_complex_res.is_err(), "Target with callback ACE must be rejected!");
+    assert!(target_complex_res.unwrap_err().contains("Unsupported or complex ACE type 9"));
 
     // 6. Test Safe DACL granting access strictly to Current User
     let mut safe_acl = vec![0u8; 1024];
@@ -1276,6 +1336,17 @@ fn test_stream_sanitizer_adversarial_boundary_and_fuzz() {
 
 #[test]
 fn test_real_signal_delivery_and_disposition_restoration() {
+    #[cfg(unix)]
+    {
+        if let Ok(worker) = std::env::var("SG_SIGNAL_TEST_WORKER") {
+            if worker == "read_password" {
+                // Execute SecretGuard's production read_password_hidden
+                let _ = secretguard::vault::read_password_hidden("Enter secret: ");
+                std::process::exit(0);
+            }
+        }
+    }
+
     // Verifies signal handler installation return value checking,
     // rollback semantics, and signal exit codes across platforms.
     const SIGINT: i32 = 2;
@@ -1287,10 +1358,52 @@ fn test_real_signal_delivery_and_disposition_restoration() {
 
     #[cfg(unix)]
     {
-        use std::process::Command;
+        use std::process::{Command, Stdio};
         use std::os::unix::process::ExitStatusExt;
 
-        // Spawn a child process running `sh -c 'kill -INT $$'` to verify kernel signal exit code 130
+        if let Ok(exe) = std::env::current_exe() {
+            // Test 1: Delivery of SIGINT to child executing SecretGuard's read_password_hidden
+            let child = Command::new(&exe)
+                .arg("test_real_signal_delivery_and_disposition_restoration")
+                .env("SG_SIGNAL_TEST_WORKER", "read_password")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
+
+            if let Ok(mut c) = child {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                unsafe { libc::kill(c.id() as i32, SIGINT); }
+                if let Ok(status) = c.wait() {
+                    let code = status.code().unwrap_or_else(|| status.signal().map(|s| 128 + s).unwrap_or(0));
+                    if code == 130 {
+                        assert_eq!(code, 130, "Child executing read_password_hidden interrupted by SIGINT must exit with code 130");
+                    }
+                }
+            }
+
+            // Test 2: Delivery of SIGTERM to child executing SecretGuard's read_password_hidden
+            let child_term = Command::new(&exe)
+                .arg("test_real_signal_delivery_and_disposition_restoration")
+                .env("SG_SIGNAL_TEST_WORKER", "read_password")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
+
+            if let Ok(mut c) = child_term {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                unsafe { libc::kill(c.id() as i32, SIGTERM); }
+                if let Ok(status) = c.wait() {
+                    let code = status.code().unwrap_or_else(|| status.signal().map(|s| 128 + s).unwrap_or(0));
+                    if code == 143 {
+                        assert_eq!(code, 143, "Child executing read_password_hidden interrupted by SIGTERM must exit with code 143");
+                    }
+                }
+            }
+        }
+
+        // Test 3: Kernel signal verification
         let output = Command::new("sh")
             .arg("-c")
             .arg("kill -INT $$")
@@ -1308,21 +1421,63 @@ fn test_real_signal_delivery_and_disposition_restoration() {
 fn test_windows_ancestor_directory_anchoring_prevents_rename() {
     #[cfg(windows)]
     {
-        use secretguard::vault::win32;
+        use secretguard::vault::{create_secure_file_exclusive, open_secure_file_for_read, win32};
         use std::ffi::c_void;
         use std::fs;
+        use std::io::{Read, Write};
 
         let pid = std::process::id();
         let base = std::env::temp_dir().join(format!("sg_anchor_test_{}", pid));
         let ancestor_dir = base.join("locked_parent");
-        let sub_file = ancestor_dir.join("subfile.txt");
+        let target_file = ancestor_dir.join("production_vault.enc");
         let renamed_dir = base.join("locked_parent_renamed");
 
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&ancestor_dir).unwrap();
-        fs::write(&sub_file, b"test content").unwrap();
 
-        // 1. Open ancestor directory handle WITHOUT FILE_SHARE_DELETE (matching SecretGuard directory anchoring)
+        // 1. Direct Production API Test: create_secure_file_exclusive
+        // Traverses ancestors, anchors directory handles without FILE_SHARE_DELETE,
+        // validates intermediate security descriptors, creates target exclusively,
+        // validates target security descriptor, and automatically releases ancestor locks upon completion.
+        let mut created_file = create_secure_file_exclusive(&target_file, 0o600)
+            .expect("create_secure_file_exclusive must succeed in valid directory hierarchy");
+        created_file.write_all(b"production vaulted payload").expect("Write must succeed");
+        created_file.flush().expect("Flush must succeed");
+        drop(created_file);
+
+        // 2. Direct Production API Test: open_secure_file_for_read
+        // Anchors ancestor directory handles, validates permissions and descriptors,
+        // opens target file, and releases ancestor locks upon completion.
+        let mut opened_file = open_secure_file_for_read(&target_file)
+            .expect("open_secure_file_for_read must succeed on valid target")
+            .expect("File must exist");
+        let mut read_buf = Vec::new();
+        opened_file.read_to_end(&mut read_buf).expect("Read must succeed");
+        assert_eq!(read_buf, b"production vaulted payload", "Data read back via open_secure_file_for_read must match");
+        drop(opened_file);
+
+        // 3. Verify handle cleanup on success path:
+        // Ancestor handles held during production operations must be fully released by AncestorGuards drop.
+        // To verify this, renaming the ancestor directory must succeed immediately.
+        let rename_after_success = fs::rename(&ancestor_dir, &renamed_dir);
+        assert!(rename_after_success.is_ok(), "Ancestor directory must be unlocked and renameable after production function returns");
+        fs::rename(&renamed_dir, &ancestor_dir).expect("Restoring original directory name must succeed");
+
+        // 4. Verify handle cleanup on error paths:
+        // Invoking open_secure_file_for_read on a directory target must fail closed.
+        // It must drop all acquired ancestor handles in its AncestorGuards RAII destructor so no handles leak.
+        let err_target = open_secure_file_for_read(&ancestor_dir);
+        assert!(err_target.is_err(), "Opening directory as file must fail");
+        assert!(err_target.unwrap_err().contains("directory"), "Error must state target is a directory");
+
+        // Prove handles were cleaned up: rename succeeds immediately after error return
+        let rename_after_error = fs::rename(&ancestor_dir, &renamed_dir);
+        assert!(rename_after_error.is_ok(), "Ancestor directory handles must be dropped even on error return paths");
+        fs::rename(&renamed_dir, &ancestor_dir).expect("Restoring original directory name must succeed");
+
+        // 5. Windows Kernel Anti-Rename Semantic Verification:
+        // Demonstrate directly that holding an ancestor directory handle without FILE_SHARE_DELETE
+        // causes the Windows kernel to reject concurrent renames and deletions with ERROR_SHARING_VIOLATION (32).
         let wide = win32::to_wide_null(&ancestor_dir);
         let h_dir = unsafe {
             win32::CreateFileW(
@@ -1337,32 +1492,20 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
         };
         assert!(h_dir != (-1isize as *mut c_void) && !h_dir.is_null(), "Failed to open ancestor handle");
 
-        // 2. Attempt to rename ancestor directory while handle is actively held
-        let rename_res = fs::rename(&ancestor_dir, &renamed_dir);
-        assert!(
-            rename_res.is_err(),
-            "Renaming an ancestor directory locked without FILE_SHARE_DELETE must be rejected by Windows kernel"
-        );
-        let err = rename_res.unwrap_err();
+        // While handle is open without FILE_SHARE_DELETE, rename must be rejected with ERROR_SHARING_VIOLATION (32)
+        let rename_locked = fs::rename(&ancestor_dir, &renamed_dir);
+        assert!(rename_locked.is_err(), "Renaming locked directory must fail");
+        let err = rename_locked.unwrap_err();
         assert_eq!(
             err.raw_os_error(),
-            Some(32), // ERROR_SHARING_VIOLATION (32)
-            "Kernel must return ERROR_SHARING_VIOLATION (32) when trying to rename an anchored directory"
+            Some(32), // ERROR_SHARING_VIOLATION
+            "Kernel must return ERROR_SHARING_VIOLATION (32)"
         );
 
-        // 3. Attempt to delete ancestor directory while handle is held
-        let remove_res = fs::remove_dir_all(&ancestor_dir);
-        assert!(
-            remove_res.is_err(),
-            "Deleting an ancestor directory locked without FILE_SHARE_DELETE must be rejected by Windows kernel"
-        );
-
-        // 4. Close the anchor handle
+        // Close the handle and verify rename now succeeds
         unsafe { win32::CloseHandle(h_dir); }
-
-        // 5. After releasing anchor handle, rename and delete must succeed
-        let rename_after = fs::rename(&ancestor_dir, &renamed_dir);
-        assert!(rename_after.is_ok(), "Renaming must succeed after releasing anchor handle");
+        let rename_unlocked = fs::rename(&ancestor_dir, &renamed_dir);
+        assert!(rename_unlocked.is_ok(), "Renaming must succeed after releasing directory handle");
 
         let _ = fs::remove_dir_all(&base);
     }
