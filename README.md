@@ -141,7 +141,7 @@ SecretGuard is organized into 3 clear, dedicated security pillars. Run commands 
 # 🛡️ Pillar 1: Ambient Shield & Runtime Defense
 secretguard shield hook zsh              # Attach sub-millisecond line interceptor
 secretguard shield ghost virtualize .env # Zero-Knowledge LLM context virtualization
-secretguard shield tun start             # In-flight TLS secret swapper
+secretguard shield tun start             # Local token swapper simulation testbed
 secretguard shield wrap npm run dev      # Cloak sensitive output during demos
 secretguard shield clipboard watch       # Clipboard auto-destruct guardian
 secretguard shield radar ./src           # Trojan Source & prompt injection radar
@@ -601,15 +601,15 @@ SecretGuard v0.3.5 delivers rigorous, defense-in-depth hardening across local ke
 
 ### 🛡️ 1. Ambient Shield & Runtime Defense
 * **`secretguard hook bash`**: Native Bash `shopt -s extdebug` with `trap ... DEBUG` line interceptor that stops leaked credentials before execution while preserving normal terminal operation.
-* **`secretguard ghost`**: **Client-Side Polymorphic LLM Context Virtualization** — Replaces active API keys in `.env` with mathematically valid Ghost Tokens (`sk-ghost-...`, `AKIA_GHOST_...`) before AI agents ingest them. Mappings are protected on disk with AES-256-GCM and strict 0600 file permissions.
-* **`secretguard tun`**: Zero-Knowledge TLS Secret Swapper — injects real keys into outbound TLS requests at the local loopback boundary.
+* **`secretguard ghost`**: **Client-Side Polymorphic LLM Context Virtualization** — Replaces active API keys in `.env` with mathematically valid Ghost Tokens (`sk-ghost-...`, `AKIA_GHOST_...`) before AI agents ingest them. Mappings are protected on disk with AES-256-GCM and strict 0600 file permissions with fail-closed atomic persistence.
+* **`secretguard tun`**: **Local Developer Token Swapper [Simulation Prototype]** — Lightweight local simulation testbed for validating credential substitution workflows in development and CI.
 * **`secretguard agent-firewall`**: Terminal gate blocking destructive commands (`rm -rf`, `git push --force`), credential exfiltration (`curl @.env`), and prompt injection vectors before AI agents can execute them.
 * **`secretguard clipboard`**: OS clipboard privacy guardian with automatic 30-second self-destruct countdown timer and instant purge (`secretguard clipboard clean`).
 * **`secretguard radar`**: Scans for Trojan Source attacks (CVE-2021-42574 BiDi overrides) and invisible zero-width Unicode characters used in stealth prompt injection attacks.
 
 ### 📦 2. Hardened Keystore & Team Mesh
 * **`secretguard vault`**: AES-256-GCM encrypted keystore backed by CSPRNG (`OsRng`) master keys and RFC 5869 HMAC-SHA256 HKDF key expansion with atomic 0600 file creation.
-* **`secretguard mesh`**: Serverless, zero-cloud P2P team secret sharing mesh (`.secretguard/mesh.vault`). Multi-recipient envelope encryption allowing teams to share secrets in git without paying SaaS fees.
+* **`secretguard mesh`**: Serverless, zero-cloud P2P team secret sharing mesh (`.secretguard/mesh.vault`). Multi-recipient envelope encryption with Argon2id password key derivation (random 16-byte salts per member), allowing teams to share secrets in git without paying SaaS fees.
 * **`secretguard canary`**: Realistic honeytoken generator planting tripwires (AWS, OpenAI, GitHub, Stripe) in repositories and `.env.example` to detect unauthorized clones or reconnaissance.
 
 ### 🔍 3. Repository Auditing & Remediation

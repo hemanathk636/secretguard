@@ -6,6 +6,16 @@ use std::process::Command;
 
 #[test]
 fn test_ghost_tokens_generation() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_futuristic_ghost_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let engine = SecretGuardEngine::new();
 
     // 1. OpenAI Key
@@ -29,6 +39,9 @@ fn test_ghost_tokens_generation() {
     assert!(virtualized.contains("sk-ghost-"));
     assert!(virtualized.contains("AKIA_GHOST_"));
     assert_eq!(count, 2);
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]

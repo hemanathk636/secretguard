@@ -13,22 +13,34 @@ pub struct GhostSessionTable {
 pub struct GhostVirtualizer;
 
 impl GhostVirtualizer {
-    pub fn get_session_path() -> PathBuf {
+    pub fn try_get_session_path() -> Result<PathBuf, String> {
         if let Ok(p) = std::env::var("SECRETGUARD_GHOST_PATH") {
-            return PathBuf::from(p);
+            let path = PathBuf::from(p);
+            crate::vault::validate_secure_path(&path, true)?;
+            return Ok(path);
         }
         let base_dir = std::env::var("SECRETGUARD_DIR")
             .or_else(|_| std::env::var("USERPROFILE"))
             .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_else(|_| ".".to_string());
+            .map_err(|_| {
+                "Security Error: Neither SECRETGUARD_DIR, USERPROFILE, nor HOME environment variable is set. Shared /tmp fallback is disabled to prevent multi-user symlink and interception vulnerabilities.".to_string()
+            })?;
         let dir = Path::new(&base_dir).join(".secretguard");
-        if fs::create_dir_all(&dir).is_ok() && dir.exists() {
-            return dir.join("ghost_session.enc");
-        }
-        // Graceful fallback for sandboxed environments or restricted user dirs
-        let temp = std::env::temp_dir().join(".secretguard");
-        let _ = fs::create_dir_all(&temp);
-        temp.join("ghost_session.enc")
+        crate::vault::validate_secure_path(&dir, false)?;
+        fs::create_dir_all(&dir).map_err(|e| {
+            format!(
+                "Failed to create .secretguard directory '{}': {}",
+                dir.display(),
+                e
+            )
+        })?;
+        let session_file = dir.join("ghost_session.enc");
+        crate::vault::validate_secure_path(&session_file, true)?;
+        Ok(session_file)
+    }
+
+    pub fn get_session_path() -> PathBuf {
+        Self::try_get_session_path().unwrap_or_else(|e| panic!("{}", e))
     }
 
     fn get_encryption_key() -> Result<[u8; 32], String> {
@@ -37,15 +49,16 @@ impl GhostVirtualizer {
 
     /// Loads encrypted Ghost token mapping from disk (AES-256-GCM)
     pub fn load_session() -> GhostSessionTable {
-        let path = Self::get_session_path();
-        if path.exists() {
-            if let Ok(encrypted_bytes) = fs::read(&path) {
-                if let Ok(key) = Self::get_encryption_key() {
-                    if let Ok(decrypted_bytes) = decrypt_vault_payload(&encrypted_bytes, &key) {
-                        if let Ok(table) =
-                            serde_json::from_slice::<GhostSessionTable>(&decrypted_bytes)
-                        {
-                            return table;
+        if let Ok(path) = Self::try_get_session_path() {
+            if path.exists() {
+                if let Ok(encrypted_bytes) = fs::read(&path) {
+                    if let Ok(key) = Self::get_encryption_key() {
+                        if let Ok(decrypted_bytes) = decrypt_vault_payload(&encrypted_bytes, &key) {
+                            if let Ok(table) =
+                                serde_json::from_slice::<GhostSessionTable>(&decrypted_bytes)
+                            {
+                                return table;
+                            }
                         }
                     }
                 }
@@ -54,9 +67,10 @@ impl GhostVirtualizer {
         GhostSessionTable::default()
     }
 
-    /// Encrypts and securely persists Ghost token mapping with restricted permissions (0600)
+    /// Encrypts and securely persists Ghost token mapping atomically with restricted permissions (0600)
     pub fn save_session(table: &GhostSessionTable) -> Result<(), std::io::Error> {
-        let path = Self::get_session_path();
+        let path = Self::try_get_session_path()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -71,24 +85,49 @@ impl GhostVirtualizer {
         let key = Self::get_encryption_key().map_err(std::io::Error::other)?;
         let encrypted = encrypt_vault_payload(&serialized, &key).map_err(std::io::Error::other)?;
 
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&path)?;
-            file.write_all(&encrypted)?;
-        }
-        #[cfg(not(unix))]
-        {
-            fs::write(&path, encrypted)?;
+        // Write atomically via a temporary file with restricted 0600 permissions
+        let nonce_suffix = format!(
+            "{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let temp_path = path.with_extension(format!("tmp.{}", nonce_suffix));
+
+        let write_res = (|| -> Result<(), std::io::Error> {
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut file = fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .mode(0o600)
+                    .open(&temp_path)?;
+                file.write_all(&encrypted)?;
+                file.sync_all()?;
+            }
+            #[cfg(not(unix))]
+            {
+                use std::io::Write;
+                let mut file = fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&temp_path)?;
+                file.write_all(&encrypted)?;
+                file.sync_all()?;
+            }
+            fs::rename(&temp_path, &path)?;
+            Ok(())
+        })();
+
+        if write_res.is_err() && temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
         }
 
-        Ok(())
+        write_res
     }
 
     /// Generates a format-preserving polymorphic Ghost Token from a real key
@@ -129,11 +168,15 @@ impl GhostVirtualizer {
         }
     }
 
-    /// Virtualizes text, replacing real keys with Ghost Tokens and saving the encrypted mapping
-    pub fn virtualize_text(input: &str, engine: &SecretGuardEngine) -> (String, usize) {
+    /// Virtualizes text, replacing real keys with Ghost Tokens and saving the encrypted mapping.
+    /// Fails closed if session persistence fails.
+    pub fn try_virtualize_text(
+        input: &str,
+        engine: &SecretGuardEngine,
+    ) -> Result<(String, usize), String> {
         let scan = engine.scan_and_sanitize(input);
         if !scan.has_secret {
-            return (input.to_string(), 0);
+            return Ok((input.to_string(), 0));
         }
 
         let mut session = Self::load_session();
@@ -157,8 +200,21 @@ impl GhostVirtualizer {
             }
         }
 
-        let _ = Self::save_session(&session);
-        (output, count)
+        if count > 0 {
+            Self::save_session(&session).map_err(|e| {
+                format!(
+                    "Security Error: Failed to securely persist Ghost session (failing closed): {}",
+                    e
+                )
+            })?;
+        }
+
+        Ok((output, count))
+    }
+
+    /// Virtualizes text, failing closed with a panic if session persistence fails.
+    pub fn virtualize_text(input: &str, engine: &SecretGuardEngine) -> (String, usize) {
+        Self::try_virtualize_text(input, engine).unwrap_or_else(|e| panic!("{}", e))
     }
 
     pub fn virtualize_file(
@@ -172,7 +228,7 @@ impl GhostVirtualizer {
         let content =
             fs::read_to_string(target_file).map_err(|e| format!("Failed to read file: {}", e))?;
 
-        let (virtualized, count) = Self::virtualize_text(&content, engine);
+        let (virtualized, count) = Self::try_virtualize_text(&content, engine)?;
         let out_path = target_file.with_extension("ghost");
 
         fs::write(&out_path, virtualized)

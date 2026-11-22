@@ -1,16 +1,25 @@
+//! SecretSwapper - Experimental Local Developer Simulation Testbed
+//!
+//! Note on Scope: `secretguard tun` is a local developer simulation prototype for testing
+//! synthetic mock token substitution in development and CI environments. It operates as
+//! an HTTP mock/relay endpoint for developers testing AI agent workflows without real
+//! credentials. It is NOT a production-grade TLS reverse proxy and does not perform
+//! in-flight TLS interception or dynamic certificate authority signing.
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-/// Configuration mapping synthetic mock tokens to real secrets
+/// Configuration mapping synthetic mock tokens to real secrets for local simulation
 #[derive(Debug, Clone, Default)]
 pub struct SwapperConfig {
     /// Maps mock token (e.g. "sk-proj-FAKETEST...") -> real token (e.g. "sk-proj-REAL...")
     pub mappings: HashMap<String, String>,
 }
 
+/// Experimental local developer simulation testbed for token substitution
 pub struct SecretSwapper {
     config: Arc<Mutex<SwapperConfig>>,
 }
@@ -60,10 +69,14 @@ impl SecretSwapper {
         (text.into_bytes(), replacements)
     }
 
-    /// Start a local proxy listener on specified port
+    /// Start a local proxy listener on specified port (simulation testbed)
     pub fn start_local_proxy(self: Arc<Self>, bind_addr: &str) -> Result<String, String> {
-        let listener = TcpListener::bind(bind_addr)
-            .map_err(|e| format!("Failed to bind TLS Secret Swapper to {}: {}", bind_addr, e))?;
+        let listener = TcpListener::bind(bind_addr).map_err(|e| {
+            format!(
+                "Failed to bind local simulation swapper to {}: {}",
+                bind_addr, e
+            )
+        })?;
 
         let local_addr = listener
             .local_addr()
@@ -97,13 +110,13 @@ impl SecretSwapper {
         // Simple local HTTP mock or relay acknowledgment for zero-cloud testing
         let req_str = String::from_utf8_lossy(&rewritten_req);
         if req_str.starts_with("CONNECT ") {
-            // HTTPS Tunnel establish simulation
+            // HTTPS Tunnel establish simulation response
             let response = "HTTP/1.1 200 Connection Established\r\n\r\n";
             client_stream.write_all(response.as_bytes())?;
         } else {
             // Standard HTTP intercepted relay
             let response_body = format!(
-                r#"{{"status":"swapped","swapped_tokens":{},"message":"SecretGuard TLS Swapper active: Real token injected in-flight."}}"#,
+                r#"{{"status":"swapped","swapped_tokens":{},"simulation":true,"message":"SecretGuard Local Swapper [Simulation]: Mock tokens substituted for local testing."}}"#,
                 swapped_count
             );
             let response = format!(
@@ -122,14 +135,18 @@ impl SecretSwapper {
     pub fn run_cli(args: &[String]) {
         if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
             eprintln!(
-                r#"secretguard tun - Zero-Knowledge TLS Secret Swapper Micro-Proxy
+                r#"secretguard tun [EXPERIMENTAL] - Local Developer Token Swapper Simulation Testbed
+
+Notice: This command provides a lightweight local simulation testbed for validating
+credential substitution workflows during development and automated CI testing.
+It is an experimental developer utility, NOT a production-grade TLS reverse proxy.
 
 USAGE:
     secretguard tun <SUBCOMMAND> [OPTIONS]
 
 SUBCOMMANDS:
-    start [--port 8080] [--map MOCK=REAL...]  Starts local in-flight secret swapper proxy
-    swap "<TEXT>" --map MOCK=REAL             Dry-run payload swapping simulation
+    start [--port 8080] [--map MOCK=REAL...]  Starts local simulation proxy listener
+    swap "<TEXT>" [--map MOCK=REAL...]        Simulates payload swapping on input text
 "#
             );
             return;
@@ -138,46 +155,74 @@ SUBCOMMANDS:
         match args[0].as_str() {
             "swap" => {
                 if args.len() < 2 {
-                    eprintln!("Usage: secretguard tun swap \"<PAYLOAD>\" --map MOCK=REAL");
+                    eprintln!("Usage: secretguard tun swap \"<PAYLOAD>\" [--map MOCK=REAL...]");
                     std::process::exit(2);
                 }
                 let payload = &args[1];
                 let mut cfg = SwapperConfig::default();
 
-                for arg in &args[2..] {
-                    if let Some(stripped) = arg.strip_prefix("--map=") {
+                let mut i = 2;
+                while i < args.len() {
+                    if args[i] == "--map" && i + 1 < args.len() {
+                        let mapping = &args[i + 1];
+                        let parts: Vec<&str> = mapping.splitn(2, '=').collect();
+                        if parts.len() == 2 {
+                            cfg.mappings
+                                .insert(parts[0].to_string(), parts[1].to_string());
+                        }
+                        i += 2;
+                    } else if let Some(stripped) = args[i].strip_prefix("--map=") {
                         let parts: Vec<&str> = stripped.splitn(2, '=').collect();
                         if parts.len() == 2 {
                             cfg.mappings
                                 .insert(parts[0].to_string(), parts[1].to_string());
                         }
-                    } else if arg == "--map" {
-                        // handled next
+                        i += 1;
+                    } else {
+                        i += 1;
                     }
                 }
 
                 let (swapped, count) = Self::swap_request_payload(payload.as_bytes(), &cfg);
-                println!("🔄 Swapped {} secret tokens in payload:", count);
+                println!("🔄 Swapped {} secret tokens in simulation payload:", count);
                 println!("{}", String::from_utf8_lossy(&swapped));
             }
             "start" => {
                 let mut port = "8080";
-                if let Some(pos) = args.iter().position(|a| a == "--port") {
-                    if pos + 1 < args.len() {
-                        port = &args[pos + 1];
+                let swapper = Arc::new(Self::new());
+
+                let mut i = 1;
+                while i < args.len() {
+                    if args[i] == "--port" && i + 1 < args.len() {
+                        port = &args[i + 1];
+                        i += 2;
+                    } else if args[i] == "--map" && i + 1 < args.len() {
+                        let mapping = &args[i + 1];
+                        let parts: Vec<&str> = mapping.splitn(2, '=').collect();
+                        if parts.len() == 2 {
+                            swapper.add_mapping(parts[0], parts[1]);
+                        }
+                        i += 2;
+                    } else if let Some(stripped) = args[i].strip_prefix("--map=") {
+                        let parts: Vec<&str> = stripped.splitn(2, '=').collect();
+                        if parts.len() == 2 {
+                            swapper.add_mapping(parts[0], parts[1]);
+                        }
+                        i += 1;
+                    } else {
+                        i += 1;
                     }
                 }
 
-                let swapper = Arc::new(Self::new());
                 let bind_target = format!("127.0.0.1:{}", port);
-                match swapper.start_local_proxy(&bind_target) {
+                match swapper.clone().start_local_proxy(&bind_target) {
                     Ok(addr) => {
-                        println!("👻 Zero-Knowledge TLS Secret Swapper listening on: \x1b[32mhttp://{}\x1b[0m", addr);
+                        println!("🧪 SecretGuard Local Swapper [Simulation Prototype] listening on: \x1b[32mhttp://{}\x1b[0m", addr);
                         println!(
-                            "💡 Pass HTTP_PROXY=http://{} to your AI agent or application.",
+                            "💡 Configure HTTP_PROXY=http://{} for local test environments.",
                             addr
                         );
-                        println!("🛡️ Applications run with fake synthetic mocks; real keys injected in flight.");
+                        println!("⚠️  Note: This simulation testbed is for development workflows, not production TLS interception.");
                         println!("Press Ctrl+C to stop.");
                         loop {
                             thread::park();

@@ -32,6 +32,25 @@ $TempExtract = Join-Path $env:TEMP "secretguard_extract_$((Get-Random))"
 Write-Host "📦 Downloading SecretGuard ($Tag)..." -ForegroundColor Gray
 try {
     Invoke-WebRequest -Uri $ZipUrl -OutFile $TempZip -UseBasicParsing
+
+    # Verify SHA-256 checksum before extracting
+    $ShaUrl = "$ZipUrl.sha256"
+    $TempSha = Join-Path $env:TEMP "secretguard-$Tag.zip.sha256"
+    Write-Host "🔒 Verifying SHA-256 checksum..." -ForegroundColor Gray
+    try {
+        Invoke-WebRequest -Uri $ShaUrl -OutFile $TempSha -UseBasicParsing
+        $ExpectedHash = ((Get-Content -Path $TempSha).Trim() -split '\s+')[0].ToLower()
+        $ActualHash = (Get-FileHash -Path $TempZip -Algorithm SHA256).Hash.ToLower()
+        if ($ExpectedHash -ne $ActualHash) {
+            throw "Integrity error: SHA-256 checksum mismatch! Expected: $ExpectedHash, Computed: $ActualHash"
+        }
+        Write-Host "✅ Checksum verified: $ActualHash" -ForegroundColor DarkGray
+    } catch {
+        throw "Checksum verification failed: $($_.Exception.Message)"
+    } finally {
+        if (Test-Path $TempSha) { Remove-Item -Path $TempSha -Force -ErrorAction SilentlyContinue }
+    }
+
     Expand-Archive -Path $TempZip -DestinationPath $TempExtract -Force
     
     # Locate binary in extracted folder

@@ -46,6 +46,19 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "Downloading SecretGuard (${TARGET}) ${LATEST_TAG}..."
 curl -fsSL "$URL" -o "${TMP_DIR}/${ARCHIVE}"
+curl -fsSL "${URL}.sha256" -o "${TMP_DIR}/${ARCHIVE}.sha256"
+
+echo "🔒 Verifying SHA-256 checksum..."
+(
+  cd "$TMP_DIR"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c "${ARCHIVE}.sha256"
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -c "${ARCHIVE}.sha256"
+  else
+    echo "⚠️ Warning: Neither sha256sum nor shasum available to verify checksum."
+  fi
+)
 
 tar -xzf "${TMP_DIR}/${ARCHIVE}" -C "$TMP_DIR"
 

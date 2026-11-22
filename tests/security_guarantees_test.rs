@@ -42,6 +42,16 @@ fn test_shell_history_leak_prevention() {
 
 #[test]
 fn test_ai_agent_log_and_context_air_gap() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_sec_guard_ghost_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let engine = SecretGuardEngine::new();
 
     // Verify Ghost Tokens ensure raw keys never reach LLM prompt buffers
@@ -57,6 +67,9 @@ fn test_ai_agent_log_and_context_air_gap() {
     // Decoy ghost tokens must be present
     assert!(ghost_virtualized.contains("sk-ghost-"));
     assert!(ghost_virtualized.contains("AKIA_GHOST_"));
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]

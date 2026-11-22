@@ -340,10 +340,27 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
 fn scan_mcp_directory(dir: &Path, engine: &SecretGuardEngine, findings: &mut Vec<Value>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(e) => {
+            findings.push(json!({
+                "directory": dir.to_string_lossy(),
+                "error": format!("Failed to read directory: {}", e)
+            }));
+            return;
+        }
     };
 
-    for entry in entries.flatten() {
+    for entry_res in entries {
+        let entry = match entry_res {
+            Ok(e) => e,
+            Err(e) => {
+                findings.push(json!({
+                    "directory": dir.to_string_lossy(),
+                    "error": format!("Failed to read entry: {}", e)
+                }));
+                continue;
+            }
+        };
+
         let p = entry.path();
         let fname = p.file_name().unwrap_or_default().to_string_lossy();
 
@@ -351,25 +368,47 @@ fn scan_mcp_directory(dir: &Path, engine: &SecretGuardEngine, findings: &mut Vec
             continue;
         }
 
-        if p.is_dir() {
-            scan_mcp_directory(&p, engine, findings);
-        } else if p.is_file() {
-            if let Ok(metadata) = entry.metadata() {
-                if metadata.len() > 1_000_000 {
-                    continue;
-                }
+        let meta = match fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(e) => {
+                findings.push(json!({
+                    "file": p.to_string_lossy(),
+                    "error": format!("Failed to inspect metadata: {}", e)
+                }));
+                continue;
             }
-            if let Ok(content) = fs::read_to_string(&p) {
-                for (idx, line) in content.lines().enumerate() {
-                    let res = engine.scan_and_sanitize(line);
-                    if res.has_secret {
-                        findings.push(json!({
-                            "file": p.to_string_lossy(),
-                            "line": idx + 1,
-                            "rules": res.matched_rules,
-                            "redacted": res.sanitized_text.trim()
-                        }));
+        };
+
+        if meta.file_type().is_symlink() {
+            continue; // Refuse to follow symlinks
+        }
+
+        if meta.is_dir() {
+            scan_mcp_directory(&p, engine, findings);
+        } else if meta.is_file() {
+            if meta.len() > 1_000_000 {
+                continue;
+            }
+            match fs::read(&p) {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    for (idx, line) in text.lines().enumerate() {
+                        let res = engine.scan_and_sanitize(line);
+                        if res.has_secret {
+                            findings.push(json!({
+                                "file": p.to_string_lossy(),
+                                "line": idx + 1,
+                                "rules": res.matched_rules,
+                                "redacted": res.sanitized_text.trim()
+                            }));
+                        }
                     }
+                }
+                Err(e) => {
+                    findings.push(json!({
+                        "file": p.to_string_lossy(),
+                        "error": format!("Failed to read file: {}", e)
+                    }));
                 }
             }
         }

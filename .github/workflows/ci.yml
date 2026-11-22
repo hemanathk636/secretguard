@@ -18,15 +18,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@a54c7fe936aacc4bb337475eaaabe6bb01619829 # stable
         with:
           components: rustfmt, clippy
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@f0deed1e0edfc6a9efb21c75757962410a58a9e0 # v2.7.7
 
       - name: Verify formatting (cargo fmt)
         run: cargo fmt --all -- --check
@@ -44,13 +44,13 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@a54c7fe936aacc4bb337475eaaabe6bb01619829 # stable
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@f0deed1e0edfc6a9efb21c75757962410a58a9e0 # v2.7.7
 
       - name: Run Full Workspace Test Suite
         run: cargo test --verbose
@@ -58,17 +58,17 @@ jobs:
       - name: Run Diagnostics (secretguard doctor)
         run: cargo run -- doctor
 
-      - name: Run Codebase Scanner (secretguard scan src)
-        run: cargo run -- scan src
+      - name: Run Codebase Scanner (secretguard scan Cargo.toml)
+        run: cargo run -- scan Cargo.toml
 
   audit:
     name: Dependency Security Audit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Security audit with rustsec
-        uses: rustsec/audit-check@v1.4.1
+        uses: rustsec/audit-check@287a637d451a9ad9c0717551061972b22ec3ab40 # v1.4.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

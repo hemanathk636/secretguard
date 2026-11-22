@@ -9,8 +9,30 @@ permissions:
   contents: write
 
 jobs:
+  verify:
+    name: Pre-Release Quality & Security Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@a54c7fe936aacc4bb337475eaaabe6bb01619829 # stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Verify formatting (cargo fmt)
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy linter (-D warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run Workspace Tests
+        run: cargo test --verbose
+
   build:
     name: Build - ${{ matrix.target }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -42,10 +64,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@a54c7fe936aacc4bb337475eaaabe6bb01619829 # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -73,7 +95,7 @@ jobs:
           "$hash  ${{ matrix.archive }}" | Set-Content -Path "${{ matrix.archive }}.sha256"
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@c062e496a77d2426618797b5e408544c77ea1a6a # v2.0.8
         with:
           files: |
             ${{ matrix.archive }}

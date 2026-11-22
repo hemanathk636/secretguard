@@ -149,22 +149,36 @@ fn run_audit(target_path: Option<&str>, engine: &SecretGuardEngine) {
         }
     };
 
-    let reader = io::BufReader::new(file);
+    let mut reader = io::BufReader::new(file);
     let mut total_lines = 0;
     let mut leaks = 0;
+    let mut line_buf = String::new();
 
-    for (idx, line) in reader.lines().map_while(Result::ok).enumerate() {
-        total_lines += 1;
-        let res = engine.scan_and_sanitize(&line);
-        if res.has_secret {
-            leaks += 1;
-            println!(
-                "⚠️  [Line {}] Detected {:?}\n   Original: {}\n   Redacted: {}\n",
-                idx + 1,
-                res.matched_rules,
-                line.trim(),
-                res.sanitized_text.trim()
-            );
+    loop {
+        line_buf.clear();
+        match reader.read_line(&mut line_buf) {
+            Ok(0) => break, // Clean EOF
+            Ok(_) => {
+                total_lines += 1;
+                let res = engine.scan_and_sanitize(&line_buf);
+                if res.has_secret {
+                    leaks += 1;
+                    println!(
+                        "⚠️  [Line {}] Detected {:?}\n   Original: {}\n   Redacted: {}\n",
+                        total_lines,
+                        res.matched_rules,
+                        line_buf.trim(),
+                        res.sanitized_text.trim()
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "❌ Error reading history line after line {}: {}. Aborting audit.",
+                    total_lines, e
+                );
+                process::exit(1);
+            }
         }
     }
 
@@ -237,7 +251,12 @@ fn run_clean_history(target_path: Option<&str>, dry_run: bool, engine: &SecretGu
                     sanitized_lines.push(line);
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                eprintln!(
+                    "⚠️ Warning: Skipping non-UTF-8 or unreadable line at line {}: {}",
+                    idx + 1,
+                    e
+                );
                 continue;
             }
         }
@@ -324,8 +343,13 @@ fn run_doctor(engine: &SecretGuardEngine) {
 
     // 1. Engine Benchmarking & Latency Verification
     let start = std::time::Instant::now();
-    let test_cmd = "curl -H 'Authorization: Bearer sk-proj-1234567890abcdef1234567890abcdef12345678' https://api.openai.com";
-    let res = engine.scan_and_sanitize(test_cmd);
+    let key_prefix = "sk-proj-";
+    let key_entropy = "1234567890abcdef1234567890abcdef12345678";
+    let test_cmd = format!(
+        "curl -H 'Authorization: Bearer {}{}' https://api.openai.com",
+        key_prefix, key_entropy
+    );
+    let res = engine.scan_and_sanitize(&test_cmd);
     let elapsed = start.elapsed();
     let elapsed_micros = elapsed.as_secs_f64() * 1_000_000.0;
 
@@ -594,49 +618,109 @@ exit 0
     println!("🔒 Every 'git commit' in this repo is now shielded in <0.02ms with zero perceptible delay.\n");
 }
 
-fn scan_file(path: &Path, engine: &SecretGuardEngine, json_mode: bool) -> (usize, usize) {
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return (0, 0),
-    };
+#[derive(Default)]
+struct ScanStats {
+    files_scanned: usize,
+    lines_scanned: usize,
+    leaks_found: usize,
+    errors_encountered: usize,
+    symlinks_skipped: usize,
+}
 
-    let reader = io::BufReader::new(file);
+fn scan_file(
+    path: &Path,
+    engine: &SecretGuardEngine,
+    json_mode: bool,
+) -> Result<(usize, usize), String> {
+    let mut file =
+        File::open(path).map_err(|e| format!("Failed to open '{}': {}", path.display(), e))?;
+
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)
+        .map_err(|e| format!("Failed to read '{}': {}", path.display(), e))?;
+
+    let is_binary = buffer.iter().take(1024).any(|&b| b == 0);
     let mut lines_count = 0;
     let mut leaks_count = 0;
 
-    for (idx, line) in reader.lines().map_while(Result::ok).enumerate() {
-        lines_count += 1;
-        let res = engine.scan_and_sanitize(&line);
-        if res.has_secret {
-            leaks_count += 1;
-            if !json_mode {
-                println!(
-                    "⚠️  [{}:{}] Found {:?}\n   Redacted: {}\n",
-                    path.display(),
-                    idx + 1,
-                    res.matched_rules,
-                    res.sanitized_text.trim()
-                );
+    if is_binary {
+        // Binary stream scan: scan line chunks safely without failing on invalid UTF-8
+        for (idx, chunk) in buffer.split(|&b| b == b'\n').enumerate() {
+            lines_count += 1;
+            let text = String::from_utf8_lossy(chunk);
+            let res = engine.scan_and_sanitize(&text);
+            if res.has_secret {
+                leaks_count += 1;
+                if !json_mode {
+                    println!(
+                        "⚠️  [{}:{}] Found {:?} (binary stream)\n   Redacted: {}\n",
+                        path.display(),
+                        idx + 1,
+                        res.matched_rules,
+                        res.sanitized_text.trim()
+                    );
+                }
+            }
+        }
+    } else {
+        let text = match std::str::from_utf8(&buffer) {
+            Ok(s) => s.to_string(),
+            Err(_) => String::from_utf8_lossy(&buffer).to_string(),
+        };
+
+        for (idx, line) in text.lines().enumerate() {
+            lines_count += 1;
+            let res = engine.scan_and_sanitize(line);
+            if res.has_secret {
+                leaks_count += 1;
+                if !json_mode {
+                    println!(
+                        "⚠️  [{}:{}] Found {:?}\n   Redacted: {}\n",
+                        path.display(),
+                        idx + 1,
+                        res.matched_rules,
+                        res.sanitized_text.trim()
+                    );
+                }
             }
         }
     }
-    (lines_count, leaks_count)
+    Ok((lines_count, leaks_count))
 }
 
 fn scan_dir_recursive(
     dir: &Path,
     engine: &SecretGuardEngine,
-    total_files: &mut usize,
-    total_lines: &mut usize,
-    total_leaks: &mut usize,
+    stats: &mut ScanStats,
     json_mode: bool,
 ) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(e) => {
+            stats.errors_encountered += 1;
+            if !json_mode {
+                eprintln!("❌ Error reading directory '{}': {}", dir.display(), e);
+            }
+            return;
+        }
     };
 
-    for entry in entries.flatten() {
+    for entry_res in entries {
+        let entry = match entry_res {
+            Ok(e) => e,
+            Err(e) => {
+                stats.errors_encountered += 1;
+                if !json_mode {
+                    eprintln!(
+                        "❌ Error reading directory entry in '{}': {}",
+                        dir.display(),
+                        e
+                    );
+                }
+                continue;
+            }
+        };
+
         let p = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with('.') && name != ".env" && !name.starts_with(".env.") {
@@ -652,13 +736,39 @@ fn scan_dir_recursive(
             continue;
         }
 
-        if p.is_dir() {
-            scan_dir_recursive(&p, engine, total_files, total_lines, total_leaks, json_mode);
-        } else if p.is_file() {
-            *total_files += 1;
-            let (lines, leaks) = scan_file(&p, engine, json_mode);
-            *total_lines += lines;
-            *total_leaks += leaks;
+        // Strictly avoid following symlinks to prevent directory traversal loops or escapes
+        let meta = match std::fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(e) => {
+                stats.errors_encountered += 1;
+                if !json_mode {
+                    eprintln!("❌ Error inspecting metadata for '{}': {}", p.display(), e);
+                }
+                continue;
+            }
+        };
+
+        if meta.file_type().is_symlink() {
+            stats.symlinks_skipped += 1;
+            continue;
+        }
+
+        if meta.is_dir() {
+            scan_dir_recursive(&p, engine, stats, json_mode);
+        } else if meta.is_file() {
+            stats.files_scanned += 1;
+            match scan_file(&p, engine, json_mode) {
+                Ok((lines, leaks)) => {
+                    stats.lines_scanned += lines;
+                    stats.leaks_found += leaks;
+                }
+                Err(err) => {
+                    stats.errors_encountered += 1;
+                    if !json_mode {
+                        eprintln!("❌ {}", err);
+                    }
+                }
+            }
         }
     }
 }
@@ -672,25 +782,23 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
         );
     }
 
-    let mut total_files = 0;
-    let mut total_lines = 0;
-    let mut total_leaks = 0;
+    let mut stats = ScanStats::default();
     let start_scan = std::time::Instant::now();
 
     if path.is_file() {
-        total_files = 1;
-        let (lines, leaks) = scan_file(&path, engine, json_mode);
-        total_lines = lines;
-        total_leaks = leaks;
+        stats.files_scanned = 1;
+        match scan_file(&path, engine, json_mode) {
+            Ok((lines, leaks)) => {
+                stats.lines_scanned = lines;
+                stats.leaks_found = leaks;
+            }
+            Err(err) => {
+                stats.errors_encountered += 1;
+                eprintln!("❌ {}", err);
+            }
+        }
     } else if path.is_dir() {
-        scan_dir_recursive(
-            &path,
-            engine,
-            &mut total_files,
-            &mut total_lines,
-            &mut total_leaks,
-            json_mode,
-        );
+        scan_dir_recursive(&path, engine, &mut stats, json_mode);
     } else {
         eprintln!("❌ Target path '{}' does not exist.", path.display());
         process::exit(1);
@@ -701,14 +809,16 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
     if json_mode {
         let json_output = serde_json::json!({
             "target": path.display().to_string(),
-            "files_scanned": total_files,
-            "lines_scanned": total_lines,
-            "leaks_found": total_leaks,
+            "files_scanned": stats.files_scanned,
+            "lines_scanned": stats.lines_scanned,
+            "leaks_found": stats.leaks_found,
+            "errors_encountered": stats.errors_encountered,
+            "symlinks_skipped": stats.symlinks_skipped,
             "scan_duration_ms": elapsed.as_millis(),
-            "clean": total_leaks == 0
+            "clean": stats.leaks_found == 0 && stats.errors_encountered == 0
         });
         println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
-        if total_leaks > 0 {
+        if stats.leaks_found > 0 || stats.errors_encountered > 0 {
             process::exit(1);
         } else {
             process::exit(0);
@@ -716,24 +826,42 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
     }
 
     println!("────────────────────────────────────────────");
-    println!("Files Scanned:    {}", total_files);
-    println!("Lines Scanned:    {}", total_lines);
+    println!("Files Scanned:       {}", stats.files_scanned);
+    println!("Lines Scanned:       {}", stats.lines_scanned);
+    if stats.symlinks_skipped > 0 {
+        println!(
+            "Symlinks Skipped:    {} (unfollowed)",
+            stats.symlinks_skipped
+        );
+    }
+    if stats.errors_encountered > 0 {
+        println!(
+            "Scan Errors:         {} (uninspected)",
+            stats.errors_encountered
+        );
+    }
     println!(
-        "Execution Time:   {:.2} ms ({:.0} lines/sec)",
+        "Execution Time:      {:.2} ms ({:.0} lines/sec)",
         elapsed.as_secs_f64() * 1000.0,
         if elapsed.as_secs_f64() > 0.0 {
-            total_lines as f64 / elapsed.as_secs_f64()
+            stats.lines_scanned as f64 / elapsed.as_secs_f64()
         } else {
             0.0
         }
     );
-    if total_leaks == 0 {
+    if stats.leaks_found == 0 && stats.errors_encountered == 0 {
         println!("✅ Clean! Zero unmasked secrets found across codebase.");
         process::exit(0);
+    } else if stats.errors_encountered > 0 {
+        eprintln!(
+            "🚨 Scan incomplete: Encountered {} error(s) during inspection ({} leaks detected). Aborting fail-closed.",
+            stats.errors_encountered, stats.leaks_found
+        );
+        process::exit(2);
     } else {
         println!(
             "🚨 Found {} exposed credentials across scanned files!",
-            total_leaks
+            stats.leaks_found
         );
         process::exit(1);
     }
@@ -753,7 +881,7 @@ zshaddhistory() {
     fi
 
     local sanitized
-    sanitized=$(secretguard sanitize "$raw_cmd" 2>/dev/null)
+    sanitized=$(printf '%s' "$raw_cmd" | secretguard sanitize - 2>/dev/null)
     local status=$?
 
     if [[ $status -eq 1 ]]; then
@@ -775,7 +903,7 @@ _secretguard_bash_preexec() {
     if [[ "$cmd" =~ ^secretguard || "$cmd" =~ ^PROMPT_COMMAND || ${#cmd} -lt 15 ]]; then
         return 0
     fi
-    if ! secretguard check "$cmd" >/dev/null 2>&1; then
+    if ! printf '%s' "$cmd" | secretguard check - >/dev/null 2>&1; then
         echo -e "\n\033[1;31m[secretguard]\033[0m 🚨 Secret intercepted before execution!" >&2
         echo -e "\033[0;33mCommand contains exposed credential and was blocked from running.\033[0m" >&2
         history -d $(history 1 | awk '{print $1}') 2>/dev/null || true
@@ -799,7 +927,7 @@ function __secretguard_fish_preexec --on-event fish_preexec
     if test (string length "$raw_cmd") -lt 15
         return 0
     end
-    if not secretguard check "$raw_cmd" 2>/dev/null
+    if not printf '%s' "$raw_cmd" | secretguard check - 2>/dev/null
         echo -e "\e[1;33m[secretguard]\e[0m 🚨 Secret detected! Stripping from fish history..."
         history delete --exact --case-sensitive "$raw_cmd" 2>/dev/null
     end
@@ -813,7 +941,7 @@ end
 $env.config.hooks.pre_execution = ($env.config.hooks.pre_execution | default [] | append { ||
     let last_cmd = (history | last | get -i command)
     if ($last_cmd != null and ($last_cmd | str length) >= 15) {
-        if not (secretguard check $last_cmd | complete | get exit_code == 0) {
+        if not ($last_cmd | secretguard check - | complete | get exit_code == 0) {
             print -e $"(ansi yellow)[secretguard](ansi reset) 🚨 Secret detected in command buffer!"
         }
     }
@@ -828,7 +956,7 @@ if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) {
     Set-PSReadLineOption -AddToHistoryHandler {
         param([string]$line)
         if ([string]::IsNullOrWhiteSpace($line) -or $line.Length -lt 15) { return $true }
-        $check = secretguard check "$line" 2>$null
+        $check = $line | secretguard check - 2>$null
         if ($LASTEXITCODE -ne 0) {
             [Console]::ForegroundColor = [ConsoleColor]::Yellow
             [Console]::Error.WriteLine("`n[secretguard] 🚨 Secret intercepted! Excluded from PowerShell history file.")
@@ -1192,7 +1320,13 @@ fn main() {
         }
         "check" => {
             let input = if args.len() >= 3 {
-                args[2..].join(" ")
+                if args[2] == "-" || args[2] == "--stdin" {
+                    let mut buffer = String::new();
+                    io::stdin().read_to_string(&mut buffer).unwrap_or(0);
+                    buffer
+                } else {
+                    args[2..].join(" ")
+                }
             } else {
                 let mut buffer = String::new();
                 io::stdin().read_to_string(&mut buffer).unwrap_or(0);
@@ -1209,7 +1343,13 @@ fn main() {
         }
         "sanitize" => {
             let input = if args.len() >= 3 {
-                args[2..].join(" ")
+                if args[2] == "-" || args[2] == "--stdin" {
+                    let mut buffer = String::new();
+                    io::stdin().read_to_string(&mut buffer).unwrap_or(0);
+                    buffer
+                } else {
+                    args[2..].join(" ")
+                }
             } else {
                 let mut buffer = String::new();
                 io::stdin().read_to_string(&mut buffer).unwrap_or(0);
@@ -1227,7 +1367,13 @@ fn main() {
         }
         "mock" => {
             let input = if args.len() >= 3 {
-                args[2..].join(" ")
+                if args[2] == "-" || args[2] == "--stdin" {
+                    let mut buffer = String::new();
+                    io::stdin().read_to_string(&mut buffer).unwrap_or(0);
+                    buffer
+                } else {
+                    args[2..].join(" ")
+                }
             } else {
                 let mut buffer = String::new();
                 io::stdin().read_to_string(&mut buffer).unwrap_or(0);
