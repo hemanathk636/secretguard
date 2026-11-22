@@ -62,38 +62,13 @@ pub mod unix_signal_constants {
     #[cfg(target_os = "linux")]
     pub const SIG_SETMASK: i32 = 2;
 
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly",
-        target_os = "solaris",
-        target_os = "illumos"
-    ))]
+    #[cfg(target_os = "macos")]
     pub const SIG_BLOCK: i32 = 1;
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly",
-        target_os = "solaris",
-        target_os = "illumos"
-    ))]
+    #[cfg(target_os = "macos")]
     pub const SIG_SETMASK: i32 = 3;
 
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly",
-        target_os = "solaris",
-        target_os = "illumos"
-    )))]
-    compile_error!("Unsupported Unix platform for signal mask constants. Explicit OS-specific support required.");
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    compile_error!("SecretGuard strictly supports Linux and macOS on Unix targets. Other Unix variants (e.g. BSD, Solaris) are not supported.");
 }
 
 #[cfg(unix)]
@@ -105,36 +80,29 @@ pub mod unix_flags {
     pub const O_CREAT: i32 = 0o100;
     #[cfg(target_os = "macos")]
     pub const O_CREAT: i32 = 0x0200;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    pub const O_CREAT: i32 = 0o100;
 
     #[cfg(target_os = "linux")]
     pub const O_EXCL: i32 = 0o200;
     #[cfg(target_os = "macos")]
     pub const O_EXCL: i32 = 0x0800;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    pub const O_EXCL: i32 = 0o200;
 
     #[cfg(target_os = "linux")]
     pub const O_DIRECTORY: i32 = 0o200000;
     #[cfg(target_os = "macos")]
     pub const O_DIRECTORY: i32 = 0x00100000;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    pub const O_DIRECTORY: i32 = 0o200000;
 
     #[cfg(target_os = "linux")]
     pub const O_NOFOLLOW: i32 = 0o400000;
     #[cfg(target_os = "macos")]
     pub const O_NOFOLLOW: i32 = 0x00000100;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    pub const O_NOFOLLOW: i32 = 0o400000;
 
     #[cfg(target_os = "linux")]
     pub const O_CLOEXEC: i32 = 0o2000000;
     #[cfg(target_os = "macos")]
     pub const O_CLOEXEC: i32 = 0x01000000;
+
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    pub const O_CLOEXEC: i32 = 0o2000000;
+    compile_error!("SecretGuard strictly supports Linux and macOS on Unix targets. Other Unix variants (e.g. BSD, Solaris) are not supported.");
 }
 
 #[cfg(unix)]

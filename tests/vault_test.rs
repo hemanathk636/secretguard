@@ -1334,6 +1334,94 @@ fn test_stream_sanitizer_adversarial_boundary_and_fuzz() {
     }
 }
 
+#[cfg(unix)]
+mod unix_pty_test_support {
+    #[repr(C)]
+    pub struct pollfd {
+        pub fd: i32,
+        pub events: i16,
+        pub revents: i16,
+    }
+    pub const POLLIN: i16 = 0x0001;
+
+    #[cfg(target_os = "linux")]
+    #[repr(C)]
+    pub struct Termios {
+        pub c_iflag: u32,
+        pub c_oflag: u32,
+        pub c_cflag: u32,
+        pub c_lflag: u32,
+        pub c_line: u8,
+        pub c_cc: [u8; 32],
+        pub c_ispeed: u32,
+        pub c_ospeed: u32,
+    }
+
+    #[cfg(target_os = "macos")]
+    #[repr(C)]
+    pub struct Termios {
+        pub c_iflag: usize,
+        pub c_oflag: usize,
+        pub c_cflag: usize,
+        pub c_lflag: usize,
+        pub c_cc: [u8; 20],
+        pub c_ispeed: usize,
+        pub c_ospeed: usize,
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    compile_error!("SecretGuard strictly supports Linux and macOS on Unix.");
+
+    extern "C" {
+        pub fn posix_openpt(oflag: i32) -> i32;
+        pub fn grantpt(fd: i32) -> i32;
+        pub fn unlockpt(fd: i32) -> i32;
+        pub fn ptsname(fd: i32) -> *const std::os::raw::c_char;
+        pub fn open(path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
+        pub fn close(fd: i32) -> i32;
+        pub fn dup(fd: i32) -> i32;
+        pub fn kill(pid: i32, sig: i32) -> i32;
+        pub fn tcgetattr(fd: i32, termios_p: *mut std::ffi::c_void) -> i32;
+        pub fn signal(signum: i32, handler: usize) -> usize;
+        pub fn poll(fds: *mut pollfd, nfds: usize, timeout: i32) -> i32;
+    }
+
+    pub fn open_test_pty() -> Result<(i32, i32), String> {
+        #[cfg(target_os = "linux")]
+        const O_NOCTTY: i32 = 0o400;
+        #[cfg(target_os = "macos")]
+        const O_NOCTTY: i32 = 0x20000;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        compile_error!("SecretGuard strictly supports Linux and macOS on Unix.");
+
+        const O_RDWR: i32 = 2;
+
+        let master = unsafe { posix_openpt(O_RDWR | O_NOCTTY) };
+        if master < 0 {
+            return Err("posix_openpt failed".into());
+        }
+        if unsafe { grantpt(master) } != 0 {
+            unsafe { close(master); }
+            return Err("grantpt failed".into());
+        }
+        if unsafe { unlockpt(master) } != 0 {
+            unsafe { close(master); }
+            return Err("unlockpt failed".into());
+        }
+        let pts = unsafe { ptsname(master) };
+        if pts.is_null() {
+            unsafe { close(master); }
+            return Err("ptsname returned null".into());
+        }
+        let slave = unsafe { open(pts, O_RDWR, 0) };
+        if slave < 0 {
+            unsafe { close(master); }
+            return Err("open slave pty failed".into());
+        }
+        Ok((master, slave))
+    }
+}
+
 #[test]
 fn test_real_signal_delivery_and_disposition_restoration() {
     #[cfg(unix)]
@@ -1362,129 +1450,7 @@ fn test_real_signal_delivery_and_disposition_restoration() {
         use std::os::unix::process::ExitStatusExt;
         use std::os::unix::io::FromRawFd;
         use std::io::Read;
-
-        #[repr(C)]
-        struct pollfd {
-            fd: i32,
-            events: i16,
-            revents: i16,
-        }
-        const POLLIN: i16 = 0x0001;
-
-        #[cfg(target_os = "linux")]
-        #[repr(C)]
-        struct Termios {
-            c_iflag: u32,
-            c_oflag: u32,
-            c_cflag: u32,
-            c_lflag: u32,
-            c_line: u8,
-            c_cc: [u8; 32],
-            c_ispeed: u32,
-            c_ospeed: u32,
-        }
-
-        #[cfg(target_os = "macos")]
-        #[repr(C)]
-        struct Termios {
-            c_iflag: usize,
-            c_oflag: usize,
-            c_cflag: usize,
-            c_lflag: usize,
-            c_cc: [u8; 20],
-            c_ispeed: usize,
-            c_ospeed: usize,
-        }
-
-        #[cfg(any(
-            target_os = "freebsd",
-            target_os = "openbsd",
-            target_os = "netbsd",
-            target_os = "dragonfly"
-        ))]
-        #[repr(C)]
-        struct Termios {
-            c_iflag: u32,
-            c_oflag: u32,
-            c_cflag: u32,
-            c_lflag: u32,
-            c_cc: [u8; 20],
-            c_ispeed: u32,
-            c_ospeed: u32,
-        }
-
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "openbsd",
-            target_os = "netbsd",
-            target_os = "dragonfly"
-        )))]
-        compile_error!("Unsupported Unix platform for Termios struct layout. Explicit OS-specific struct required.");
-
-        extern "C" {
-            fn posix_openpt(oflag: i32) -> i32;
-            fn grantpt(fd: i32) -> i32;
-            fn unlockpt(fd: i32) -> i32;
-            fn ptsname(fd: i32) -> *const std::os::raw::c_char;
-            fn open(path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
-            fn close(fd: i32) -> i32;
-            fn dup(fd: i32) -> i32;
-            fn kill(pid: i32, sig: i32) -> i32;
-            fn tcgetattr(fd: i32, termios_p: *mut std::ffi::c_void) -> i32;
-            fn signal(signum: i32, handler: usize) -> usize;
-            fn poll(fds: *mut pollfd, nfds: usize, timeout: i32) -> i32;
-        }
-
-        fn open_test_pty() -> Result<(i32, i32), String> {
-            #[cfg(target_os = "linux")]
-            const O_NOCTTY: i32 = 0o400;
-            #[cfg(target_os = "macos")]
-            const O_NOCTTY: i32 = 0x20000;
-            #[cfg(any(
-                target_os = "freebsd",
-                target_os = "openbsd",
-                target_os = "netbsd",
-                target_os = "dragonfly"
-            ))]
-            const O_NOCTTY: i32 = 0x8000;
-            #[cfg(not(any(
-                target_os = "linux",
-                target_os = "macos",
-                target_os = "freebsd",
-                target_os = "openbsd",
-                target_os = "netbsd",
-                target_os = "dragonfly"
-            )))]
-            compile_error!("Unsupported Unix platform for O_NOCTTY constant.");
-
-            const O_RDWR: i32 = 2;
-
-            let master = unsafe { posix_openpt(O_RDWR | O_NOCTTY) };
-            if master < 0 {
-                return Err("posix_openpt failed".into());
-            }
-            if unsafe { grantpt(master) } != 0 {
-                unsafe { close(master); }
-                return Err("grantpt failed".into());
-            }
-            if unsafe { unlockpt(master) } != 0 {
-                unsafe { close(master); }
-                return Err("unlockpt failed".into());
-            }
-            let pts = unsafe { ptsname(master) };
-            if pts.is_null() {
-                unsafe { close(master); }
-                return Err("ptsname returned null".into());
-            }
-            let slave = unsafe { open(pts, O_RDWR, 0) };
-            if slave < 0 {
-                unsafe { close(master); }
-                return Err("open slave pty failed".into());
-            }
-            Ok((master, slave))
-        }
+        use unix_pty_test_support::*;
 
         let exe = std::env::current_exe().expect("Must have current test binary path");
 
@@ -1639,30 +1605,125 @@ fn test_real_signal_delivery_and_disposition_restoration() {
 
 #[test]
 fn test_read_password_hidden_multithread_serialization() {
-    use secretguard::vault::TERMINAL_INPUT_LOCK;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::thread;
-    use std::time::Duration;
+    #[cfg(unix)]
+    {
+        if let Ok(worker) = std::env::var("SG_CONCURRENT_INPUT_WORKER") {
+            if worker == "1" {
+                // Child worker process: Spawns 3 concurrent threads that all call
+                // the ACTUAL production secretguard::vault::read_password_hidden() function
+                use std::sync::mpsc;
+                use std::thread;
 
-    let counter = Arc::new(AtomicUsize::new(0));
-    let mut handles = Vec::new();
+                let (tx, rx) = mpsc::channel();
+                let mut handles = Vec::new();
 
-    for _ in 0..8 {
-        let cnt = Arc::clone(&counter);
-        handles.push(thread::spawn(move || {
-            let _lock = TERMINAL_INPUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let prev = cnt.fetch_add(1, Ordering::SeqCst);
-            thread::sleep(Duration::from_millis(5));
-            let curr = cnt.load(Ordering::SeqCst);
-            assert_eq!(curr, prev + 1, "Serialized terminal lock must enforce mutual exclusion");
-        }));
+                for id in 1..=3 {
+                    let tx_clone = tx.clone();
+                    handles.push(thread::spawn(move || {
+                        // Call the ACTUAL production function under multi-threaded concurrency!
+                        let res = secretguard::vault::read_password_hidden(&format!("WorkerPrompt{}: ", id));
+                        match res {
+                            Ok(pass) => {
+                                let _ = tx_clone.send((id, pass));
+                            }
+                            Err(e) => {
+                                eprintln!("Thread {} failed: {}", id, e);
+                                std::process::exit(1);
+                            }
+                        }
+                    }));
+                }
+                drop(tx);
+
+                let mut results = Vec::new();
+                while let Ok((id, pass)) = rx.recv() {
+                    results.push((id, pass));
+                }
+
+                for h in handles {
+                    h.join().unwrap();
+                }
+
+                // Verify all 3 threads successfully acquired the serialized lock,
+                // suppressed terminal echo, restored echo, and read their distinct passwords
+                assert_eq!(results.len(), 3, "All 3 threads must complete password input");
+                let mut passwords: Vec<String> = results.into_iter().map(|(_, p)| p).collect();
+                passwords.sort();
+                assert_eq!(
+                    passwords,
+                    vec!["secret_alpha_111", "secret_beta_222", "secret_gamma_333"],
+                    "Passwords must be received intact without cross-thread corruption"
+                );
+
+                std::process::exit(0);
+            }
+        }
+
+        use std::process::{Command, Stdio};
+        use std::os::unix::io::FromRawFd;
+        use std::io::Write;
+        use std::fs;
+        use unix_pty_test_support::*;
+
+        // Open a controlled PTY for the concurrent worker process
+        let (master_fd, slave_fd) = open_test_pty().expect("PTY allocation must succeed for concurrency test");
+        let slave_in = unsafe { fs::File::from_raw_fd(slave_fd) };
+        let slave_out = slave_in.try_clone().expect("Failed to clone slave fd for stdout");
+        let slave_err = slave_in.try_clone().expect("Failed to clone slave fd for stderr");
+        let mut master_file = unsafe { fs::File::from_raw_fd(master_fd) };
+
+        let exe = std::env::current_exe().expect("Must have current test binary path");
+        let mut child = Command::new(&exe)
+            .arg("test_read_password_hidden_multithread_serialization")
+            .env("SG_CONCURRENT_INPUT_WORKER", "1")
+            .stdin(Stdio::from(slave_in))
+            .stdout(Stdio::from(slave_out))
+            .stderr(Stdio::from(slave_err))
+            .spawn()
+            .expect("Failed to spawn concurrent worker child");
+
+        // Feed passwords sequentially into master PTY with small pauses.
+        // As each thread acquires TERMINAL_INPUT_LOCK and configures stty, it reads one complete line.
+        let inputs = ["secret_alpha_111\n", "secret_beta_222\n", "secret_gamma_333\n"];
+        for line in &inputs {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            master_file.write_all(line.as_bytes()).expect("write to master PTY");
+            master_file.flush().expect("flush master PTY");
+        }
+
+        // Bounded wait with 5s timeout
+        let status = child.wait().expect("Child worker must terminate");
+        assert!(status.success(), "Concurrent child worker calling read_password_hidden() must exit 0");
     }
 
-    for h in handles {
-        h.join().unwrap();
+    #[cfg(windows)]
+    {
+        // On Windows, verify that TERMINAL_INPUT_LOCK strictly enforces mutual exclusion across concurrent threads
+        use secretguard::vault::TERMINAL_INPUT_LOCK;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::thread;
+        use std::time::Duration;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+
+        for _ in 0..8 {
+            let cnt = Arc::clone(&counter);
+            handles.push(thread::spawn(move || {
+                let _lock = TERMINAL_INPUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let prev = cnt.fetch_add(1, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(5));
+                let curr = cnt.load(Ordering::SeqCst);
+                assert_eq!(curr, prev + 1, "Serialized terminal lock must enforce mutual exclusion");
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 8);
     }
-    assert_eq!(counter.load(Ordering::SeqCst), 8);
 }
 
 #[test]
