@@ -64,7 +64,7 @@ pub fn strip_ansi_escapes(s: &str) -> String {
                     chars.next();
                     while let Some(&seq_char) = chars.peek() {
                         chars.next();
-                        if (seq_char >= '@' && seq_char <= '~') || seq_char.is_ascii_alphabetic() {
+                        if ('@'..='~').contains(&seq_char) || seq_char.is_ascii_alphabetic() {
                             break;
                         }
                     }

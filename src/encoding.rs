@@ -1,5 +1,5 @@
-/// Sub-millisecond In-Memory Decoding Engine for SecretGuard
-/// Detects credentials obfuscated via Base64, URL percent-encoding, or Hex.
+//! Sub-millisecond In-Memory Decoding Engine for SecretGuard
+//! Detects credentials obfuscated via Base64, URL percent-encoding, or Hex.
 
 /// Fast zero-dependency Base64 decoder
 pub fn decode_base64(input: &str) -> Option<String> {
@@ -37,7 +37,7 @@ pub fn decode_base64(input: &str) -> Option<String> {
     if buf.len() >= 10
         && buf
             .iter()
-            .all(|&c| c >= 32 && c <= 126 || c == b'\n' || c == b'\r' || c == b'\t')
+            .all(|&c| (32..=126).contains(&c) || c == b'\n' || c == b'\r' || c == b'\t')
     {
         String::from_utf8(buf).ok()
     } else {

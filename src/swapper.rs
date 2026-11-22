@@ -196,3 +196,9 @@ SUBCOMMANDS:
         }
     }
 }
+
+impl Default for SecretSwapper {
+    fn default() -> Self {
+        Self::new()
+    }
+}

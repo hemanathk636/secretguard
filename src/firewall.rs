@@ -200,7 +200,7 @@ EXAMPLES:
         let stdout_handle = io::stdout();
         let mut handle = stdout_handle.lock();
 
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             // Live secret interception and output scrubbing
             let res = engine.scan_and_sanitize(&line);
             writeln!(handle, "{}", res.sanitized_text).unwrap();

@@ -26,7 +26,7 @@ impl CanaryManager {
         let hash_hex = format!("{:x}", hasher.finalize());
 
         let token_val = match token_type {
-            "aws" => format!("AKIA{}", &hash_hex[..16].to_uppercase()),
+            "aws" => format!("AKIA{}", hash_hex[..16].to_uppercase()),
             "github" => format!("ghp_CANARY_{}", &hash_hex[..32]),
             "stripe" => format!("sk_test_CANARY_{}", &hash_hex[..24]),
             _ => format!("sk-proj-CANARY_{}", &hash_hex[..40]),

@@ -73,11 +73,25 @@ fn wait_for_children_with_shared_timeout(
         }
 
         if let Some((cid, err)) = poll_err {
+            let mut cleanup_errors = Vec::new();
             for c in children.iter_mut() {
-                let _ = c.kill();
-                let _ = c.wait();
+                if let Err(e) = c.kill() {
+                    if e.kind() != std::io::ErrorKind::InvalidInput {
+                        cleanup_errors.push(format!("PID {} kill error: {}", c.id(), e));
+                    }
+                }
+                if let Err(e) = c.wait() {
+                    cleanup_errors.push(format!("PID {} wait error: {}", c.id(), e));
+                }
             }
-            panic!("Failed to poll child {}: {}", cid, err);
+            if cleanup_errors.is_empty() {
+                panic!("Failed to poll child {}: {}", cid, err);
+            } else {
+                panic!(
+                    "Failed to poll child {}: {}. Cleanup errors: {:?}",
+                    cid, err, cleanup_errors
+                );
+            }
         }
 
         if remaining == 0 {
@@ -86,18 +100,32 @@ fn wait_for_children_with_shared_timeout(
 
         if Instant::now() >= deadline {
             let mut timed_out_pids = Vec::new();
+            let mut cleanup_errors = Vec::new();
             // Kill and reap EVERY remaining running child to prevent zombie processes
             for (i, child) in children.iter_mut().enumerate() {
                 if exit_statuses[i].is_none() {
                     timed_out_pids.push(child.id());
-                    let _ = child.kill();
+                    if let Err(e) = child.kill() {
+                        if e.kind() != std::io::ErrorKind::InvalidInput {
+                            cleanup_errors.push(format!("PID {} kill error: {}", child.id(), e));
+                        }
+                    }
                 }
-                let _ = child.wait();
+                if let Err(e) = child.wait() {
+                    cleanup_errors.push(format!("PID {} wait error: {}", child.id(), e));
+                }
             }
-            panic!(
-                "Multi-process test timed out after {:?}. Unfinished PIDs: {:?}",
-                timeout, timed_out_pids
-            );
+            if cleanup_errors.is_empty() {
+                panic!(
+                    "Multi-process test timed out after {:?}. Unfinished PIDs: {:?}",
+                    timeout, timed_out_pids
+                );
+            } else {
+                panic!(
+                    "Multi-process test timed out after {:?}. Unfinished PIDs: {:?}. Cleanup errors: {:?}",
+                    timeout, timed_out_pids, cleanup_errors
+                );
+            }
         }
 
         thread::sleep(Duration::from_millis(20));

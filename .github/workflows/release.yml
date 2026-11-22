@@ -69,8 +69,8 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.bin }}" -DestinationPath "${{ matrix.archive }}"
-          $hash = (Get-FileHash "${{ matrix.archive }}" -Algorithm SHA256).Hash
-          Set-Content -Path "${{ matrix.archive }}.sha256" -Value $hash
+          $hash = (Get-FileHash "${{ matrix.archive }}" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.archive }}" | Set-Content -Path "${{ matrix.archive }}.sha256"
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2

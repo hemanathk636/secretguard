@@ -366,6 +366,7 @@ pub mod win32 {
     /// 2. Verifies DACL is present and not NULL.
     /// 3. Enumerates all ACEs in the DACL: strictly rejects any ACE granting write/delete/modify
     ///    permissions to Everyone (World) or Users.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn inspect_dacl_and_owner(
         p_owner: *const c_void,
         p_dacl: *const c_void,
@@ -662,6 +663,7 @@ pub mod win32 {
     }
 
     /// Inspects the Windows Security Descriptor on an open file handle using `GetSecurityInfo`.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn validate_windows_security_descriptor_handle(
         handle: *mut c_void,
         path: &Path,
@@ -705,6 +707,7 @@ pub mod win32 {
 /// 4. No intermediate path component may be group-writable (0o020) or world-writable (0o002) unless it is a root-owned sticky directory (e.g. /tmp with 0o1777).
 /// 5. The target itself (if existing) must not be a symlink and must be owned by active user.
 /// 6. Private permissions are strictly enforced (0o700 for directories, 0o600 for files) and re-verified.
+///
 /// Fails closed upon any filesystem metadata inspection error (except NotFound for target).
 pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
     // 0. Reject dangerous parent directory traversal components ("..") across all platforms
@@ -1444,7 +1447,7 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
 
         let file =
             unsafe { fs::File::from_raw_handle(h_target as std::os::windows::io::RawHandle) };
-        return Ok(Some(file));
+        Ok(Some(file))
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -1690,7 +1693,7 @@ pub fn create_secure_file_exclusive(path: &Path, mode: u32) -> Result<fs::File, 
 
         let file =
             unsafe { fs::File::from_raw_handle(h_target as std::os::windows::io::RawHandle) };
-        return Ok(file);
+        Ok(file)
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -2390,7 +2393,7 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
                 "$p = Read-Host -AsSecureString; if ($p) { [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($p)) }",
             ])
             .output()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to invoke PowerShell for hidden input: {}", e)))?;
+            .map_err(|e| io::Error::other(format!("Failed to invoke PowerShell for hidden input: {}", e)))?;
 
         if !output.status.success() {
             return Err(io::Error::new(
@@ -2692,6 +2695,12 @@ impl StreamSanitizer {
             out.flush()?;
         }
         Ok(())
+    }
+}
+
+impl Default for StreamSanitizer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -3009,7 +3018,7 @@ SUBCOMMANDS:
             let mut example_lines = Vec::new();
 
             // Finding 9: Robust .env parser handling export, quotes, inline comments, and syntax
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with('#') {
                     example_lines.push(line);

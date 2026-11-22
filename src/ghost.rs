@@ -22,10 +22,8 @@ impl GhostVirtualizer {
             .or_else(|_| std::env::var("HOME"))
             .unwrap_or_else(|_| ".".to_string());
         let dir = Path::new(&base_dir).join(".secretguard");
-        if let Ok(_) = fs::create_dir_all(&dir) {
-            if dir.exists() {
-                return dir.join("ghost_session.enc");
-            }
+        if fs::create_dir_all(&dir).is_ok() && dir.exists() {
+            return dir.join("ghost_session.enc");
         }
         // Graceful fallback for sandboxed environments or restricted user dirs
         let temp = std::env::temp_dir().join(".secretguard");
@@ -70,10 +68,8 @@ impl GhostVirtualizer {
         }
 
         let serialized = serde_json::to_vec(table)?;
-        let key = Self::get_encryption_key()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let encrypted = encrypt_vault_payload(&serialized, &key)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let key = Self::get_encryption_key().map_err(std::io::Error::other)?;
+        let encrypted = encrypt_vault_payload(&serialized, &key).map_err(std::io::Error::other)?;
 
         #[cfg(unix)]
         {
@@ -105,7 +101,7 @@ impl GhostVirtualizer {
         if real_key.starts_with("sk-proj-") || real_key.starts_with("sk-") {
             format!("sk-ghost-{}", &hash[0..36])
         } else if real_key.starts_with("AKIA") || real_key.starts_with("ASIA") {
-            format!("AKIA_GHOST_{}", &hash[0..12].to_uppercase())
+            format!("AKIA_GHOST_{}", hash[0..12].to_uppercase())
         } else if real_key.starts_with("ghp_") || real_key.starts_with("gho_") {
             format!("ghp_ghost_{}", &hash[0..32])
         } else if real_key.starts_with("sk_live_") || real_key.starts_with("sk_test_") {
@@ -227,7 +223,7 @@ USAGE:
                 if session.mappings.is_empty() {
                     println!("  No active ghost token mappings in session.");
                 } else {
-                    for (ghost, _) in &session.mappings {
+                    for ghost in session.mappings.keys() {
                         println!(
                             "  {}  ──►  [AES-256-GCM ENCRYPTED IN VAULT - ZERO EXPOSURE]",
                             ghost

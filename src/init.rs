@@ -127,7 +127,7 @@ exit 0
                 actions_taken.push(
                     "✓ Git: Pre-commit hook already active (.git/hooks/pre-commit)".to_string(),
                 );
-            } else if let Ok(_) = fs::write(&pre_commit, hook_script) {
+            } else if fs::write(&pre_commit, hook_script).is_ok() {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;

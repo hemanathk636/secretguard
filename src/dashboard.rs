@@ -57,13 +57,11 @@ impl DashboardServer {
 
         let shared_engine = Arc::new(SecretGuardEngine::new());
 
-        for stream in listener.incoming() {
-            if let Ok(stream) = stream {
-                let engine_clone = Arc::clone(&shared_engine);
-                thread::spawn(move || {
-                    handle_connection(stream, &engine_clone);
-                });
-            }
+        for stream in listener.incoming().flatten() {
+            let engine_clone = Arc::clone(&shared_engine);
+            thread::spawn(move || {
+                handle_connection(stream, &engine_clone);
+            });
         }
     }
 }

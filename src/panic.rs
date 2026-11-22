@@ -182,7 +182,7 @@ pub fn emergency_clean_shell_history(engine: &SecretGuardEngine) -> usize {
             let mut cleaned_lines = Vec::new();
             let mut leaks = 0;
 
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 let res = engine.scan_and_sanitize(&line);
                 if res.has_secret {
                     leaks += 1;

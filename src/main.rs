@@ -153,7 +153,7 @@ fn run_audit(target_path: Option<&str>, engine: &SecretGuardEngine) {
     let mut total_lines = 0;
     let mut leaks = 0;
 
-    for (idx, line) in reader.lines().flatten().enumerate() {
+    for (idx, line) in reader.lines().map_while(Result::ok).enumerate() {
         total_lines += 1;
         let res = engine.scan_and_sanitize(&line);
         if res.has_secret {
@@ -604,7 +604,7 @@ fn scan_file(path: &Path, engine: &SecretGuardEngine, json_mode: bool) -> (usize
     let mut lines_count = 0;
     let mut leaks_count = 0;
 
-    for (idx, line) in reader.lines().flatten().enumerate() {
+    for (idx, line) in reader.lines().map_while(Result::ok).enumerate() {
         lines_count += 1;
         let res = engine.scan_and_sanitize(&line);
         if res.has_secret {
@@ -739,6 +739,7 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
     }
 }
 
+#[allow(clippy::print_literal)]
 fn print_hook(shell: &str) {
     match shell.to_lowercase().as_str() {
         "zsh" => print!(
@@ -863,7 +864,7 @@ fn run_wrapped_command(child_cmd: &str, child_args: &[String], engine: &SecretGu
             let reader = io::BufReader::new(stderr);
             let stderr_handle = io::stderr();
             let mut handle = stderr_handle.lock();
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 let res = engine_clone.scan_and_sanitize(&line);
                 let _ = writeln!(handle, "{}", res.sanitized_text);
             }
@@ -875,7 +876,7 @@ fn run_wrapped_command(child_cmd: &str, child_args: &[String], engine: &SecretGu
         let stdout_handle = io::stdout();
         let mut handle = stdout_handle.lock();
 
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             let res = engine.scan_and_sanitize(&line);
             let _ = writeln!(handle, "{}", res.sanitized_text);
         }
