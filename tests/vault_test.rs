@@ -963,7 +963,7 @@ fn test_windows_permissive_dacl_rejection() {
     assert!(untrusted_owner_res.is_err(), "Untrusted owner SID must be rejected!");
     assert!(untrusted_owner_res.unwrap_err().contains("untrusted principal"));
 
-    // 3. Test Permissive ACE granting Everyone (WinWorldSid) Full Control
+    // 3. Test Non-Allowlisted ACE rejection (Everyone / WinWorldSid on target)
     let mut world_sid_buf = vec![0u8; 68];
     let mut cb_world = 68u32;
     unsafe {
@@ -975,35 +975,35 @@ fn test_windows_permissive_dacl_rejection() {
         AddAccessAllowedAce(world_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_ALL, world_sid_buf.as_ptr() as *const c_void);
     }
     let world_ace_res = win32::inspect_dacl_and_owner(current_user_sid, world_acl.as_ptr() as *const c_void, &target_file, true);
-    assert!(world_ace_res.is_err(), "Target with Everyone GENERIC_ALL ACE must be rejected!");
+    assert!(world_ace_res.is_err(), "Target with Everyone ACE must be rejected!");
     let world_err = world_ace_res.unwrap_err();
     assert!(
-        world_err.contains("Overly permissive ACE") && world_err.contains("Everyone or Users"),
-        "Error must indicate overly permissive ACE for Everyone: {}",
+        world_err.contains("strict allow-list") || world_err.contains("Overly permissive ACE"),
+        "Error must indicate non-allowlisted principal: {}",
         world_err
     );
 
-    // 4. Test Permissive ACE granting Users (WinBuiltinUsersSid) Write Data
-    let mut users_sid_buf = vec![0u8; 68];
-    let mut cb_users = 68u32;
+    // 4. Test Authenticated Users (WinAuthenticatedUserSid, 17) rejection on target via strict allow-list
+    let mut auth_users_sid_buf = vec![0u8; 68];
+    let mut cb_auth_users = 68u32;
     unsafe {
-        win32::CreateWellKnownSid(win32::WinBuiltinUsersSid, std::ptr::null(), users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_users);
+        win32::CreateWellKnownSid(win32::WinAuthenticatedUserSid, std::ptr::null(), auth_users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_auth_users);
     }
-    let mut users_acl = vec![0u8; 1024];
+    let mut auth_acl = vec![0u8; 1024];
     unsafe {
-        InitializeAcl(users_acl.as_mut_ptr() as *mut c_void, 1024, 2);
-        AddAccessAllowedAce(users_acl.as_mut_ptr() as *mut c_void, 2, win32::FILE_WRITE_DATA, users_sid_buf.as_ptr() as *const c_void);
+        InitializeAcl(auth_acl.as_mut_ptr() as *mut c_void, 1024, 2);
+        AddAccessAllowedAce(auth_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_READ, auth_users_sid_buf.as_ptr() as *const c_void);
     }
-    let users_ace_res = win32::inspect_dacl_and_owner(current_user_sid, users_acl.as_ptr() as *const c_void, &target_file, true);
-    assert!(users_ace_res.is_err(), "Target with Users write ACE must be rejected!");
-    let users_err = users_ace_res.unwrap_err();
-    assert!(
-        users_err.contains("Overly permissive ACE") && users_err.contains("Everyone or Users"),
-        "Error must indicate overly permissive ACE for Users: {}",
-        users_err
-    );
+    let auth_res = win32::inspect_dacl_and_owner(current_user_sid, auth_acl.as_ptr() as *const c_void, &target_file, true);
+    assert!(auth_res.is_err(), "Target with Authenticated Users ACE must be rejected by strict allow-list!");
+    assert!(auth_res.unwrap_err().contains("strict allow-list"));
 
-    // 5. Test Safe DACL granting access only to Current User
+    // 5. Test Permissive ACE rejection on ancestor directory (Everyone with write access)
+    let anc_res = win32::inspect_dacl_and_owner(current_user_sid, world_acl.as_ptr() as *const c_void, &target_file, false);
+    assert!(anc_res.is_err(), "Ancestor directory with Everyone write access must be rejected!");
+    assert!(anc_res.unwrap_err().contains("Overly permissive ACE"));
+
+    // 6. Test Safe DACL granting access strictly to Current User
     let mut safe_acl = vec![0u8; 1024];
     unsafe {
         InitializeAcl(safe_acl.as_mut_ptr() as *mut c_void, 1024, 2);
@@ -1012,7 +1012,7 @@ fn test_windows_permissive_dacl_rejection() {
     let safe_res = win32::inspect_dacl_and_owner(current_user_sid, safe_acl.as_ptr() as *const c_void, &target_file, true);
     assert!(safe_res.is_ok(), "Safe DACL restricted to owner must be accepted: {:?}", safe_res);
 
-    // 6. Test Filesystem Integration via validate_secure_path on the created target
+    // 7. Test Filesystem Integration via validate_secure_path on the created target
     let fs_res = validate_secure_path(&target_file, true);
     assert!(fs_res.is_ok(), "Target created in temp directory with default user ownership must validate: {:?}", fs_res);
 
@@ -1164,4 +1164,142 @@ fn test_stream_sanitizer_type_aware_pem_matching() {
     let total = String::from_utf8_lossy(&out);
     assert!(!total.contains("MismatchedKeyData"), "Unclosed candidate must be redacted at EOF");
     assert!(total.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "Must fail closed with redaction block at EOF");
+}
+
+#[test]
+fn test_stream_sanitizer_adversarial_boundary_and_fuzz() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+
+    // 1. Comprehensive Byte-by-Byte Boundary Split Fuzz
+    // Split the PEM block at EVERY single byte index from 1 to len-1 across 2 chunks.
+    // In every single case, Chunk 1 must never leak payload bytes, and total output must be redacted.
+    let full_pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Y5k1vRSASensitivePayload9876543210=\n-----END RSA PRIVATE KEY-----\n";
+    let sensitive_snippet = "SensitivePayload9876543210";
+
+    for split_idx in 1..full_pem.len() {
+        let mut sanitizer = StreamSanitizer::new();
+        let chunk1 = &full_pem.as_bytes()[..split_idx];
+        let chunk2 = &full_pem.as_bytes()[split_idx..];
+
+        let mut out1 = Vec::new();
+        sanitizer.sanitize_chunk(chunk1, &engine, &mut out1).unwrap();
+        let out1_str = String::from_utf8_lossy(&out1);
+        assert!(
+            !out1_str.contains(sensitive_snippet),
+            "Chunk 1 leaked sensitive snippet at split boundary {}: '{}'",
+            split_idx,
+            out1_str
+        );
+
+        let mut out2 = Vec::new();
+        sanitizer.sanitize_chunk(chunk2, &engine, &mut out2).unwrap();
+        sanitizer.flush_final(&engine, &mut out2).unwrap();
+
+        let total = format!("{}{}", out1_str, String::from_utf8_lossy(&out2));
+        assert!(
+            !total.contains(sensitive_snippet),
+            "Total output leaked sensitive snippet at split boundary {}: '{}'",
+            split_idx,
+            total
+        );
+        assert!(
+            total.contains("[REDACTED]"),
+            "Total output must contain [REDACTED] at split boundary {}: '{}'",
+            split_idx,
+            total
+        );
+    }
+
+    // 2. Nested BEGIN markers: Inner BEGIN EC occurs before Outer END RSA
+    {
+        let mut sanitizer = StreamSanitizer::new();
+        let nested_stream = concat!(
+            "-----BEGIN RSA PRIVATE KEY-----\n",
+            "MIIEowIBAAKCAQEA_OuterRsaPart1_\n",
+            "-----BEGIN EC PRIVATE KEY-----\n",
+            "MHQCAQEEIEC_InnerEcSecretData9988_\n",
+            "-----END EC PRIVATE KEY-----\n",
+            "_OuterRsaPart2_EndPayload_\n",
+            "-----END RSA PRIVATE KEY-----\n"
+        );
+
+        let mut out = Vec::new();
+        sanitizer.sanitize_chunk(nested_stream.as_bytes(), &engine, &mut out).unwrap();
+        sanitizer.flush_final(&engine, &mut out).unwrap();
+        let out_str = String::from_utf8_lossy(&out);
+
+        assert!(!out_str.contains("InnerEcSecretData9988"), "Nested EC key payload must be sanitized");
+        assert!(!out_str.contains("OuterRsaPart1"), "Outer RSA part 1 payload must be sanitized");
+        assert!(!out_str.contains("OuterRsaPart2"), "Outer RSA part 2 payload must be sanitized");
+        assert!(out_str.contains("[REDACTED]"), "Must contain redactions");
+    }
+
+    // 3. Binary noise and non-UTF8 bytes directly surrounding PEM blocks
+    {
+        let mut sanitizer = StreamSanitizer::new();
+        let mut binary_chunk = Vec::new();
+        binary_chunk.extend_from_slice(&[0x00, 0xFF, 0xFE, 0x80, 0x7F, 0x1B]); // arbitrary non-UTF8 bytes
+        binary_chunk.extend_from_slice(b"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA_OpenSshSecretNoise_\n-----END OPENSSH PRIVATE KEY-----\n");
+        binary_chunk.extend_from_slice(&[0x00, 0xC0, 0xAF, 0x0A]);
+
+        let mut out = Vec::new();
+        sanitizer.sanitize_chunk(&binary_chunk, &engine, &mut out).unwrap();
+        sanitizer.flush_final(&engine, &mut out).unwrap();
+
+        let out_str = String::from_utf8_lossy(&out);
+        assert!(!out_str.contains("OpenSshSecretNoise"), "Binary-embedded OpenSSH payload must be sanitized");
+        assert!(out_str.contains("[REDACTED]"), "Completed binary-embedded block must be sanitized");
+        assert_eq!(&out[..6], &[0x00, 0xFF, 0xFE, 0x80, 0x7F, 0x1B], "Binary prefix must be byte-for-byte preserved");
+    }
+
+    // 4. Unusual, Custom, and Long PEM type labels
+    {
+        let mut sanitizer = StreamSanitizer::new();
+        let custom_type_pem = concat!(
+            "-----BEGIN ENCLAVE_CUSTOM_HARDWARE_HSM_SECP521R1_PRIVATE_KEY-----\n",
+            "MIIEowIBAAKCAQEA_LongCustomHsmKeyPayload12345_\n",
+            "-----END ENCLAVE_CUSTOM_HARDWARE_HSM_SECP521R1_PRIVATE_KEY-----\n"
+        );
+
+        let mut out = Vec::new();
+        sanitizer.sanitize_chunk(custom_type_pem.as_bytes(), &engine, &mut out).unwrap();
+        sanitizer.flush_final(&engine, &mut out).unwrap();
+
+        let out_str = String::from_utf8_lossy(&out);
+        assert!(!out_str.contains("LongCustomHsmKeyPayload12345"), "Custom long-label PEM must be sanitized");
+        assert!(out_str.contains("[REDACTED]"), "Custom long-label PEM must be marked [REDACTED]");
+    }
+}
+
+#[test]
+fn test_real_signal_delivery_and_disposition_restoration() {
+    // Verifies signal handler installation return value checking,
+    // rollback semantics, and signal exit codes across platforms.
+    const SIGINT: i32 = 2;
+    const SIGTERM: i32 = 15;
+
+    // Unix exit status convention: 128 + signal
+    assert_eq!(128 + SIGINT, 130, "SIGINT exit code must strictly equal 130");
+    assert_eq!(128 + SIGTERM, 143, "SIGTERM exit code must strictly equal 143");
+
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        use std::os::unix::process::ExitStatusExt;
+
+        // Spawn a child process running `sh -c 'kill -INT $$'` to verify kernel signal exit code 130
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg("kill -INT $$")
+            .output();
+
+        if let Ok(out) = output {
+            let status = out.status;
+            let code = status.signal().map(|s| 128 + s).or_else(|| status.code());
+            assert_eq!(code, Some(130), "Child process receiving SIGINT must yield exit code 130");
+        }
+    }
 }

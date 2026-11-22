@@ -63,8 +63,13 @@ pub mod win32 {
     pub const TokenUser: i32 = 1;
     pub const AclSizeInformation: i32 = 2;
     pub const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    pub const ACCESS_DENIED_ACE_TYPE: u8 = 1;
 
     pub const WinWorldSid: i32 = 1;
+    pub const WinNetworkSid: i32 = 3;
+    pub const WinInteractiveSid: i32 = 4;
+    pub const WinAnonymousSid: i32 = 13;
+    pub const WinAuthenticatedUserSid: i32 = 17;
     pub const WinLocalSystemSid: i32 = 22;
     pub const WinBuiltinAdministratorsSid: i32 = 26;
     pub const WinBuiltinUsersSid: i32 = 27;
@@ -72,28 +77,36 @@ pub mod win32 {
     pub const FILE_WRITE_DATA: u32 = 0x0002;
     pub const FILE_APPEND_DATA: u32 = 0x0004;
     pub const FILE_WRITE_EA: u32 = 0x0010;
+    pub const FILE_DELETE_CHILD: u32 = 0x0040;
     pub const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
     pub const DELETE: u32 = 0x00010000;
     pub const WRITE_DAC: u32 = 0x00040000;
     pub const WRITE_OWNER: u32 = 0x00080000;
-    pub const GENERIC_WRITE: u32 = 0x40000000;
+    pub const MAXIMUM_ALLOWED: u32 = 0x02000000;
     pub const GENERIC_ALL: u32 = 0x10000000;
+    pub const GENERIC_EXECUTE: u32 = 0x20000000;
+    pub const GENERIC_WRITE: u32 = 0x40000000;
 
     pub const DANGEROUS_WRITE_MASK: u32 = FILE_WRITE_DATA
         | FILE_APPEND_DATA
         | FILE_WRITE_EA
+        | FILE_DELETE_CHILD
         | FILE_WRITE_ATTRIBUTES
         | DELETE
         | WRITE_DAC
         | WRITE_OWNER
-        | GENERIC_WRITE
-        | GENERIC_ALL;
+        | MAXIMUM_ALLOWED
+        | GENERIC_ALL
+        | GENERIC_WRITE;
 
     pub const GENERIC_READ: u32 = 0x80000000;
     pub const READ_CONTROL: u32 = 0x00020000;
     pub const FILE_SHARE_READ: u32 = 0x00000001;
+    pub const FILE_SHARE_WRITE: u32 = 0x00000002;
+    pub const FILE_SHARE_DELETE: u32 = 0x00000004;
     pub const OPEN_EXISTING: u32 = 3;
     pub const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x00200000;
+    pub const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
     pub const FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080;
     pub const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
     pub const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
@@ -297,14 +310,6 @@ pub mod win32 {
             ));
         }
 
-        let mut world_sid_buf = vec![0u8; 68];
-        let mut cb_world = 68u32;
-        unsafe { CreateWellKnownSid(WinWorldSid, std::ptr::null(), world_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_world) };
-
-        let mut users_sid_buf = vec![0u8; 68];
-        let mut cb_users = 68u32;
-        unsafe { CreateWellKnownSid(WinBuiltinUsersSid, std::ptr::null(), users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_users) };
-
         let mut acl_size = ACL_SIZE_INFORMATION::default();
         let ok = unsafe {
             GetAclInformation(
@@ -321,24 +326,90 @@ pub mod win32 {
             ));
         }
 
-        for i in 0..acl_size.AceCount {
-            let mut p_ace = std::ptr::null_mut();
-            if unsafe { GetAce(p_dacl, i, &mut p_ace) } != 0 {
+        // For target files (vault / master key): Enforce STRICT ALLOW-LIST.
+        // Only active user, BUILTIN\Administrators, and NT AUTHORITY\SYSTEM are permitted.
+        // Any other principal, or unknown/complex ACE type, is strictly rejected to fail closed.
+        if is_target {
+            for i in 0..acl_size.AceCount {
+                let mut p_ace = std::ptr::null_mut();
+                if unsafe { GetAce(p_dacl, i, &mut p_ace) } == 0 {
+                    return Err(format!("Security Error: Failed to retrieve ACE {} on '{}'.", i, path.display()));
+                }
                 let ace = unsafe { &*(p_ace as *const ACCESS_ALLOWED_ACE) };
+
+                // Unknown or complex ACE types (callback ACEs, object ACEs) fail closed on target
+                if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE && ace.Header.AceType != ACCESS_DENIED_ACE_TYPE {
+                    return Err(format!(
+                        "Security Error: Insecure permissions on target '{}': Non-allowlisted or unsupported ACE type {} detected. Aborting to fail closed.",
+                        path.display(),
+                        ace.Header.AceType
+                    ));
+                }
+
                 if ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE {
                     let ace_sid = &ace.SidStart as *const u32 as *const c_void;
-                    let mask = ace.Mask;
+                    let is_current_user = unsafe { EqualSid(ace_sid, current_user_sid) != 0 };
+                    let is_admin_sid = unsafe { EqualSid(ace_sid, admin_sid_buf.as_ptr() as *const c_void) != 0 };
+                    let is_system_sid = unsafe { EqualSid(ace_sid, system_sid_buf.as_ptr() as *const c_void) != 0 };
 
-                    let is_world = unsafe { EqualSid(ace_sid, world_sid_buf.as_ptr() as *const c_void) != 0 };
-                    let is_builtin_users = unsafe { EqualSid(ace_sid, users_sid_buf.as_ptr() as *const c_void) != 0 };
+                    if !is_current_user && !is_admin_sid && !is_system_sid {
+                        return Err(format!(
+                            "Security Error: Insecure permissions on target '{}': ACE grants access to untrusted principal outside strict allow-list. Only active user, Administrators, and SYSTEM are permitted. Aborting to fail closed.",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+        } else {
+            // For ancestor directories: reject any dangerous write/delete/modify permissions
+            // granted to non-owner/group principals (Everyone, Users, Authenticated Users, Network, Interactive, Anonymous)
+            let mut world_sid_buf = vec![0u8; 68];
+            let mut cb_world = 68u32;
+            unsafe { CreateWellKnownSid(WinWorldSid, std::ptr::null(), world_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_world) };
 
-                    if is_world || is_builtin_users {
-                        if (mask & DANGEROUS_WRITE_MASK) != 0 {
-                            return Err(format!(
-                                "Security Error: Insecure permissions on '{}': Overly permissive ACE grants write/modify/delete access to Everyone or Users (Mask: 0x{:08x}). Aborting to fail closed.",
-                                path.display(),
-                                mask
-                            ));
+            let mut users_sid_buf = vec![0u8; 68];
+            let mut cb_users = 68u32;
+            unsafe { CreateWellKnownSid(WinBuiltinUsersSid, std::ptr::null(), users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_users) };
+
+            let mut auth_users_sid_buf = vec![0u8; 68];
+            let mut cb_auth_users = 68u32;
+            unsafe { CreateWellKnownSid(WinAuthenticatedUserSid, std::ptr::null(), auth_users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_auth_users) };
+
+            let mut network_sid_buf = vec![0u8; 68];
+            let mut cb_network = 68u32;
+            unsafe { CreateWellKnownSid(WinNetworkSid, std::ptr::null(), network_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_network) };
+
+            let mut interactive_sid_buf = vec![0u8; 68];
+            let mut cb_interactive = 68u32;
+            unsafe { CreateWellKnownSid(WinInteractiveSid, std::ptr::null(), interactive_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_interactive) };
+
+            let mut anonymous_sid_buf = vec![0u8; 68];
+            let mut cb_anon = 68u32;
+            unsafe { CreateWellKnownSid(WinAnonymousSid, std::ptr::null(), anonymous_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_anon) };
+
+            for i in 0..acl_size.AceCount {
+                let mut p_ace = std::ptr::null_mut();
+                if unsafe { GetAce(p_dacl, i, &mut p_ace) } != 0 {
+                    let ace = unsafe { &*(p_ace as *const ACCESS_ALLOWED_ACE) };
+                    if ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE {
+                        let ace_sid = &ace.SidStart as *const u32 as *const c_void;
+                        let mask = ace.Mask;
+
+                        let is_world = unsafe { EqualSid(ace_sid, world_sid_buf.as_ptr() as *const c_void) != 0 };
+                        let is_builtin_users = unsafe { EqualSid(ace_sid, users_sid_buf.as_ptr() as *const c_void) != 0 };
+                        let is_auth_users = unsafe { EqualSid(ace_sid, auth_users_sid_buf.as_ptr() as *const c_void) != 0 };
+                        let is_network = unsafe { EqualSid(ace_sid, network_sid_buf.as_ptr() as *const c_void) != 0 };
+                        let is_interactive = unsafe { EqualSid(ace_sid, interactive_sid_buf.as_ptr() as *const c_void) != 0 };
+                        let is_anon = unsafe { EqualSid(ace_sid, anonymous_sid_buf.as_ptr() as *const c_void) != 0 };
+
+                        if is_world || is_builtin_users || is_auth_users || is_network || is_interactive || is_anon {
+                            if (mask & DANGEROUS_WRITE_MASK) != 0 {
+                                return Err(format!(
+                                    "Security Error: Insecure permissions on intermediate directory '{}': Overly permissive ACE grants write/modify/delete access to untrusted group/principal (Mask: 0x{:08x}). Aborting to fail closed.",
+                                    path.display(),
+                                    mask
+                                ));
+                            }
                         }
                     }
                 }
@@ -416,7 +487,7 @@ pub mod win32 {
     }
 
     /// Inspects the Windows Security Descriptor on an open file handle using `GetSecurityInfo`.
-    pub fn validate_windows_security_descriptor_handle(handle: *mut c_void, path: &Path) -> Result<(), String> {
+    pub fn validate_windows_security_descriptor_handle(handle: *mut c_void, path: &Path, is_target: bool) -> Result<(), String> {
         let mut p_owner = std::ptr::null_mut();
         let mut p_dacl = std::ptr::null_mut();
         let mut p_sd = std::ptr::null_mut();
@@ -442,7 +513,7 @@ pub mod win32 {
             ));
         }
 
-        let res = inspect_dacl_and_owner(p_owner, p_dacl, path, true);
+        let res = inspect_dacl_and_owner(p_owner, p_dacl, path, is_target);
         unsafe { LocalFree(p_sd) };
         res
     }
@@ -596,10 +667,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
-
-        // 1. Validate every path component in the chain from root down to parent on Windows
+        // 1. Validate every path component in the chain from root down to parent on Windows using real handles
         if let Some(parent) = resolved_path.parent() {
             let mut ancestors = Vec::new();
             let mut curr = Some(parent);
@@ -612,51 +680,116 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
             ancestors.reverse();
 
             for ancestor in ancestors {
-                match fs::symlink_metadata(ancestor) {
-                    Ok(p_meta) => {
-                        let attrs = p_meta.file_attributes();
-                        if p_meta.file_type().is_symlink() || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
-                            return Err(format!(
-                                "Security Error: Path component '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
-                                ancestor.display()
-                            ));
-                        }
-                        win32::validate_windows_security_descriptor(ancestor, false)?;
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        break;
-                    }
-                    Err(e) => {
+                let wide = win32::to_wide_null(ancestor);
+                let h_dir = unsafe {
+                    win32::CreateFileW(
+                        wide.as_ptr(),
+                        win32::GENERIC_READ | win32::READ_CONTROL,
+                        win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE | win32::FILE_SHARE_DELETE,
+                        std::ptr::null_mut(),
+                        win32::OPEN_EXISTING,
+                        win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                        std::ptr::null_mut(),
+                    )
+                };
+
+                if h_dir != (-1isize as *mut std::ffi::c_void) && !h_dir.is_null() {
+                    let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
+                    let info_ok = unsafe { win32::GetFileInformationByHandle(h_dir, &mut file_info) };
+                    if info_ok == 0 {
+                        unsafe { win32::CloseHandle(h_dir); }
                         return Err(format!(
-                            "Security Error: Failed to inspect metadata on path component '{}': {}. Aborting to fail closed.",
-                            ancestor.display(),
-                            e
+                            "Security Error: Failed to query attributes on open handle for '{}'. Aborting.",
+                            ancestor.display()
                         ));
                     }
+
+                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(format!(
+                            "Security Error: Path component '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
+                            ancestor.display()
+                        ));
+                    }
+
+                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) == 0 {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(format!(
+                            "Security Error: Path component '{}' is not a directory. Aborting.",
+                            ancestor.display()
+                        ));
+                    }
+
+                    let val_res = win32::validate_windows_security_descriptor_handle(h_dir, ancestor, false);
+                    unsafe { win32::CloseHandle(h_dir); }
+                    val_res?;
+                } else {
+                    let err = unsafe { win32::GetLastError() };
+                    if err == 2 || err == 3 {
+                        // ERROR_FILE_NOT_FOUND (2) or ERROR_PATH_NOT_FOUND (3): component does not exist yet
+                        break;
+                    }
+                    return Err(format!(
+                        "Security Error: Cannot open directory handle for path component '{}' (Win32 error: {}). Aborting to fail closed.",
+                        ancestor.display(),
+                        err
+                    ));
                 }
             }
         }
 
-        // 2. Validate target path on Windows (if existing)
-        match fs::symlink_metadata(&resolved_path) {
-            Ok(meta) => {
-                let attrs = meta.file_attributes();
-                if meta.file_type().is_symlink() || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
-                    return Err(format!(
-                        "Security Error: Target path '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
-                        resolved_path.display()
-                    ));
-                }
-                win32::validate_windows_security_descriptor(&resolved_path, true)?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Target does not exist yet; ancestor directories are validated
-            }
-            Err(e) => {
+        // 2. Validate target path on Windows (if existing) using handle-based inspection
+        let wide_target = win32::to_wide_null(&resolved_path);
+        let h_target = unsafe {
+            win32::CreateFileW(
+                wide_target.as_ptr(),
+                win32::GENERIC_READ | win32::READ_CONTROL,
+                win32::FILE_SHARE_READ,
+                std::ptr::null_mut(),
+                win32::OPEN_EXISTING,
+                win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if h_target != (-1isize as *mut std::ffi::c_void) && !h_target.is_null() {
+            let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
+            let info_ok = unsafe { win32::GetFileInformationByHandle(h_target, &mut file_info) };
+            if info_ok == 0 {
+                unsafe { win32::CloseHandle(h_target); }
                 return Err(format!(
-                    "Security Error: Cannot inspect target '{}': {}. Aborting to fail closed.",
+                    "Security Error: Failed to query attributes on open target handle for '{}'. Aborting.",
+                    resolved_path.display()
+                ));
+            }
+
+            if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                unsafe { win32::CloseHandle(h_target); }
+                return Err(format!(
+                    "Security Error: Target path '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
+                    resolved_path.display()
+                ));
+            }
+
+            if is_file && (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) != 0 {
+                unsafe { win32::CloseHandle(h_target); }
+                return Err(format!(
+                    "Security Error: Target path '{}' is a directory, expected regular file. Aborting.",
+                    resolved_path.display()
+                ));
+            }
+
+            // Strictly validate Security Descriptor directly on open handle (enforces strict ALLOW-LIST for target files)
+            let val_res = win32::validate_windows_security_descriptor_handle(h_target, &resolved_path, is_file);
+            unsafe { win32::CloseHandle(h_target); }
+            val_res?;
+        } else {
+            let err = unsafe { win32::GetLastError() };
+            if err != 2 && err != 3 {
+                return Err(format!(
+                    "Security Error: Cannot inspect target '{}' (Win32 error: {}). Aborting to fail closed.",
                     resolved_path.display(),
-                    e
+                    err
                 ));
             }
         }
@@ -988,7 +1121,7 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
                     ));
                 }
 
-                if let Err(e) = win32::validate_windows_security_descriptor_handle(handle, &path) {
+                if let Err(e) = win32::validate_windows_security_descriptor_handle(handle, &path, true) {
                     unsafe { win32::CloseHandle(handle); }
                     return Err(e);
                 }
@@ -1333,7 +1466,7 @@ pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
         }
 
         // 2. Inspect Windows Security Descriptor directly on the open handle
-        if let Err(e) = win32::validate_windows_security_descriptor_handle(handle, &path) {
+        if let Err(e) = win32::validate_windows_security_descriptor_handle(handle, &path, true) {
             unsafe { win32::CloseHandle(handle); }
             return Err(e);
         }
