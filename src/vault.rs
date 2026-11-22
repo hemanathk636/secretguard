@@ -53,6 +53,9 @@ mod win32 {
     #[allow(dead_code)]
     pub const REPLACEFILE_IGNORE_ACL_ERRORS: u32 = 0x00000004;
 
+    pub const OWNER_SECURITY_INFORMATION: u32 = 0x00000001;
+    pub const DACL_SECURITY_INFORMATION: u32 = 0x00000004;
+
     extern "system" {
         pub fn ReplaceFileW(
             lpReplacedFileName: *const u16,
@@ -64,6 +67,27 @@ mod win32 {
         ) -> i32;
 
         pub fn GetLastError() -> u32;
+
+        pub fn GetFileSecurityW(
+            lpFileName: *const u16,
+            RequestedInformation: u32,
+            pSecurityDescriptor: *mut std::ffi::c_void,
+            nLength: u32,
+            lpnLengthNeeded: *mut u32,
+        ) -> i32;
+
+        pub fn GetSecurityDescriptorDacl(
+            pSecurityDescriptor: *const std::ffi::c_void,
+            lpbDaclPresent: *mut i32,
+            pDacl: *mut *mut std::ffi::c_void,
+            lpbDaclDefaulted: *mut i32,
+        ) -> i32;
+
+        pub fn GetSecurityDescriptorOwner(
+            pSecurityDescriptor: *const std::ffi::c_void,
+            pOwner: *mut *mut std::ffi::c_void,
+            lpbOwnerDefaulted: *mut i32,
+        ) -> i32;
     }
 
     pub fn to_wide_null(path: &Path) -> Vec<u16> {
@@ -71,6 +95,82 @@ mod win32 {
             .encode_wide()
             .chain(std::iter::once(0))
             .collect()
+    }
+
+    /// Inspects the Windows Security Descriptor on `path` to verify that:
+    /// 1. The security descriptor can be retrieved (caller has read_control permission).
+    /// 2. DACL is present and not NULL (a NULL DACL grants unconditional access to Everyone).
+    /// Fails closed if the security descriptor cannot be inspected or is improperly secured.
+    pub fn validate_windows_security_descriptor(path: &Path) -> Result<(), String> {
+        let wide = to_wide_null(path);
+        let sec_info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        let mut needed = 0u32;
+        unsafe {
+            GetFileSecurityW(wide.as_ptr(), sec_info, std::ptr::null_mut(), 0, &mut needed);
+        }
+        if needed == 0 {
+            let err = unsafe { GetLastError() };
+            return Err(format!(
+                "Security Error: Failed to query Windows security descriptor on '{}' (Win32 error: {}). Aborting.",
+                path.display(),
+                err
+            ));
+        }
+
+        let mut buf = vec![0u8; needed as usize];
+        let ok = unsafe {
+            GetFileSecurityW(wide.as_ptr(), sec_info, buf.as_mut_ptr() as *mut std::ffi::c_void, needed, &mut needed)
+        };
+        if ok == 0 {
+            let err = unsafe { GetLastError() };
+            return Err(format!(
+                "Security Error: Failed to retrieve Windows security descriptor on '{}' (Win32 error: {}). Aborting.",
+                path.display(),
+                err
+            ));
+        }
+
+        let mut dacl_present = 0i32;
+        let mut p_dacl = std::ptr::null_mut();
+        let mut dacl_defaulted = 0i32;
+        let dacl_ok = unsafe {
+            GetSecurityDescriptorDacl(
+                buf.as_ptr() as *const std::ffi::c_void,
+                &mut dacl_present,
+                &mut p_dacl,
+                &mut dacl_defaulted,
+            )
+        };
+        if dacl_ok == 0 {
+            return Err(format!(
+                "Security Error: Failed to inspect DACL on '{}'. Aborting to fail closed.",
+                path.display()
+            ));
+        }
+        if dacl_present == 0 || p_dacl.is_null() {
+            return Err(format!(
+                "Security Error: Insecure permissions on '{}': NULL DACL detected (grants universal access). Aborting.",
+                path.display()
+            ));
+        }
+
+        let mut p_owner = std::ptr::null_mut();
+        let mut owner_defaulted = 0i32;
+        let owner_ok = unsafe {
+            GetSecurityDescriptorOwner(
+                buf.as_ptr() as *const std::ffi::c_void,
+                &mut p_owner,
+                &mut owner_defaulted,
+            )
+        };
+        if owner_ok == 0 || p_owner.is_null() {
+            return Err(format!(
+                "Security Error: Insecure permissions on '{}': Missing or NULL Owner SID in Windows security descriptor. Aborting.",
+                path.display()
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -247,6 +347,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
                                 ancestor.display()
                             ));
                         }
+                        win32::validate_windows_security_descriptor(ancestor)?;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                         break;
@@ -272,6 +373,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
                         resolved_path.display()
                     ));
                 }
+                win32::validate_windows_security_descriptor(&resolved_path)?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Target does not exist yet; ancestor directories are validated
@@ -470,24 +572,39 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
 
     // Bounded retry loop (max 3 attempts) to eliminate recursion and prevent stack overflow
     for _attempt in 0..3 {
-        // Inspect symlink metadata first to safely catch dangling symlinks without following them
-        match fs::symlink_metadata(&path) {
-            Ok(meta) => {
-                // Issue 3: Explicitly reject symlinks (dangling or active)
-                if meta.file_type().is_symlink() {
-                    return Err(format!(
-                        "Security Error: Master key path '{}' is a symbolic link (or dangling symlink). Symbolic links are strictly prohibited for master keys to prevent hijacking.",
-                        path.display()
-                    ));
-                }
+        #[cfg(unix)]
+        {
+            use std::io::Read;
+            use std::os::unix::fs::OpenOptionsExt;
+            use std::os::unix::fs::PermissionsExt;
 
-                // Issue 2: Verify and enforce strict permissions on Unix (fail-closed if tightening fails)
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
+            #[cfg(target_os = "linux")]
+            const O_NOFOLLOW: i32 = 0o400000;
+            #[cfg(target_os = "macos")]
+            const O_NOFOLLOW: i32 = 0x0100;
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            const O_NOFOLLOW: i32 = 0o400000;
+
+            let mut opts = fs::OpenOptions::new();
+            opts.read(true);
+            opts.custom_flags(O_NOFOLLOW);
+
+            match opts.open(&path) {
+                Ok(mut file) => {
+                    let meta = file.metadata().map_err(|e| {
+                        format!("Security Error: Cannot inspect master key descriptor for '{}': {}", path.display(), e)
+                    })?;
+
+                    if !meta.is_file() {
+                        return Err(format!(
+                            "Security Error: Master key path '{}' is not a regular file (symlink or special device). Symbolic links are strictly prohibited for master keys to prevent hijacking.",
+                            path.display()
+                        ));
+                    }
+
                     let mode = meta.permissions().mode();
                     if mode & 0o077 != 0 {
-                        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| {
+                        file.set_permissions(fs::Permissions::from_mode(0o600)).map_err(|e| {
                             format!(
                                 "Security Error: Master key file '{}' permissions ({:o}) are insecure and could not be tightened to 0600: {}. Aborting for security.",
                                 path.display(),
@@ -495,9 +612,8 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
                                 e
                             )
                         })?;
-                        // Re-verify after tightening
-                        let re_meta = fs::symlink_metadata(&path).map_err(|e| {
-                            format!("Failed to re-verify master key metadata after permission update: {}", e)
+                        let re_meta = file.metadata().map_err(|e| {
+                            format!("Failed to re-verify master key descriptor metadata after permission update: {}", e)
                         })?;
                         if re_meta.permissions().mode() & 0o077 != 0 {
                             return Err(format!(
@@ -507,30 +623,86 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
                             ));
                         }
                     }
-                }
 
-                let bytes = fs::read(&path).map_err(|e| {
-                    format!(
-                        "Permission denied or I/O error reading master key at '{}': {}. Aborting to protect vault integrity.",
+                    let mut bytes = Vec::new();
+                    file.read_to_end(&mut bytes).map_err(|e| {
+                        format!(
+                            "Permission denied or I/O error reading master key descriptor at '{}': {}. Aborting to protect vault integrity.",
+                            path.display(),
+                            e
+                        )
+                    })?;
+
+                    if bytes.len() != 32 {
+                        return Err(format!(
+                            "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
+                             Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
+                            path.display(),
+                            bytes.len()
+                        ));
+                    }
+
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&bytes);
+                    return Ok(key);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    // File does not exist: fall through to create key
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "Security Error: Failed to open master key file '{}' with O_NOFOLLOW: {}. Aborting to fail closed.",
                         path.display(),
                         e
-                    )
-                })?;
-
-                if bytes.len() != 32 {
-                    return Err(format!(
-                        "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
-                         Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
-                        path.display(),
-                        bytes.len()
                     ));
                 }
-
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&bytes);
-                return Ok(key);
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+        }
+        #[cfg(not(unix))]
+        {
+            // Inspect symlink metadata first to safely catch dangling symlinks without following them
+            match fs::symlink_metadata(&path) {
+                Ok(meta) => {
+                    if meta.file_type().is_symlink() {
+                        return Err(format!(
+                            "Security Error: Master key path '{}' is a symbolic link (or dangling symlink). Symbolic links are strictly prohibited for master keys to prevent hijacking.",
+                            path.display()
+                        ));
+                    }
+
+                    let bytes = fs::read(&path).map_err(|e| {
+                        format!(
+                            "Permission denied or I/O error reading master key at '{}': {}. Aborting to protect vault integrity.",
+                            path.display(),
+                            e
+                        )
+                    })?;
+
+                    if bytes.len() != 32 {
+                        return Err(format!(
+                            "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
+                             Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
+                            path.display(),
+                            bytes.len()
+                        ));
+                    }
+
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&bytes);
+                    return Ok(key);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    // Fall through to creation
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "Security Error: Cannot inspect master key at '{}': {}. Aborting to fail closed.",
+                        path.display(),
+                        e
+                    ));
+                }
+            }
+        }
                 // File does not exist: generate a new master key
                 let mut key = [0u8; 32];
                 OsRng.fill_bytes(&mut key);
@@ -610,15 +782,6 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
                         }
                     }
                 }
-            }
-            Err(e) => {
-                return Err(format!(
-                    "Filesystem error inspecting master key path '{}': {}",
-                    path.display(),
-                    e
-                ));
-            }
-        }
     }
 
     Err(format!(
@@ -682,32 +845,45 @@ pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
     #[cfg(unix)]
     let data = {
         use std::io::Read;
-        let mut file = match fs::File::open(&path) {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        #[cfg(target_os = "linux")]
+        const O_NOFOLLOW: i32 = 0o400000;
+        #[cfg(target_os = "macos")]
+        const O_NOFOLLOW: i32 = 0x0100;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        const O_NOFOLLOW: i32 = 0o400000;
+
+        let mut opts = fs::OpenOptions::new();
+        opts.read(true);
+        opts.custom_flags(O_NOFOLLOW);
+
+        let mut file = match opts.open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(VaultStore::default());
             }
             Err(e) => {
                 return Err(format!(
-                    "Security Error: Failed to open vault file '{}': {}. Aborting to prevent data loss.",
+                    "Security Error: Failed to open vault file '{}' with O_NOFOLLOW: {}. Aborting to fail closed.",
                     path.display(),
                     e
                 ));
             }
         };
 
-        let sym_meta = fs::symlink_metadata(&path).map_err(|e| {
-            format!("Security Error: Cannot verify symlink status for '{}': {}", path.display(), e)
+        let meta = file.metadata().map_err(|e| {
+            format!("Security Error: Cannot inspect open vault descriptor for '{}': {}", path.display(), e)
         })?;
-        if sym_meta.file_type().is_symlink() {
+        if !meta.is_file() {
             return Err(format!(
-                "Security Error: Vault file '{}' is a symbolic link. Aborting.",
+                "Security Error: Vault descriptor '{}' is not a regular file. Aborting.",
                 path.display()
             ));
         }
 
         let mut buf = Vec::new();
-        file.read_to_end(&mut buf).map_err(|e| format!("Failed to read vault file at '{}': {}", path.display(), e))?;
+        file.read_to_end(&mut buf).map_err(|e| format!("Failed to read vault file descriptor at '{}': {}", path.display(), e))?;
         buf
     };
 
@@ -883,6 +1059,12 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             let sig = RECEIVED_SIGNAL.load(Ordering::SeqCst);
             let exit_code = if sig == SIGTERM { 143 } else if sig == SIGINT { 130 } else { 128 + sig };
             let _ = Command::new("stty").arg("echo").status();
+            // Explicitly restore original signal dispositions before process exit
+            // (std::process::exit terminates immediately without unwinding RAII drop guards)
+            unsafe {
+                signal(SIGINT, std::mem::transmute(old_sigint));
+                signal(SIGTERM, std::mem::transmute(old_sigterm));
+            }
             eprintln!();
             std::process::exit(exit_code);
         }
@@ -926,6 +1108,12 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             } else {
                 128 + sig
             };
+            // Explicitly restore original signal dispositions before process exit
+            // (std::process::exit terminates immediately without unwinding RAII drop guards)
+            unsafe {
+                signal(SIGINT, std::mem::transmute(old_sigint));
+                signal(SIGTERM, std::mem::transmute(old_sigterm));
+            }
             eprintln!();
             std::process::exit(exit_code);
         }
@@ -1000,6 +1188,12 @@ pub fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<
 /// 3. Partial credentials are NEVER emitted prematurely before succeeding chunks arrive.
 /// 4. Clean binary streams are preserved byte-for-byte.
 /// 5. Binary streams containing embedded credentials preserve all surrounding non-secret invalid UTF-8 bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnclosedPem {
+    pub start_idx: usize,
+    pub pem_type: Vec<u8>,
+}
+
 pub struct StreamSanitizer {
     buffer: Vec<u8>,
 }
@@ -1014,6 +1208,130 @@ impl StreamSanitizer {
         Self {
             buffer: Vec::new(),
         }
+    }
+
+    pub fn is_private_key_type(pem_type: &[u8]) -> bool {
+        let lower = pem_type.to_ascii_lowercase();
+        lower.windows(3).any(|w| w == b"key") || lower.windows(7).any(|w| w == b"private")
+    }
+
+    /// Sanitizes completed PEM private key blocks directly in the buffer (redacting header, key payload, and footer)
+    /// and scans for any active unclosed PEM block.
+    pub fn sanitize_pems_in_buffer(buffer: &mut Vec<u8>) -> Option<UnclosedPem> {
+        let mut search_pos = 0;
+        while search_pos < buffer.len() {
+            let rel_start = match buffer[search_pos..].windows(11).position(|w| w == b"-----BEGIN ") {
+                Some(pos) => pos,
+                None => break,
+            };
+            let start = search_pos + rel_start;
+            let header_rest = &buffer[start + 11..];
+            let rel_header_end = match header_rest.windows(5).position(|w| w == b"-----") {
+                Some(pos) => pos,
+                None => {
+                    // Header line is incomplete; hold back starting from `start`
+                    return Some(UnclosedPem {
+                        start_idx: start,
+                        pem_type: Vec::new(),
+                    });
+                }
+            };
+            let pem_type = &header_rest[..rel_header_end];
+            let content_start = start + 11 + rel_header_end + 5;
+
+            let mut end_marker = Vec::with_capacity(9 + pem_type.len() + 5);
+            end_marker.extend_from_slice(b"-----END ");
+            end_marker.extend_from_slice(pem_type);
+            end_marker.extend_from_slice(b"-----");
+
+            if content_start <= buffer.len() {
+                if let Some(rel_end) = buffer[content_start..]
+                    .windows(end_marker.len())
+                    .position(|w| w == end_marker.as_slice())
+                {
+                    let mut block_end = content_start + rel_end + end_marker.len();
+                    if block_end < buffer.len() && buffer[block_end] == b'\r' {
+                        block_end += 1;
+                    }
+                    if block_end < buffer.len() && buffer[block_end] == b'\n' {
+                        block_end += 1;
+                    }
+
+                    if Self::is_private_key_type(pem_type) {
+                        let replacement = b"[REDACTED]\n";
+                        buffer.splice(start..block_end, replacement.iter().copied());
+                        search_pos = start + replacement.len();
+                    } else {
+                        search_pos = block_end;
+                    }
+                    continue;
+                }
+            }
+
+            // Unclosed PEM block found
+            return Some(UnclosedPem {
+                start_idx: start,
+                pem_type: pem_type.to_vec(),
+            });
+        }
+        None
+    }
+
+    /// Scans the buffer from left to right to identify any active, unclosed PEM block.
+    ///
+    /// Guarantees:
+    /// 1. Prior completed PEM blocks or earlier `-----END ` markers appearing before a new `-----BEGIN `
+    ///    cannot cause false-positive completion of subsequent unclosed blocks.
+    /// 2. Matches the exact PEM type (e.g. `RSA PRIVATE KEY`, `EC PRIVATE KEY`, `OPENSSH PRIVATE KEY`)
+    ///    between `-----BEGIN <TYPE>-----` and `-----END <TYPE>-----`.
+    /// 3. Incomplete headers where the `-----BEGIN ...` line itself has not fully arrived are recognized and held.
+    /// 4. Multiple PEM blocks in the same stream are tracked independently.
+    pub fn find_unclosed_pem(buffer: &[u8]) -> Option<UnclosedPem> {
+        let mut search_pos = 0;
+        while search_pos < buffer.len() {
+            let rel_start = match buffer[search_pos..].windows(11).position(|w| w == b"-----BEGIN ") {
+                Some(pos) => pos,
+                None => break,
+            };
+            let start = search_pos + rel_start;
+            let header_rest = &buffer[start + 11..];
+            let rel_header_end = match header_rest.windows(5).position(|w| w == b"-----") {
+                Some(pos) => pos,
+                None => {
+                    // Header line is incomplete; hold back starting from `start`
+                    return Some(UnclosedPem {
+                        start_idx: start,
+                        pem_type: Vec::new(),
+                    });
+                }
+            };
+            let pem_type = &header_rest[..rel_header_end];
+            let content_start = start + 11 + rel_header_end + 5;
+
+            let mut end_marker = Vec::with_capacity(9 + pem_type.len() + 5);
+            end_marker.extend_from_slice(b"-----END ");
+            end_marker.extend_from_slice(pem_type);
+            end_marker.extend_from_slice(b"-----");
+
+            if content_start <= buffer.len() {
+                if let Some(rel_end) = buffer[content_start..]
+                    .windows(end_marker.len())
+                    .position(|w| w == end_marker.as_slice())
+                {
+                    // This PEM block is completed! Move search_pos beyond this block.
+                    let block_end = content_start + rel_end + end_marker.len();
+                    search_pos = block_end;
+                    continue;
+                }
+            }
+
+            // Unclosed PEM block found
+            return Some(UnclosedPem {
+                start_idx: start,
+                pem_type: pem_type.to_vec(),
+            });
+        }
+        None
     }
 
     /// Internal helper to sanitize a slice of bytes while preserving binary fidelity.
@@ -1044,29 +1362,26 @@ impl StreamSanitizer {
         self.buffer.extend_from_slice(chunk);
 
         // Stateful candidate retention: If buffer contains an unclosed multi-line PEM block header
-        // (e.g. -----BEGIN RSA PRIVATE KEY-----), hold back candidate until closing boundary
-        // (-----END ...) is received, preventing premature emission.
-        let pem_start_idx = self.buffer.windows(11).position(|w| w == b"-----BEGIN ");
-        let has_end = self.buffer.windows(9).any(|w| w == b"-----END ");
-
-        if let Some(start) = pem_start_idx {
-            if !has_end {
-                // If candidate has reached or exceeded MAX_STATEFUL_HOLD_LIMIT (16KB), fail closed:
-                // Redact the entire candidate in place so no partial key data can ever escape!
-                if (self.buffer.len() - start) >= Self::MAX_STATEFUL_HOLD_LIMIT {
-                    let mut redacted = self.buffer[..start].to_vec();
-                    redacted.extend_from_slice(b"[REDACTED_PRIVATE_KEY_BLOCK]\n");
-                    self.buffer = redacted;
-                } else {
-                    // Retain the unclosed candidate in buffer until -----END arrives.
-                    // If there is safe data before the candidate that exceeds WINDOW_SIZE, drain only the safe prefix.
-                    if start > Self::WINDOW_SIZE {
-                        let (safe_prefix, _) = Self::sanitize_bytes_internal(&self.buffer[..start], engine);
-                        out.write_all(&safe_prefix)?;
-                        self.buffer = self.buffer[start..].to_vec();
-                    }
-                    return out.flush();
+        // (e.g. -----BEGIN RSA PRIVATE KEY-----), hold back candidate until its matching closing boundary
+        // (-----END <TYPE>-----) is received, preventing premature emission.
+        // Any completed PEM private key blocks in buffer are sanitized in-place immediately.
+        if let Some(unclosed) = Self::sanitize_pems_in_buffer(&mut self.buffer) {
+            let start = unclosed.start_idx;
+            // If candidate has reached or exceeded MAX_STATEFUL_HOLD_LIMIT (16KB), fail closed:
+            // Redact the entire candidate in place so no partial key data can ever escape!
+            if (self.buffer.len() - start) >= Self::MAX_STATEFUL_HOLD_LIMIT {
+                let mut redacted = self.buffer[..start].to_vec();
+                redacted.extend_from_slice(b"[REDACTED_PRIVATE_KEY_BLOCK]\n");
+                self.buffer = redacted;
+            } else {
+                // Retain the unclosed candidate in buffer until matching -----END arrives.
+                // If there is safe data before the candidate that exceeds WINDOW_SIZE, drain only the safe prefix.
+                if start > Self::WINDOW_SIZE {
+                    let (safe_prefix, _) = Self::sanitize_bytes_internal(&self.buffer[..start], engine);
+                    out.write_all(&safe_prefix)?;
+                    self.buffer = self.buffer[start..].to_vec();
                 }
+                return out.flush();
             }
         }
 
@@ -1097,6 +1412,11 @@ impl StreamSanitizer {
 
     pub fn flush_final(&mut self, engine: &SecretGuardEngine, out: &mut impl Write) -> io::Result<()> {
         if !self.buffer.is_empty() {
+            if let Some(unclosed) = Self::sanitize_pems_in_buffer(&mut self.buffer) {
+                let mut redacted = self.buffer[..unclosed.start_idx].to_vec();
+                redacted.extend_from_slice(b"[REDACTED_PRIVATE_KEY_BLOCK]\n");
+                self.buffer = redacted;
+            }
             let (sanitized_bytes, _) = Self::sanitize_bytes_internal(&self.buffer, engine);
             out.write_all(&sanitized_bytes)?;
             self.buffer.clear();

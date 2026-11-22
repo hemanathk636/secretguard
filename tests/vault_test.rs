@@ -866,3 +866,88 @@ fn test_windows_reparse_point_rejection() {
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_stream_sanitizer_multi_block_pem_with_incomplete_second_block() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // Block 1: Completed RSA Private Key
+    let block1 = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Y5k1vABCD01234567890=\n-----END RSA PRIVATE KEY-----\n";
+
+    // 5KB of filler text so start of block 2 is well past WINDOW_SIZE (4096 bytes),
+    // proving prefix draining does not leak unclosed block 2
+    let filler = "A".repeat(5000) + "\n";
+
+    // Block 2: Incomplete EC Private Key (started in chunk 1, completed in chunk 2)
+    let block2_part1 = "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEILeakedSecretKeyByteSequenceDoNotEmit\n";
+    let block2_part2 = "-----END EC PRIVATE KEY-----\n";
+
+    let mut chunk1 = String::new();
+    chunk1.push_str(block1);
+    chunk1.push_str(&filler);
+    chunk1.push_str(block2_part1);
+
+    let mut out1 = Vec::new();
+    sanitizer.sanitize_chunk(chunk1.as_bytes(), &engine, &mut out1).unwrap();
+
+    let out1_str = String::from_utf8_lossy(&out1);
+
+    // Finding 1 Verification:
+    // Earlier `-----END RSA PRIVATE KEY-----` marker in chunk 1 must NOT trick sanitizer into
+    // treating the subsequent `-----BEGIN EC PRIVATE KEY-----` block as closed!
+    assert!(
+        !out1_str.contains("LeakedSecretKeyByteSequenceDoNotEmit"),
+        "CRITICAL: Unclosed second PEM block leaked bytes into chunk 1 output due to earlier END marker!"
+    );
+    assert!(
+        !out1_str.contains("-----BEGIN EC PRIVATE KEY-----"),
+        "Unclosed second PEM block header must be held back in buffer"
+    );
+
+    // Block 1 should be sanitized and safe prefix emitted
+    assert!(out1_str.contains("[REDACTED]"), "Completed Block 1 in prefix must be sanitized");
+
+    // Chunk 2 delivers the closing delimiter for block 2
+    let mut out2 = Vec::new();
+    sanitizer.sanitize_chunk(block2_part2.as_bytes(), &engine, &mut out2).unwrap();
+    sanitizer.flush_final(&engine, &mut out2).unwrap();
+
+    let out2_str = String::from_utf8_lossy(&out2);
+    let total = format!("{}{}", out1_str, out2_str);
+
+    // Both keys must be fully redacted, zero raw key material leaked
+    assert!(!total.contains("LeakedSecretKeyByteSequenceDoNotEmit"), "Secret bytes must never be emitted raw");
+    assert!(!total.contains("0Y5k1vABCD01234567890"), "Block 1 key bytes must never be emitted raw");
+}
+
+#[test]
+fn test_stream_sanitizer_type_aware_pem_matching() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // Mismatched delimiter: BEGIN RSA but END EC
+    let chunk = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Y5k1vMismatchedKeyData=\n-----END EC PRIVATE KEY-----\n";
+
+    let mut out = Vec::new();
+    sanitizer.sanitize_chunk(chunk.as_bytes(), &engine, &mut out).unwrap();
+
+    // Since END EC does not match BEGIN RSA, it must be detected as UNCLOSED and held back
+    let out_str = String::from_utf8_lossy(&out);
+    assert!(
+        !out_str.contains("MismatchedKeyData"),
+        "Mismatched PEM end delimiter must NOT close the block"
+    );
+
+    // At final flush, unclosed candidate must be redacted in place
+    sanitizer.flush_final(&engine, &mut out).unwrap();
+    let total = String::from_utf8_lossy(&out);
+    assert!(!total.contains("MismatchedKeyData"), "Unclosed candidate must be redacted at EOF");
+    assert!(total.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "Must fail closed with redaction block at EOF");
+}
