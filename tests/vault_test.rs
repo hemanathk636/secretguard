@@ -45,6 +45,67 @@ fn wait_for_child_with_timeout(child: &mut Child, timeout: Duration) -> ExitStat
     }
 }
 
+#[allow(dead_code)]
+fn wait_for_children_with_shared_timeout(
+    children: &mut [Child],
+    timeout: Duration,
+) -> Vec<ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    let mut exit_statuses: Vec<Option<ExitStatus>> = vec![None; children.len()];
+    let mut remaining = children.len();
+
+    while remaining > 0 {
+        let mut poll_err = None;
+        for (i, child) in children.iter_mut().enumerate() {
+            if exit_statuses[i].is_none() {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        exit_statuses[i] = Some(status);
+                        remaining -= 1;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        poll_err = Some((child.id(), e));
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some((cid, err)) = poll_err {
+            for c in children.iter_mut() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            panic!("Failed to poll child {}: {}", cid, err);
+        }
+
+        if remaining == 0 {
+            break;
+        }
+
+        if Instant::now() >= deadline {
+            let mut timed_out_pids = Vec::new();
+            // Kill and reap EVERY remaining running child to prevent zombie processes
+            for (i, child) in children.iter_mut().enumerate() {
+                if exit_statuses[i].is_none() {
+                    timed_out_pids.push(child.id());
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
+            }
+            panic!(
+                "Multi-process test timed out after {:?}. Unfinished PIDs: {:?}",
+                timeout, timed_out_pids
+            );
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    exit_statuses.into_iter().map(|s| s.unwrap()).collect()
+}
+
 static VAULT_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
@@ -674,9 +735,9 @@ fn test_windows_multi_process_concurrent_creation() {
         children.push(child);
     }
 
-    // Wait for all 8 independent OS processes with a bounded 15s deadline and assert exit status 0
-    for mut child in children {
-        let status = wait_for_child_with_timeout(&mut child, Duration::from_secs(15));
+    // Wait for all 8 independent OS processes with a single shared 15s deadline and assert exit status 0
+    let statuses = wait_for_children_with_shared_timeout(&mut children, Duration::from_secs(15));
+    for status in statuses {
         assert!(
             status.success(),
             "Child worker process failed with status: {:?}",
