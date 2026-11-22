@@ -91,7 +91,8 @@ impl SecretSwapper {
         }
 
         let cfg = self.config.lock().unwrap().clone();
-        let (rewritten_req, swapped_count) = Self::swap_request_payload(&buffer[..bytes_read], &cfg);
+        let (rewritten_req, swapped_count) =
+            Self::swap_request_payload(&buffer[..bytes_read], &cfg);
 
         // Simple local HTTP mock or relay acknowledgment for zero-cloud testing
         let req_str = String::from_utf8_lossy(&rewritten_req);
@@ -147,7 +148,8 @@ SUBCOMMANDS:
                     if let Some(stripped) = arg.strip_prefix("--map=") {
                         let parts: Vec<&str> = stripped.splitn(2, '=').collect();
                         if parts.len() == 2 {
-                            cfg.mappings.insert(parts[0].to_string(), parts[1].to_string());
+                            cfg.mappings
+                                .insert(parts[0].to_string(), parts[1].to_string());
                         }
                     } else if arg == "--map" {
                         // handled next
@@ -171,7 +173,10 @@ SUBCOMMANDS:
                 match swapper.start_local_proxy(&bind_target) {
                     Ok(addr) => {
                         println!("👻 Zero-Knowledge TLS Secret Swapper listening on: \x1b[32mhttp://{}\x1b[0m", addr);
-                        println!("💡 Pass HTTP_PROXY=http://{} to your AI agent or application.", addr);
+                        println!(
+                            "💡 Pass HTTP_PROXY=http://{} to your AI agent or application.",
+                            addr
+                        );
                         println!("🛡️ Applications run with fake synthetic mocks; real keys injected in flight.");
                         println!("Press Ctrl+C to stop.");
                         loop {

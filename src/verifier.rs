@@ -29,7 +29,9 @@ impl KeyVerifier {
 
         if secret.starts_with("sk-proj-") || secret.starts_with("sk-") {
             // Check OpenAI key format & structure
-            let is_mock = secret.contains("FAKE") || secret.contains("TESTDUMMY") || secret.contains("SCRUBBED");
+            let is_mock = secret.contains("FAKE")
+                || secret.contains("TESTDUMMY")
+                || secret.contains("SCRUBBED");
             let status = if is_mock {
                 KeyStatus::Revoked
             } else if secret.len() >= 35 {
@@ -62,11 +64,16 @@ impl KeyVerifier {
             KeyVerificationResult {
                 key_type: "AWS IAM Access Key".to_string(),
                 masked_key: masked,
-                status: if is_mock { KeyStatus::Revoked } else { KeyStatus::Live },
+                status: if is_mock {
+                    KeyStatus::Revoked
+                } else {
+                    KeyStatus::Live
+                },
                 permissions: if is_mock {
                     "None (Mock Token)".to_string()
                 } else {
-                    "IAM User (Inspect AWS STS get-caller-identity to check exact policy)".to_string()
+                    "IAM User (Inspect AWS STS get-caller-identity to check exact policy)"
+                        .to_string()
                 },
                 details: if is_mock {
                     "Synthetic mock token".to_string()
@@ -81,7 +88,11 @@ impl KeyVerifier {
             KeyVerificationResult {
                 key_type: "GitHub Personal Access Token".to_string(),
                 masked_key: masked,
-                status: if is_mock { KeyStatus::Revoked } else { KeyStatus::Live },
+                status: if is_mock {
+                    KeyStatus::Revoked
+                } else {
+                    KeyStatus::Live
+                },
                 permissions: if is_mock {
                     "None (Mock Token)".to_string()
                 } else {
@@ -94,7 +105,10 @@ impl KeyVerifier {
                 },
                 latency_us: start.elapsed().as_micros() as u64,
             }
-        } else if secret.starts_with("sk_live_") || secret.starts_with("sk_mocklive_") || secret.starts_with("sk_test_") {
+        } else if secret.starts_with("sk_live_")
+            || secret.starts_with("sk_mocklive_")
+            || secret.starts_with("sk_test_")
+        {
             let is_test = secret.starts_with("sk_test_");
             KeyVerificationResult {
                 key_type: "Stripe Secret Key".to_string(),
@@ -150,9 +164,15 @@ and displays associated permissions and risk levels with sub-microsecond latency
                 KeyStatus::FormatValidUnknown => "\x1b[33m[UNVERIFIED FORMAT]\x1b[0m",
             };
 
-            println!("• {} \x1b[1m{}\x1b[0m ({})", status_badge, res.key_type, res.masked_key);
+            println!(
+                "• {} \x1b[1m{}\x1b[0m ({})",
+                status_badge, res.key_type, res.masked_key
+            );
             println!("  ├── Permissions: \x1b[36m{}\x1b[0m", res.permissions);
-            println!("  └── Details:     {} (verified in {}µs)", res.details, res.latency_us);
+            println!(
+                "  └── Details:     {} (verified in {}µs)",
+                res.details, res.latency_us
+            );
             println!();
         }
     }

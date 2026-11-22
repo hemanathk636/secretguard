@@ -3,14 +3,61 @@ use secretguard::vault::{
     load_vault, save_vault, VaultStore,
 };
 use std::fs;
+use std::process::{Child, ExitStatus};
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[allow(dead_code)]
+fn wait_for_child_with_timeout(child: &mut Child, timeout: Duration) -> ExitStatus {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status,
+
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(20));
+            }
+
+            Ok(None) => match child.kill() {
+                Ok(()) => {
+                    let _ = child.wait();
+                    panic!("Child process timed out and was terminated");
+                }
+
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
+                    return child.wait().expect("Failed to reap child process");
+                }
+
+                Err(error) => {
+                    panic!("Timeout occurred and child termination failed: {error}");
+                }
+            },
+
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+
+                panic!("Failed to check child process: {error}");
+            }
+        }
+    }
+}
 
 static VAULT_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_vault_aes_gcm_roundtrip() {
     let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!("sg_roundtrip_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_roundtrip_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     fs::create_dir_all(&temp_dir).unwrap();
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
 
@@ -31,7 +78,14 @@ fn test_vault_aes_gcm_roundtrip() {
 #[test]
 fn test_vault_wrong_key_fails() {
     let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!("sg_wrong_key_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_wrong_key_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     fs::create_dir_all(&temp_dir).unwrap();
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
 
@@ -51,7 +105,14 @@ fn test_vault_wrong_key_fails() {
 #[test]
 fn test_vault_store_serialization() {
     let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!("sg_store_ser_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_store_ser_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     fs::create_dir_all(&temp_dir).unwrap();
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
 
@@ -80,7 +141,8 @@ fn test_vault_store_serialization() {
 #[test]
 fn test_corrupted_vault_file_fails_loudly_without_data_loss() {
     let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!("sg_vault_corrupt_test_{}", std::process::id()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("sg_vault_corrupt_test_{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);
     let corrupt_vault_path = temp_dir.join("vault.enc");
 
@@ -92,7 +154,10 @@ fn test_corrupted_vault_file_fails_loudly_without_data_loss() {
 
     // Attempting to load MUST return Err, NEVER unwrap_or_default
     let result = load_vault(None);
-    assert!(result.is_err(), "Loading a corrupted vault MUST fail with Err to prevent overwriting existing data");
+    assert!(
+        result.is_err(),
+        "Loading a corrupted vault MUST fail with Err to prevent overwriting existing data"
+    );
 
     // Cleanup
     std::env::remove_var("SECRETGUARD_VAULT_PATH");
@@ -103,7 +168,8 @@ fn test_corrupted_vault_file_fails_loudly_without_data_loss() {
 #[test]
 fn test_corrupted_master_key_aborts_to_prevent_data_loss() {
     let _lock = VAULT_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!("sg_master_key_corrupt_{}", std::process::id()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("sg_master_key_corrupt_{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);
     let corrupt_key_path = temp_dir.join(".master.key");
 
@@ -114,9 +180,16 @@ fn test_corrupted_master_key_aborts_to_prevent_data_loss() {
     std::env::set_var("SECRETGUARD_MASTER_KEY_PATH", &corrupt_key_path);
 
     let result = get_or_generate_master_key();
-    assert!(result.is_err(), "Truncated master key must be rejected to prevent vault orphaning");
+    assert!(
+        result.is_err(),
+        "Truncated master key must be rejected to prevent vault orphaning"
+    );
     let err_msg = result.unwrap_err();
-    assert!(err_msg.contains("corrupted"), "Error should explain key corruption: {}", err_msg);
+    assert!(
+        err_msg.contains("corrupted"),
+        "Error should explain key corruption: {}",
+        err_msg
+    );
 
     // Cleanup
     std::env::remove_var("SECRETGUARD_MASTER_KEY_PATH");
@@ -135,16 +208,31 @@ fn test_atomic_unique_tmp_file_during_save_vault() {
     std::env::set_var("SECRETGUARD_VAULT_PATH", &vault_path);
 
     let mut store = VaultStore::default();
-    store.secrets.insert("PROD_DB".to_string(), "postgres://user:pass@db:5432/prod".to_string());
+    store.secrets.insert(
+        "PROD_DB".to_string(),
+        "postgres://user:pass@db:5432/prod".to_string(),
+    );
 
     let save_res = save_vault(&store, None);
-    assert!(save_res.is_ok(), "save_vault should succeed with unique tmp file");
-    assert!(vault_path.exists(), "Final vault file must exist after atomic rename");
+    assert!(
+        save_res.is_ok(),
+        "save_vault should succeed with unique tmp file"
+    );
+    assert!(
+        vault_path.exists(),
+        "Final vault file must exist after atomic rename"
+    );
 
     // Verify temp files were cleanly cleaned up
-    let entries: Vec<_> = fs::read_dir(&temp_dir).unwrap().filter_map(|e| e.ok()).collect();
+    let entries: Vec<_> = fs::read_dir(&temp_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
     // vault.enc and .master.key exist, but no .vault.*.tmp files
-    let tmp_files: Vec<_> = entries.iter().filter(|e| e.file_name().to_string_lossy().contains(".tmp")).collect();
+    let tmp_files: Vec<_> = entries
+        .iter()
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+        .collect();
     assert_eq!(tmp_files.len(), 0, "All temporary files must be cleaned up");
 
     std::env::remove_var("SECRETGUARD_VAULT_PATH");
@@ -164,14 +252,23 @@ fn test_windows_and_unix_existing_vault_replacement() {
 
     let mut store = VaultStore::default();
     store.secrets.insert("KEY1".to_string(), "val1".to_string());
-    assert!(save_vault(&store, None).is_ok(), "Initial save must succeed");
+    assert!(
+        save_vault(&store, None).is_ok(),
+        "Initial save must succeed"
+    );
 
     // Replace existing vault multiple times to test Windows and Unix file replacement
     store.secrets.insert("KEY2".to_string(), "val2".to_string());
-    assert!(save_vault(&store, None).is_ok(), "Overwriting existing vault must succeed atomically");
+    assert!(
+        save_vault(&store, None).is_ok(),
+        "Overwriting existing vault must succeed atomically"
+    );
 
     store.secrets.insert("KEY3".to_string(), "val3".to_string());
-    assert!(save_vault(&store, None).is_ok(), "Third update to existing vault must succeed atomically");
+    assert!(
+        save_vault(&store, None).is_ok(),
+        "Third update to existing vault must succeed atomically"
+    );
 
     let loaded = load_vault(None).expect("Vault should load updated secrets");
     assert_eq!(loaded.secrets.len(), 3);
@@ -210,7 +307,10 @@ fn test_binary_stream_preservation_and_credential_sanitization() {
     let raw_binary = vec![0x1f, 0x8b, 0x08, 0x00, 0xff, 0xfe, 0x00, 0x42];
     let mut out_binary = Vec::new();
     sanitize_stream_buffer(&raw_binary, &engine, &mut out_binary).unwrap();
-    assert_eq!(out_binary, raw_binary, "Clean binary chunks must be preserved unmodified byte-for-byte");
+    assert_eq!(
+        out_binary, raw_binary,
+        "Clean binary chunks must be preserved unmodified byte-for-byte"
+    );
 
     // 2. Binary with embedded ASCII credential: MUST detect and redact credential (cannot bypass)
     let mut tainted_binary = vec![0x1f, 0x8b, 0x08];
@@ -220,8 +320,14 @@ fn test_binary_stream_preservation_and_credential_sanitization() {
     let mut out_tainted = Vec::new();
     sanitize_stream_buffer(&tainted_binary, &engine, &mut out_tainted).unwrap();
     let out_str = String::from_utf8_lossy(&out_tainted);
-    assert!(!out_str.contains("sk-proj-embeddedTokenInBinary01234567890abcdef"), "Embedded credential in binary output MUST be redacted");
-    assert!(out_str.contains("[REDACTED_OPENAI_KEY]") || out_str.contains("[REDACTED"), "Credential must be redacted in output");
+    assert!(
+        !out_str.contains("sk-proj-embeddedTokenInBinary01234567890abcdef"),
+        "Embedded credential in binary output MUST be redacted"
+    );
+    assert!(
+        out_str.contains("[REDACTED_OPENAI_KEY]") || out_str.contains("[REDACTED"),
+        "Credential must be redacted in output"
+    );
 }
 
 #[test]
@@ -235,16 +341,27 @@ fn test_stream_sanitizer_split_chunk_credential_detection() {
     // Chunk 1: prefix of OpenAI key split right in the middle
     let chunk1 = b"export OPENAI_API_KEY=\"sk-proj-prefixPart12345";
     let mut out1 = Vec::new();
-    sanitizer.sanitize_chunk(chunk1, &engine, &mut out1).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk1, &engine, &mut out1)
+        .unwrap();
 
     // Chunk 2: suffix of the key completing the credential across chunk boundary
     let chunk2 = b"67890suffixPartAbcdef0123456789\"\n";
     let mut out2 = Vec::new();
-    sanitizer.sanitize_chunk(chunk2, &engine, &mut out2).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk2, &engine, &mut out2)
+        .unwrap();
     sanitizer.flush_final(&engine, &mut out2).unwrap();
 
-    let combined_out = format!("{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2));
-    assert!(out1.is_empty(), "Partial chunk within 1024-byte window must be held back to prevent leak");
+    let combined_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out1),
+        String::from_utf8_lossy(&out2)
+    );
+    assert!(
+        out1.is_empty(),
+        "Partial chunk within 1024-byte window must be held back to prevent leak"
+    );
     assert!(
         !combined_out.contains("sk-proj-prefixPart1234567890suffixPartAbcdef0123456789"),
         "Credential split across chunks MUST be redacted across boundary"
@@ -267,18 +384,24 @@ fn test_stream_sanitizer_large_stream_sliding_holdback() {
     // Stream 5KB of non-secret filler text
     let filler = vec![b'A'; 5000];
     let mut out1 = Vec::new();
-    sanitizer.sanitize_chunk(&filler, &engine, &mut out1).unwrap();
+    sanitizer
+        .sanitize_chunk(&filler, &engine, &mut out1)
+        .unwrap();
     // out1 should have drained 5000 - 4096 = 904 bytes
     assert_eq!(out1.len(), 5000 - StreamSanitizer::WINDOW_SIZE);
 
     // Now inject split secret in chunk 2 and chunk 3
     let chunk2 = b"prefix_filler ghp_1234567890";
     let mut out2 = Vec::new();
-    sanitizer.sanitize_chunk(chunk2, &engine, &mut out2).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk2, &engine, &mut out2)
+        .unwrap();
 
     let chunk3 = b"12345678901234567890123456 suffix_filler\n";
     let mut out3 = Vec::new();
-    sanitizer.sanitize_chunk(chunk3, &engine, &mut out3).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk3, &engine, &mut out3)
+        .unwrap();
 
     let mut out_final = Vec::new();
     sanitizer.flush_final(&engine, &mut out_final).unwrap();
@@ -290,7 +413,10 @@ fn test_stream_sanitizer_large_stream_sliding_holdback() {
         String::from_utf8_lossy(&out3),
         String::from_utf8_lossy(&out_final)
     );
-    assert!(!total.contains("ghp_123456789012345678901234567890123456"), "Split GitHub token across chunks must be redacted");
+    assert!(
+        !total.contains("ghp_123456789012345678901234567890123456"),
+        "Split GitHub token across chunks must be redacted"
+    );
     assert!(total.contains("[REDACTED_GITHUB_TOKEN]") || total.contains("[REDACTED]"));
 }
 
@@ -305,10 +431,16 @@ fn test_stream_sanitizer_long_pem_and_jwt_split_chunk() {
     // 1. Full 2048-bit RSA PEM private key block (~1.7 KB) split across 3 chunks
     let mut full_pem = String::from("-----BEGIN RSA PRIVATE KEY-----\n");
     for i in 0..24 {
-        full_pem.push_str(&format!("MIIEowIBAAKCAQEA0Y5k1vABCD{}EFGH{}IJKL{}MNOP{}QRST{}UVWX{}YZab1234567890=\n", i, i, i, i, i, i));
+        full_pem.push_str(&format!(
+            "MIIEowIBAAKCAQEA0Y5k1vABCD{}EFGH{}IJKL{}MNOP{}QRST{}UVWX{}YZab1234567890=\n",
+            i, i, i, i, i, i
+        ));
     }
     full_pem.push_str("-----END RSA PRIVATE KEY-----\n");
-    assert!(full_pem.len() > 1500, "Full PEM must be a realistic 1.5KB+ key block");
+    assert!(
+        full_pem.len() > 1500,
+        "Full PEM must be a realistic 1.5KB+ key block"
+    );
 
     let split_point1 = 500;
     let split_point2 = 1100;
@@ -317,25 +449,46 @@ fn test_stream_sanitizer_long_pem_and_jwt_split_chunk() {
     let chunk_pem3 = &full_pem.as_bytes()[split_point2..];
 
     let mut out_pem1 = Vec::new();
-    sanitizer.sanitize_chunk(chunk_pem1, &engine, &mut out_pem1).unwrap();
-    assert!(out_pem1.is_empty(), "Partial PEM header must be held back in window");
+    sanitizer
+        .sanitize_chunk(chunk_pem1, &engine, &mut out_pem1)
+        .unwrap();
+    assert!(
+        out_pem1.is_empty(),
+        "Partial PEM header must be held back in window"
+    );
 
     let mut out_pem2 = Vec::new();
-    sanitizer.sanitize_chunk(chunk_pem2, &engine, &mut out_pem2).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk_pem2, &engine, &mut out_pem2)
+        .unwrap();
 
     let mut out_pem3 = Vec::new();
-    sanitizer.sanitize_chunk(chunk_pem3, &engine, &mut out_pem3).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk_pem3, &engine, &mut out_pem3)
+        .unwrap();
     sanitizer.flush_final(&engine, &mut out_pem3).unwrap();
 
-    let pem_out = format!("{}{}{}", String::from_utf8_lossy(&out_pem1), String::from_utf8_lossy(&out_pem2), String::from_utf8_lossy(&out_pem3));
-    assert!(!pem_out.contains("-----BEGIN RSA PRIVATE KEY-----"), "Full PEM key header must be redacted");
-    assert!(pem_out.contains("[REDACTED]"), "Sanitizer must redact full PEM block");
+    let pem_out = format!(
+        "{}{}{}",
+        String::from_utf8_lossy(&out_pem1),
+        String::from_utf8_lossy(&out_pem2),
+        String::from_utf8_lossy(&out_pem3)
+    );
+    assert!(
+        !pem_out.contains("-----BEGIN RSA PRIVATE KEY-----"),
+        "Full PEM key header must be redacted"
+    );
+    assert!(
+        pem_out.contains("[REDACTED]"),
+        "Sanitizer must redact full PEM block"
+    );
 
     // 2. Large JWT token (1.2KB) split across 3 chunk boundaries
     let mut jwt_sanitizer = StreamSanitizer::new();
     let mut full_jwt = String::from("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.");
     for _ in 0..15 {
-        full_jwt.push_str("eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ");
+        full_jwt
+            .push_str("eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ");
     }
     full_jwt.push_str(".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c_final_signature\n");
     assert!(full_jwt.len() > 1000, "JWT must be realistic 1KB+ token");
@@ -343,19 +496,43 @@ fn test_stream_sanitizer_long_pem_and_jwt_split_chunk() {
     let jwt_split1 = 350;
     let jwt_split2 = 750;
     let mut out_jwt1 = Vec::new();
-    jwt_sanitizer.sanitize_chunk(&full_jwt.as_bytes()[..jwt_split1], &engine, &mut out_jwt1).unwrap();
-    assert!(out_jwt1.is_empty(), "Partial JWT within window must be held back");
+    jwt_sanitizer
+        .sanitize_chunk(&full_jwt.as_bytes()[..jwt_split1], &engine, &mut out_jwt1)
+        .unwrap();
+    assert!(
+        out_jwt1.is_empty(),
+        "Partial JWT within window must be held back"
+    );
 
     let mut out_jwt2 = Vec::new();
-    jwt_sanitizer.sanitize_chunk(&full_jwt.as_bytes()[jwt_split1..jwt_split2], &engine, &mut out_jwt2).unwrap();
+    jwt_sanitizer
+        .sanitize_chunk(
+            &full_jwt.as_bytes()[jwt_split1..jwt_split2],
+            &engine,
+            &mut out_jwt2,
+        )
+        .unwrap();
 
     let mut out_jwt3 = Vec::new();
-    jwt_sanitizer.sanitize_chunk(&full_jwt.as_bytes()[jwt_split2..], &engine, &mut out_jwt3).unwrap();
+    jwt_sanitizer
+        .sanitize_chunk(&full_jwt.as_bytes()[jwt_split2..], &engine, &mut out_jwt3)
+        .unwrap();
     jwt_sanitizer.flush_final(&engine, &mut out_jwt3).unwrap();
 
-    let jwt_out = format!("{}{}{}", String::from_utf8_lossy(&out_jwt1), String::from_utf8_lossy(&out_jwt2), String::from_utf8_lossy(&out_jwt3));
-    assert!(!jwt_out.contains("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"), "Split large JWT token must be redacted");
-    assert!(jwt_out.contains("[REDACTED]"), "Split large JWT must be redacted");
+    let jwt_out = format!(
+        "{}{}{}",
+        String::from_utf8_lossy(&out_jwt1),
+        String::from_utf8_lossy(&out_jwt2),
+        String::from_utf8_lossy(&out_jwt3)
+    );
+    assert!(
+        !jwt_out.contains("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"),
+        "Split large JWT token must be redacted"
+    );
+    assert!(
+        jwt_out.contains("[REDACTED]"),
+        "Split large JWT must be redacted"
+    );
 }
 
 #[test]
@@ -375,12 +552,18 @@ fn test_stream_sanitizer_binary_fidelity_with_embedded_credentials() {
     tainted_payload.extend_from_slice(secret_bytes);
     tainted_payload.extend_from_slice(&binary_suffix);
 
-    let (sanitized_bytes, has_secret) = StreamSanitizer::sanitize_bytes_internal(&tainted_payload, &engine);
+    let (sanitized_bytes, has_secret) =
+        StreamSanitizer::sanitize_bytes_internal(&tainted_payload, &engine);
 
-    assert!(has_secret, "Sanitizer must detect secret embedded in raw binary stream");
+    assert!(
+        has_secret,
+        "Sanitizer must detect secret embedded in raw binary stream"
+    );
     // Verify secret is redacted:
     assert!(
-        !sanitized_bytes.windows(secret_bytes.len()).any(|w| w == secret_bytes),
+        !sanitized_bytes
+            .windows(secret_bytes.len())
+            .any(|w| w == secret_bytes),
         "Embedded raw secret must be completely redacted"
     );
     // Verify invalid UTF-8 binary prefix is preserved EXACTLY byte-for-byte:
@@ -409,15 +592,33 @@ fn test_atomic_replace_first_creation_and_subsequent_overwrites() {
 
     // 1. First-time creation (target does not exist yet)
     fs::write(&tmp1, b"first-time vault content").unwrap();
-    assert!(!target.exists(), "Target file must not exist before first creation");
-    assert!(atomic_replace_file(&tmp1, &target).is_ok(), "First-time creation must succeed");
-    assert!(target.exists(), "Target file must exist after first creation");
-    assert_eq!(fs::read_to_string(&target).unwrap(), "first-time vault content");
+    assert!(
+        !target.exists(),
+        "Target file must not exist before first creation"
+    );
+    assert!(
+        atomic_replace_file(&tmp1, &target).is_ok(),
+        "First-time creation must succeed"
+    );
+    assert!(
+        target.exists(),
+        "Target file must exist after first creation"
+    );
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "first-time vault content"
+    );
 
     // 2. Subsequent replacement (target already exists, tests ReplaceFileW / rename)
     fs::write(&tmp2, b"second-time replaced content").unwrap();
-    assert!(atomic_replace_file(&tmp2, &target).is_ok(), "Subsequent replacement must succeed");
-    assert_eq!(fs::read_to_string(&target).unwrap(), "second-time replaced content");
+    assert!(
+        atomic_replace_file(&tmp2, &target).is_ok(),
+        "Subsequent replacement must succeed"
+    );
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "second-time replaced content"
+    );
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -434,13 +635,17 @@ fn test_windows_multi_process_worker_entry() {
         // Each process creates a genuine AES-256-GCM encrypted vault with its unique secret
         let tmp = parent.join(format!(".tmp_child_proc_{}.vault", id));
         let mut store = VaultStore::default();
-        store.secrets.insert(format!("PROCESS_KEY_{}", id), format!("secret_payload_from_proc_{}", id));
+        store.secrets.insert(
+            format!("PROCESS_KEY_{}", id),
+            format!("secret_payload_from_proc_{}", id),
+        );
         let key = [0x5au8; 32];
         let json_bytes = serde_json::to_vec(&store).unwrap();
         let encrypted = encrypt_vault_payload(&json_bytes, &key).unwrap();
         std::fs::write(&tmp, &encrypted).unwrap();
 
-        secretguard::vault::atomic_replace_file(&tmp, &target_path).expect("Child process atomic_replace_file failed");
+        secretguard::vault::atomic_replace_file(&tmp, &target_path)
+            .expect("Child process atomic_replace_file failed");
         std::process::exit(0);
     }
 }
@@ -469,25 +674,41 @@ fn test_windows_multi_process_concurrent_creation() {
         children.push(child);
     }
 
-    // Wait for all 8 independent OS processes and assert exit status 0
+    // Wait for all 8 independent OS processes with a bounded 15s deadline and assert exit status 0
     for mut child in children {
-        let status = child.wait().expect("Failed to wait on child worker process");
-        assert!(status.success(), "Child worker process failed with status: {:?}", status);
+        let status = wait_for_child_with_timeout(&mut child, Duration::from_secs(15));
+        assert!(
+            status.success(),
+            "Child worker process failed with status: {:?}",
+            status
+        );
     }
 
     // Verify target exists and can be decrypted cleanly with the master key
-    assert!(target.exists(), "Target file must exist after concurrent multi-process race");
+    assert!(
+        target.exists(),
+        "Target file must exist after concurrent multi-process race"
+    );
     let encrypted = fs::read(&target).expect("Failed to read final vault file");
     let key = [0x5au8; 32];
-    let decrypted = decrypt_vault_payload(&encrypted, &key).expect("Final vault file must decrypt cleanly with master key");
-    let store: VaultStore = serde_json::from_slice(&decrypted).expect("Final vault must deserialize into valid VaultStore");
-    assert!(!store.secrets.is_empty(), "Vault must contain valid secret entries");
+    let decrypted = decrypt_vault_payload(&encrypted, &key)
+        .expect("Final vault file must decrypt cleanly with master key");
+    let store: VaultStore = serde_json::from_slice(&decrypted)
+        .expect("Final vault must deserialize into valid VaultStore");
+    assert!(
+        !store.secrets.is_empty(),
+        "Vault must contain valid secret entries"
+    );
 
     // Verify NO temporary files (.tmp_child_proc_*) remain in directory
     for entry in fs::read_dir(&temp_dir).unwrap() {
         let entry = entry.unwrap();
         let name = entry.file_name().to_string_lossy().to_string();
-        assert!(!name.starts_with(".tmp_child_proc_"), "Temporary file was left behind: {}", name);
+        assert!(
+            !name.starts_with(".tmp_child_proc_"),
+            "Temporary file was left behind: {}",
+            name
+        );
     }
 
     let _ = fs::remove_dir_all(&temp_dir);
@@ -500,7 +721,8 @@ fn test_windows_concurrent_first_creation_race() {
     use std::sync::Arc;
     use std::thread;
 
-    let temp_dir = Arc::new(std::env::temp_dir().join(format!("sg_concurrent_first_{}", std::process::id())));
+    let temp_dir =
+        Arc::new(std::env::temp_dir().join(format!("sg_concurrent_first_{}", std::process::id())));
     fs::create_dir_all(&*temp_dir).unwrap();
     let target = Arc::new(temp_dir.join("vault.enc"));
 
@@ -520,14 +742,28 @@ fn test_windows_concurrent_first_creation_race() {
     let mut successes = 0;
     for h in handles {
         let res = h.join().expect("Thread joined successfully");
-        assert!(res.is_ok(), "Concurrent replacement failed with error: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "Concurrent replacement failed with error: {:?}",
+            res.err()
+        );
         successes += 1;
     }
 
-    assert_eq!(successes, 8, "All 8 concurrent threads must succeed without error or contention failure");
-    assert!(target.exists(), "Target file must exist after concurrent race");
+    assert_eq!(
+        successes, 8,
+        "All 8 concurrent threads must succeed without error or contention failure"
+    );
+    assert!(
+        target.exists(),
+        "Target file must exist after concurrent race"
+    );
     let final_content = fs::read_to_string(&*target).unwrap();
-    assert!(final_content.starts_with("content from thread "), "Final content must be valid thread payload: {}", final_content);
+    assert!(
+        final_content.starts_with("content from thread "),
+        "Final content must be valid thread payload: {}",
+        final_content
+    );
 
     let _ = fs::remove_dir_all(&*temp_dir);
 }
@@ -541,8 +777,14 @@ fn test_sigint_and_sigterm_exit_codes() {
     let exit_sigint = 128 + SIGINT;
     let exit_sigterm = 128 + SIGTERM;
 
-    assert_eq!(exit_sigint, 130, "SIGINT exit code must strictly equal 130 (128 + 2)");
-    assert_eq!(exit_sigterm, 143, "SIGTERM exit code must strictly equal 143 (128 + 15)");
+    assert_eq!(
+        exit_sigint, 130,
+        "SIGINT exit code must strictly equal 130 (128 + 2)"
+    );
+    assert_eq!(
+        exit_sigterm, 143,
+        "SIGTERM exit code must strictly equal 143 (128 + 15)"
+    );
 }
 
 #[test]
@@ -556,11 +798,17 @@ fn test_secure_path_validation_and_symlink_defense() {
     fs::write(&target_file, b"test content").unwrap();
 
     // 1. Path inside trusted temp_dir must pass validation
-    assert!(validate_secure_path(&target_file, true).is_ok(), "Valid path inside temp_dir must pass");
+    assert!(
+        validate_secure_path(&target_file, true).is_ok(),
+        "Valid path inside temp_dir must pass"
+    );
 
     // 2. Non-existent target (first creation) must pass
     let non_existent = temp_dir.join("non_existent_vault.enc");
-    assert!(validate_secure_path(&non_existent, true).is_ok(), "Non-existent target must pass pre-creation checks");
+    assert!(
+        validate_secure_path(&non_existent, true).is_ok(),
+        "Non-existent target must pass pre-creation checks"
+    );
 
     // 3. Symlink target defense (on platforms supporting symlinks)
     #[cfg(unix)]
@@ -577,7 +825,10 @@ fn test_secure_path_validation_and_symlink_defense() {
         if std::os::unix::fs::symlink(&temp_dir, &link_parent).is_ok() {
             let nested_path = link_parent.join("vault.enc");
             let res = validate_secure_path(&nested_path, true);
-            assert!(res.is_err(), "Path with intermediate symlink component must be rejected");
+            assert!(
+                res.is_err(),
+                "Path with intermediate symlink component must be rejected"
+            );
             assert!(res.unwrap_err().contains("symbolic link"));
         }
     }
@@ -596,13 +847,17 @@ fn test_utf8_password_input_fidelity() {
 
     // 2. Multi-byte German umlauts and emoji: p@sswörd🔑\r\n -> p@sswörd🔑
     let complex_bytes = "p@sswörd🔑\r\n".as_bytes();
-    let parsed_complex = parse_password_bytes(complex_bytes).expect("Failed to parse valid UTF-8 complex password");
+    let parsed_complex =
+        parse_password_bytes(complex_bytes).expect("Failed to parse valid UTF-8 complex password");
     assert_eq!(parsed_complex, "p@sswörd🔑");
 
     // 3. Invalid UTF-8 bytes fail closed with InvalidData
     let invalid_bytes = vec![0xFF, 0xFE, 0x80, b'\n'];
     let err = parse_password_bytes(&invalid_bytes);
-    assert!(err.is_err(), "Invalid UTF-8 byte sequences must fail closed");
+    assert!(
+        err.is_err(),
+        "Invalid UTF-8 byte sequences must fail closed"
+    );
 }
 
 #[test]
@@ -623,7 +878,10 @@ fn test_load_vault_fails_closed_on_dangling_symlink_or_io_error() {
         let non_existent_dest = temp_dir.join("does_not_exist.enc");
         if std::os::unix::fs::symlink(&non_existent_dest, &vault_target).is_ok() {
             let res = load_vault(None);
-            assert!(res.is_err(), "Dangling symlink for vault file must fail closed with error");
+            assert!(
+                res.is_err(),
+                "Dangling symlink for vault file must fail closed with error"
+            );
             let err_msg = res.unwrap_err();
             assert!(err_msg.contains("symbolic link") || err_msg.contains("Security Error"));
             let _ = fs::remove_file(&vault_target);
@@ -642,7 +900,9 @@ fn test_vault_relative_path_and_parent_traversal_defense() {
     let traversal_path = std::path::Path::new("../secret/vault.enc");
     let res = validate_secure_path(traversal_path, true);
     assert!(res.is_err(), "Path with '..' traversal must be rejected");
-    assert!(res.unwrap_err().contains("parent directory ('..') traversal"));
+    assert!(res
+        .unwrap_err()
+        .contains("parent directory ('..') traversal"));
 
     // 2. Relative path ("vault.enc") resolves against cwd and passes if cwd is secure
     let rel_path = std::path::Path::new("test_rel_vault.enc");
@@ -670,15 +930,29 @@ fn test_stream_sanitizer_boundary_crossing_at_window_limit() {
     let chunk2 = &stream[split..];
 
     let mut out1 = Vec::new();
-    sanitizer.sanitize_chunk(chunk1, &engine, &mut out1).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk1, &engine, &mut out1)
+        .unwrap();
 
     let mut out2 = Vec::new();
-    sanitizer.sanitize_chunk(chunk2, &engine, &mut out2).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk2, &engine, &mut out2)
+        .unwrap();
     sanitizer.flush_final(&engine, &mut out2).unwrap();
 
-    let total_out = format!("{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2));
-    assert!(!total_out.contains("ghp_1234567890abcdef1234567890abcdef1234"), "Token straddling 4096-byte window boundary must not leak");
-    assert!(total_out.contains("[REDACTED]"), "Token straddling 4096-byte boundary must be redacted");
+    let total_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out1),
+        String::from_utf8_lossy(&out2)
+    );
+    assert!(
+        !total_out.contains("ghp_1234567890abcdef1234567890abcdef1234"),
+        "Token straddling 4096-byte window boundary must not leak"
+    );
+    assert!(
+        total_out.contains("[REDACTED]"),
+        "Token straddling 4096-byte boundary must be redacted"
+    );
 }
 
 #[test]
@@ -692,7 +966,10 @@ fn test_stream_sanitizer_stateful_large_pem_holdback() {
     // Build an 8KB PEM block (exceeding standard 4KB WINDOW_SIZE)
     let mut large_pem = String::from("-----BEGIN RSA PRIVATE KEY-----\n");
     for i in 0..120 {
-        large_pem.push_str(&format!("MIIEowIBAAKCAQEA0Y5k1vABCD{}EFGH{}IJKL{}MNOP{}QRST{}UVWX{}YZab1234567890=\n", i, i, i, i, i, i));
+        large_pem.push_str(&format!(
+            "MIIEowIBAAKCAQEA0Y5k1vABCD{}EFGH{}IJKL{}MNOP{}QRST{}UVWX{}YZab1234567890=\n",
+            i, i, i, i, i, i
+        ));
     }
     large_pem.push_str("-----END RSA PRIVATE KEY-----\n");
     assert!(large_pem.len() > 8000, "Large PEM must exceed 8KB");
@@ -704,19 +981,36 @@ fn test_stream_sanitizer_stateful_large_pem_holdback() {
 
     let mut out1 = Vec::new();
     sanitizer.sanitize_chunk(c1, &engine, &mut out1).unwrap();
-    assert!(out1.is_empty(), "Unclosed PEM header must be held back statefully");
+    assert!(
+        out1.is_empty(),
+        "Unclosed PEM header must be held back statefully"
+    );
 
     let mut out2 = Vec::new();
     sanitizer.sanitize_chunk(c2, &engine, &mut out2).unwrap();
-    assert!(out2.is_empty(), "Intermediate unclosed PEM body must be held back statefully");
+    assert!(
+        out2.is_empty(),
+        "Intermediate unclosed PEM body must be held back statefully"
+    );
 
     let mut out3 = Vec::new();
     sanitizer.sanitize_chunk(c3, &engine, &mut out3).unwrap();
     sanitizer.flush_final(&engine, &mut out3).unwrap();
 
-    let combined = format!("{}{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2), String::from_utf8_lossy(&out3));
-    assert!(!combined.contains("-----BEGIN RSA PRIVATE KEY-----"), "Full 8KB PEM key must be redacted");
-    assert!(combined.contains("[REDACTED]"), "8KB PEM key must be redacted");
+    let combined = format!(
+        "{}{}{}",
+        String::from_utf8_lossy(&out1),
+        String::from_utf8_lossy(&out2),
+        String::from_utf8_lossy(&out3)
+    );
+    assert!(
+        !combined.contains("-----BEGIN RSA PRIVATE KEY-----"),
+        "Full 8KB PEM key must be redacted"
+    );
+    assert!(
+        combined.contains("[REDACTED]"),
+        "8KB PEM key must be redacted"
+    );
 }
 
 #[test]
@@ -738,7 +1032,10 @@ fn test_stream_sanitizer_pem_holdback_overflow_16kb_minus_one() {
     let mut out = Vec::new();
     sanitizer.sanitize_chunk(&pem, &engine, &mut out).unwrap();
     // Must be completely held back (zero bytes leaked)
-    assert!(out.is_empty(), "16KB - 1 byte incomplete PEM must be held back with 0 bytes emitted");
+    assert!(
+        out.is_empty(),
+        "16KB - 1 byte incomplete PEM must be held back with 0 bytes emitted"
+    );
 }
 
 #[test]
@@ -762,8 +1059,14 @@ fn test_stream_sanitizer_pem_holdback_overflow_exact_16kb() {
     sanitizer.flush_final(&engine, &mut out).unwrap();
 
     let output_str = String::from_utf8_lossy(&out);
-    assert!(!output_str.contains("-----BEGIN RSA PRIVATE KEY-----"), "Raw private key header must not leak on overflow");
-    assert!(output_str.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "Overflowed incomplete candidate must be redacted in place");
+    assert!(
+        !output_str.contains("-----BEGIN RSA PRIVATE KEY-----"),
+        "Raw private key header must not leak on overflow"
+    );
+    assert!(
+        output_str.contains("[REDACTED_PRIVATE_KEY_BLOCK]"),
+        "Overflowed incomplete candidate must be redacted in place"
+    );
 }
 
 #[test]
@@ -787,8 +1090,14 @@ fn test_stream_sanitizer_pem_holdback_overflow_16kb_plus_one() {
     sanitizer.flush_final(&engine, &mut out).unwrap();
 
     let output_str = String::from_utf8_lossy(&out);
-    assert!(!output_str.contains("-----BEGIN RSA PRIVATE KEY-----"), "Raw private key header must not leak on overflow");
-    assert!(output_str.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "Overflowed incomplete candidate must be redacted in place");
+    assert!(
+        !output_str.contains("-----BEGIN RSA PRIVATE KEY-----"),
+        "Raw private key header must not leak on overflow"
+    );
+    assert!(
+        output_str.contains("[REDACTED_PRIVATE_KEY_BLOCK]"),
+        "Overflowed incomplete candidate must be redacted in place"
+    );
 }
 
 #[test]
@@ -809,15 +1118,29 @@ fn test_stream_sanitizer_pem_holdback_overflow_32kb_incomplete() {
 
     // Deliver in two 16KB chunks
     let mut out1 = Vec::new();
-    sanitizer.sanitize_chunk(&pem[..16384], &engine, &mut out1).unwrap();
+    sanitizer
+        .sanitize_chunk(&pem[..16384], &engine, &mut out1)
+        .unwrap();
 
     let mut out2 = Vec::new();
-    sanitizer.sanitize_chunk(&pem[16384..], &engine, &mut out2).unwrap();
+    sanitizer
+        .sanitize_chunk(&pem[16384..], &engine, &mut out2)
+        .unwrap();
     sanitizer.flush_final(&engine, &mut out2).unwrap();
 
-    let combined = format!("{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2));
-    assert!(!combined.contains("-----BEGIN RSA PRIVATE KEY-----"), "Raw private key header must not leak on 32KB overflow");
-    assert!(combined.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "32KB incomplete candidate must be redacted in place");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out1),
+        String::from_utf8_lossy(&out2)
+    );
+    assert!(
+        !combined.contains("-----BEGIN RSA PRIVATE KEY-----"),
+        "Raw private key header must not leak on 32KB overflow"
+    );
+    assert!(
+        combined.contains("[REDACTED_PRIVATE_KEY_BLOCK]"),
+        "32KB incomplete candidate must be redacted in place"
+    );
 }
 
 #[test]
@@ -831,23 +1154,43 @@ fn test_stream_sanitizer_pem_closing_delimiter_in_later_chunk() {
     // 10KB incomplete PEM in chunk 1, delimiter in chunk 2
     let mut chunk1 = String::from("-----BEGIN RSA PRIVATE KEY-----\n");
     for i in 0..150 {
-        chunk1.push_str(&format!("MIIEowIBAAKCAQEA0Y5k1vABCD{}EFGH{}IJKL{}MNOP{}QRST{}UVWX{}YZab1234567890=\n", i, i, i, i, i, i));
+        chunk1.push_str(&format!(
+            "MIIEowIBAAKCAQEA0Y5k1vABCD{}EFGH{}IJKL{}MNOP{}QRST{}UVWX{}YZab1234567890=\n",
+            i, i, i, i, i, i
+        ));
     }
     assert!(chunk1.len() > 10000);
 
     let chunk2 = "-----END RSA PRIVATE KEY-----\n";
 
     let mut out1 = Vec::new();
-    sanitizer.sanitize_chunk(chunk1.as_bytes(), &engine, &mut out1).unwrap();
-    assert!(out1.is_empty(), "Incomplete PEM candidate must be held back in chunk 1");
+    sanitizer
+        .sanitize_chunk(chunk1.as_bytes(), &engine, &mut out1)
+        .unwrap();
+    assert!(
+        out1.is_empty(),
+        "Incomplete PEM candidate must be held back in chunk 1"
+    );
 
     let mut out2 = Vec::new();
-    sanitizer.sanitize_chunk(chunk2.as_bytes(), &engine, &mut out2).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk2.as_bytes(), &engine, &mut out2)
+        .unwrap();
     sanitizer.flush_final(&engine, &mut out2).unwrap();
 
-    let total = format!("{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2));
-    assert!(!total.contains("-----BEGIN RSA PRIVATE KEY-----"), "Complete PEM block delivered across chunks must be redacted");
-    assert!(total.contains("[REDACTED]"), "Complete PEM block must be redacted");
+    let total = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out1),
+        String::from_utf8_lossy(&out2)
+    );
+    assert!(
+        !total.contains("-----BEGIN RSA PRIVATE KEY-----"),
+        "Complete PEM block delivered across chunks must be redacted"
+    );
+    assert!(
+        total.contains("[REDACTED]"),
+        "Complete PEM block must be redacted"
+    );
 }
 
 #[test]
@@ -898,10 +1241,17 @@ fn test_windows_reparse_point_rejection() {
             let file_in_junc = junc_dst.join("vault.enc");
             fs::write(junc_src.join("vault.enc"), b"secret data").unwrap();
             let file_res = validate_secure_path(&file_in_junc, true);
-            assert!(file_res.is_err(), "Path through Windows Junction must be rejected");
+            assert!(
+                file_res.is_err(),
+                "Path through Windows Junction must be rejected"
+            );
 
             let _ = Command::new("powershell")
-                .args(["-NoProfile", "-Command", &format!("Remove-Item -Force '{}'", junc_dst.display())])
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!("Remove-Item -Force '{}'", junc_dst.display()),
+                ])
                 .output();
         }
     }
@@ -917,12 +1267,27 @@ fn test_windows_permissive_dacl_rejection() {
 
     #[link(name = "advapi32")]
     extern "system" {
-        fn OpenProcessToken(ProcessHandle: *mut c_void, DesiredAccess: u32, TokenHandle: *mut *mut c_void) -> i32;
+        fn OpenProcessToken(
+            ProcessHandle: *mut c_void,
+            DesiredAccess: u32,
+            TokenHandle: *mut *mut c_void,
+        ) -> i32;
         fn GetCurrentProcess() -> *mut c_void;
-        fn GetTokenInformation(TokenHandle: *mut c_void, TokenInformationClass: i32, TokenInformation: *mut c_void, TokenInformationLength: u32, ReturnLength: *mut u32) -> i32;
+        fn GetTokenInformation(
+            TokenHandle: *mut c_void,
+            TokenInformationClass: i32,
+            TokenInformation: *mut c_void,
+            TokenInformationLength: u32,
+            ReturnLength: *mut u32,
+        ) -> i32;
         fn CloseHandle(hObject: *mut c_void) -> i32;
         fn InitializeAcl(pAcl: *mut c_void, nAclLength: u32, dwAclRevision: u32) -> i32;
-        fn AddAccessAllowedAce(pAcl: *mut c_void, dwAceRevision: u32, AccessMask: u32, pSid: *const c_void) -> i32;
+        fn AddAccessAllowedAce(
+            pAcl: *mut c_void,
+            dwAceRevision: u32,
+            AccessMask: u32,
+            pSid: *const c_void,
+        ) -> i32;
         fn GetAce(pAcl: *const c_void, dwAceIndex: u32, pAce: *mut *mut c_void) -> i32;
     }
 
@@ -939,14 +1304,24 @@ fn test_windows_permissive_dacl_rejection() {
     unsafe { GetTokenInformation(h_token, 1, std::ptr::null_mut(), 0, &mut len) };
     let mut user_buf = vec![0u8; len as usize];
     unsafe {
-        GetTokenInformation(h_token, 1, user_buf.as_mut_ptr() as *mut c_void, len, &mut len);
+        GetTokenInformation(
+            h_token,
+            1,
+            user_buf.as_mut_ptr() as *mut c_void,
+            len,
+            &mut len,
+        );
         CloseHandle(h_token);
     };
     let current_user_sid = unsafe { (*(user_buf.as_ptr() as *const win32::TOKEN_USER)).User.Sid };
 
     // 1. Test NULL DACL rejection via inspect_dacl_and_owner
-    let null_dacl_res = win32::inspect_dacl_and_owner(current_user_sid, std::ptr::null(), &target_file, true);
-    assert!(null_dacl_res.is_err(), "Target with NULL DACL must be rejected!");
+    let null_dacl_res =
+        win32::inspect_dacl_and_owner(current_user_sid, std::ptr::null(), &target_file, true);
+    assert!(
+        null_dacl_res.is_err(),
+        "Target with NULL DACL must be rejected!"
+    );
     let null_err = null_dacl_res.unwrap_err();
     assert!(
         null_err.contains("NULL DACL detected"),
@@ -958,25 +1333,58 @@ fn test_windows_permissive_dacl_rejection() {
     let mut untrusted_sid = vec![0u8; 68];
     let mut cb_sid = 68u32;
     unsafe {
-        win32::CreateWellKnownSid(win32::WinWorldSid, std::ptr::null(), untrusted_sid.as_mut_ptr() as *mut c_void, &mut cb_sid);
+        win32::CreateWellKnownSid(
+            win32::WinWorldSid,
+            std::ptr::null(),
+            untrusted_sid.as_mut_ptr() as *mut c_void,
+            &mut cb_sid,
+        );
     }
-    let untrusted_owner_res = win32::inspect_dacl_and_owner(untrusted_sid.as_ptr() as *const c_void, 0x1 as *const c_void, &target_file, true);
-    assert!(untrusted_owner_res.is_err(), "Untrusted owner SID must be rejected!");
-    assert!(untrusted_owner_res.unwrap_err().contains("untrusted principal"));
+    let untrusted_owner_res = win32::inspect_dacl_and_owner(
+        untrusted_sid.as_ptr() as *const c_void,
+        0x1 as *const c_void,
+        &target_file,
+        true,
+    );
+    assert!(
+        untrusted_owner_res.is_err(),
+        "Untrusted owner SID must be rejected!"
+    );
+    assert!(untrusted_owner_res
+        .unwrap_err()
+        .contains("untrusted principal"));
 
     // 3. Test Non-Allowlisted ACE rejection (Everyone / WinWorldSid on target)
     let mut world_sid_buf = vec![0u8; 68];
     let mut cb_world = 68u32;
     unsafe {
-        win32::CreateWellKnownSid(win32::WinWorldSid, std::ptr::null(), world_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_world);
+        win32::CreateWellKnownSid(
+            win32::WinWorldSid,
+            std::ptr::null(),
+            world_sid_buf.as_mut_ptr() as *mut c_void,
+            &mut cb_world,
+        );
     }
     let mut world_acl = vec![0u8; 1024];
     unsafe {
         InitializeAcl(world_acl.as_mut_ptr() as *mut c_void, 1024, 2);
-        AddAccessAllowedAce(world_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_ALL, world_sid_buf.as_ptr() as *const c_void);
+        AddAccessAllowedAce(
+            world_acl.as_mut_ptr() as *mut c_void,
+            2,
+            win32::GENERIC_ALL,
+            world_sid_buf.as_ptr() as *const c_void,
+        );
     }
-    let world_ace_res = win32::inspect_dacl_and_owner(current_user_sid, world_acl.as_ptr() as *const c_void, &target_file, true);
-    assert!(world_ace_res.is_err(), "Target with Everyone ACE must be rejected!");
+    let world_ace_res = win32::inspect_dacl_and_owner(
+        current_user_sid,
+        world_acl.as_ptr() as *const c_void,
+        &target_file,
+        true,
+    );
+    assert!(
+        world_ace_res.is_err(),
+        "Target with Everyone ACE must be rejected!"
+    );
     let world_err = world_ace_res.unwrap_err();
     assert!(
         world_err.contains("strict allow-list") || world_err.contains("Overly permissive ACE"),
@@ -988,20 +1396,46 @@ fn test_windows_permissive_dacl_rejection() {
     let mut auth_users_sid_buf = vec![0u8; 68];
     let mut cb_auth_users = 68u32;
     unsafe {
-        win32::CreateWellKnownSid(win32::WinAuthenticatedUserSid, std::ptr::null(), auth_users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_auth_users);
+        win32::CreateWellKnownSid(
+            win32::WinAuthenticatedUserSid,
+            std::ptr::null(),
+            auth_users_sid_buf.as_mut_ptr() as *mut c_void,
+            &mut cb_auth_users,
+        );
     }
     let mut auth_acl = vec![0u8; 1024];
     unsafe {
         InitializeAcl(auth_acl.as_mut_ptr() as *mut c_void, 1024, 2);
-        AddAccessAllowedAce(auth_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_READ, auth_users_sid_buf.as_ptr() as *const c_void);
+        AddAccessAllowedAce(
+            auth_acl.as_mut_ptr() as *mut c_void,
+            2,
+            win32::GENERIC_READ,
+            auth_users_sid_buf.as_ptr() as *const c_void,
+        );
     }
-    let auth_res = win32::inspect_dacl_and_owner(current_user_sid, auth_acl.as_ptr() as *const c_void, &target_file, true);
-    assert!(auth_res.is_err(), "Target with Authenticated Users ACE must be rejected by strict allow-list!");
+    let auth_res = win32::inspect_dacl_and_owner(
+        current_user_sid,
+        auth_acl.as_ptr() as *const c_void,
+        &target_file,
+        true,
+    );
+    assert!(
+        auth_res.is_err(),
+        "Target with Authenticated Users ACE must be rejected by strict allow-list!"
+    );
     assert!(auth_res.unwrap_err().contains("strict allow-list"));
 
     // 5. Test Permissive ACE rejection on ancestor directory (Everyone with write access)
-    let anc_res = win32::inspect_dacl_and_owner(current_user_sid, world_acl.as_ptr() as *const c_void, &target_file, false);
-    assert!(anc_res.is_err(), "Ancestor directory with Everyone write access must be rejected!");
+    let anc_res = win32::inspect_dacl_and_owner(
+        current_user_sid,
+        world_acl.as_ptr() as *const c_void,
+        &target_file,
+        false,
+    );
+    assert!(
+        anc_res.is_err(),
+        "Ancestor directory with Everyone write access must be rejected!"
+    );
     assert!(anc_res.unwrap_err().contains("Overly permissive ACE"));
 
     // 5a. Test Custom untrusted group SID with write access on ancestor directory (must be rejected)
@@ -1017,64 +1451,151 @@ fn test_windows_permissive_dacl_rejection() {
     let mut custom_write_acl = vec![0u8; 1024];
     unsafe {
         InitializeAcl(custom_write_acl.as_mut_ptr() as *mut c_void, 1024, 2);
-        AddAccessAllowedAce(custom_write_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_ALL, custom_group_sid.as_ptr() as *const c_void);
+        AddAccessAllowedAce(
+            custom_write_acl.as_mut_ptr() as *mut c_void,
+            2,
+            win32::GENERIC_ALL,
+            custom_group_sid.as_ptr() as *const c_void,
+        );
     }
-    let custom_write_res = win32::inspect_dacl_and_owner(current_user_sid, custom_write_acl.as_ptr() as *const c_void, &target_file, false);
-    assert!(custom_write_res.is_err(), "Ancestor directory with custom untrusted group write access must be rejected!");
-    assert!(custom_write_res.unwrap_err().contains("Overly permissive ACE"));
+    let custom_write_res = win32::inspect_dacl_and_owner(
+        current_user_sid,
+        custom_write_acl.as_ptr() as *const c_void,
+        &target_file,
+        false,
+    );
+    assert!(
+        custom_write_res.is_err(),
+        "Ancestor directory with custom untrusted group write access must be rejected!"
+    );
+    assert!(custom_write_res
+        .unwrap_err()
+        .contains("Overly permissive ACE"));
 
     // 5b. Test Custom untrusted group SID with read-only access on ancestor directory (must be accepted)
     let mut custom_read_acl = vec![0u8; 1024];
     unsafe {
         InitializeAcl(custom_read_acl.as_mut_ptr() as *mut c_void, 1024, 2);
-        AddAccessAllowedAce(custom_read_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_READ, custom_group_sid.as_ptr() as *const c_void);
+        AddAccessAllowedAce(
+            custom_read_acl.as_mut_ptr() as *mut c_void,
+            2,
+            win32::GENERIC_READ,
+            custom_group_sid.as_ptr() as *const c_void,
+        );
     }
-    let custom_read_res = win32::inspect_dacl_and_owner(current_user_sid, custom_read_acl.as_ptr() as *const c_void, &target_file, false);
-    assert!(custom_read_res.is_ok(), "Ancestor directory with read-only group permissions must be accepted: {:?}", custom_read_res);
+    let custom_read_res = win32::inspect_dacl_and_owner(
+        current_user_sid,
+        custom_read_acl.as_ptr() as *const c_void,
+        &target_file,
+        false,
+    );
+    assert!(
+        custom_read_res.is_ok(),
+        "Ancestor directory with read-only group permissions must be accepted: {:?}",
+        custom_read_res
+    );
 
     // 5c. Test Unsupported / complex ACE type (callback ACE, type 9) on ancestor directory
     let mut complex_cb_acl = vec![0u8; 1024];
     unsafe {
         InitializeAcl(complex_cb_acl.as_mut_ptr() as *mut c_void, 1024, 2);
-        AddAccessAllowedAce(complex_cb_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_READ, current_user_sid);
+        AddAccessAllowedAce(
+            complex_cb_acl.as_mut_ptr() as *mut c_void,
+            2,
+            win32::GENERIC_READ,
+            current_user_sid,
+        );
         let mut p_ace = std::ptr::null_mut();
         GetAce(complex_cb_acl.as_mut_ptr() as *mut c_void, 0, &mut p_ace);
         (*(p_ace as *mut win32::ACE_HEADER)).AceType = 9; // ACCESS_ALLOWED_CALLBACK_ACE_TYPE
     }
-    let complex_cb_res = win32::inspect_dacl_and_owner(current_user_sid, complex_cb_acl.as_ptr() as *const c_void, &target_file, false);
-    assert!(complex_cb_res.is_err(), "Ancestor with callback ACE must be rejected!");
-    assert!(complex_cb_res.unwrap_err().contains("Unsupported or complex ACE type 9"));
+    let complex_cb_res = win32::inspect_dacl_and_owner(
+        current_user_sid,
+        complex_cb_acl.as_ptr() as *const c_void,
+        &target_file,
+        false,
+    );
+    assert!(
+        complex_cb_res.is_err(),
+        "Ancestor with callback ACE must be rejected!"
+    );
+    assert!(complex_cb_res
+        .unwrap_err()
+        .contains("Unsupported or complex ACE type 9"));
 
     // 5d. Test Unsupported / complex ACE type (object ACE, type 5) on ancestor directory
     let mut complex_obj_acl = vec![0u8; 1024];
     unsafe {
         InitializeAcl(complex_obj_acl.as_mut_ptr() as *mut c_void, 1024, 2);
-        AddAccessAllowedAce(complex_obj_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_READ, current_user_sid);
+        AddAccessAllowedAce(
+            complex_obj_acl.as_mut_ptr() as *mut c_void,
+            2,
+            win32::GENERIC_READ,
+            current_user_sid,
+        );
         let mut p_ace = std::ptr::null_mut();
         GetAce(complex_obj_acl.as_mut_ptr() as *mut c_void, 0, &mut p_ace);
         (*(p_ace as *mut win32::ACE_HEADER)).AceType = 5; // ACCESS_ALLOWED_OBJECT_ACE_TYPE
     }
-    let complex_obj_res = win32::inspect_dacl_and_owner(current_user_sid, complex_obj_acl.as_ptr() as *const c_void, &target_file, false);
-    assert!(complex_obj_res.is_err(), "Ancestor with object ACE must be rejected!");
-    assert!(complex_obj_res.unwrap_err().contains("Unsupported or complex ACE type 5"));
+    let complex_obj_res = win32::inspect_dacl_and_owner(
+        current_user_sid,
+        complex_obj_acl.as_ptr() as *const c_void,
+        &target_file,
+        false,
+    );
+    assert!(
+        complex_obj_res.is_err(),
+        "Ancestor with object ACE must be rejected!"
+    );
+    assert!(complex_obj_res
+        .unwrap_err()
+        .contains("Unsupported or complex ACE type 5"));
 
     // 5e. Test Unsupported / complex ACE type on target file
-    let target_complex_res = win32::inspect_dacl_and_owner(current_user_sid, complex_cb_acl.as_ptr() as *const c_void, &target_file, true);
-    assert!(target_complex_res.is_err(), "Target with callback ACE must be rejected!");
-    assert!(target_complex_res.unwrap_err().contains("Unsupported or complex ACE type 9"));
+    let target_complex_res = win32::inspect_dacl_and_owner(
+        current_user_sid,
+        complex_cb_acl.as_ptr() as *const c_void,
+        &target_file,
+        true,
+    );
+    assert!(
+        target_complex_res.is_err(),
+        "Target with callback ACE must be rejected!"
+    );
+    assert!(target_complex_res
+        .unwrap_err()
+        .contains("Unsupported or complex ACE type 9"));
 
     // 6. Test Safe DACL granting access strictly to Current User
     let mut safe_acl = vec![0u8; 1024];
     unsafe {
         InitializeAcl(safe_acl.as_mut_ptr() as *mut c_void, 1024, 2);
-        AddAccessAllowedAce(safe_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_ALL, current_user_sid);
+        AddAccessAllowedAce(
+            safe_acl.as_mut_ptr() as *mut c_void,
+            2,
+            win32::GENERIC_ALL,
+            current_user_sid,
+        );
     }
-    let safe_res = win32::inspect_dacl_and_owner(current_user_sid, safe_acl.as_ptr() as *const c_void, &target_file, true);
-    assert!(safe_res.is_ok(), "Safe DACL restricted to owner must be accepted: {:?}", safe_res);
+    let safe_res = win32::inspect_dacl_and_owner(
+        current_user_sid,
+        safe_acl.as_ptr() as *const c_void,
+        &target_file,
+        true,
+    );
+    assert!(
+        safe_res.is_ok(),
+        "Safe DACL restricted to owner must be accepted: {:?}",
+        safe_res
+    );
 
     // 7. Test Filesystem Integration via validate_secure_path on the created target
     let fs_res = validate_secure_path(&target_file, true);
-    assert!(fs_res.is_ok(), "Target created in temp directory with default user ownership must validate: {:?}", fs_res);
+    assert!(
+        fs_res.is_ok(),
+        "Target created in temp directory with default user ownership must validate: {:?}",
+        fs_res
+    );
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -1100,7 +1621,9 @@ fn test_stream_sanitizer_multi_type_multi_block_split_across_chunks() {
 
     // Chunk 1: partial RSA
     let mut out1 = Vec::new();
-    sanitizer.sanitize_chunk(rsa_part1.as_bytes(), &engine, &mut out1).unwrap();
+    sanitizer
+        .sanitize_chunk(rsa_part1.as_bytes(), &engine, &mut out1)
+        .unwrap();
     assert!(out1.is_empty(), "Partial RSA in chunk 1 must be held back");
 
     // Chunk 2: rest of RSA + filler + partial EC
@@ -1111,13 +1634,24 @@ fn test_stream_sanitizer_multi_type_multi_block_split_across_chunks() {
     chunk2.push_str(ec_part1);
 
     let mut out2 = Vec::new();
-    sanitizer.sanitize_chunk(chunk2.as_bytes(), &engine, &mut out2).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk2.as_bytes(), &engine, &mut out2)
+        .unwrap();
     let out2_str = String::from_utf8_lossy(&out2);
 
     // RSA should be sanitized, EC should not leak
-    assert!(out2_str.contains("[REDACTED]"), "Completed RSA block must be sanitized");
-    assert!(!out2_str.contains("RSAKeyPayload0123456789"), "RSA key payload must not leak");
-    assert!(!out2_str.contains("ECKeyPayload9876543210"), "EC key payload must not leak in chunk 2");
+    assert!(
+        out2_str.contains("[REDACTED]"),
+        "Completed RSA block must be sanitized"
+    );
+    assert!(
+        !out2_str.contains("RSAKeyPayload0123456789"),
+        "RSA key payload must not leak"
+    );
+    assert!(
+        !out2_str.contains("ECKeyPayload9876543210"),
+        "EC key payload must not leak in chunk 2"
+    );
 
     // Chunk 3: rest of EC + filler + unclosed OpenSSH
     let mut chunk3 = String::new();
@@ -1127,18 +1661,35 @@ fn test_stream_sanitizer_multi_type_multi_block_split_across_chunks() {
     chunk3.push_str(openssh_part);
 
     let mut out3 = Vec::new();
-    sanitizer.sanitize_chunk(chunk3.as_bytes(), &engine, &mut out3).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk3.as_bytes(), &engine, &mut out3)
+        .unwrap();
     sanitizer.flush_final(&engine, &mut out3).unwrap();
 
     let out3_str = String::from_utf8_lossy(&out3);
     let total = format!("{}{}{}", String::from_utf8_lossy(&out1), out2_str, out3_str);
 
     // All three key types must be sanitized; zero raw payload leaked
-    assert!(!total.contains("RSAKeyPayload0123456789"), "No RSA payload leaked");
-    assert!(!total.contains("ECKeyPayload9876543210"), "No EC payload leaked");
-    assert!(!total.contains("b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAE"), "No OpenSSH payload leaked");
-    assert!(total.contains("[REDACTED]"), "Completed blocks must be redacted");
-    assert!(total.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "Unclosed OpenSSH block must be redacted at EOF");
+    assert!(
+        !total.contains("RSAKeyPayload0123456789"),
+        "No RSA payload leaked"
+    );
+    assert!(
+        !total.contains("ECKeyPayload9876543210"),
+        "No EC payload leaked"
+    );
+    assert!(
+        !total.contains("b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAE"),
+        "No OpenSSH payload leaked"
+    );
+    assert!(
+        total.contains("[REDACTED]"),
+        "Completed blocks must be redacted"
+    );
+    assert!(
+        total.contains("[REDACTED_PRIVATE_KEY_BLOCK]"),
+        "Unclosed OpenSSH block must be redacted at EOF"
+    );
 }
 
 #[test]
@@ -1157,7 +1708,8 @@ fn test_stream_sanitizer_multi_block_pem_with_incomplete_second_block() {
     let filler = "A".repeat(5000) + "\n";
 
     // Block 2: Incomplete EC Private Key (started in chunk 1, completed in chunk 2)
-    let block2_part1 = "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEILeakedSecretKeyByteSequenceDoNotEmit\n";
+    let block2_part1 =
+        "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEILeakedSecretKeyByteSequenceDoNotEmit\n";
     let block2_part2 = "-----END EC PRIVATE KEY-----\n";
 
     let mut chunk1 = String::new();
@@ -1166,7 +1718,9 @@ fn test_stream_sanitizer_multi_block_pem_with_incomplete_second_block() {
     chunk1.push_str(block2_part1);
 
     let mut out1 = Vec::new();
-    sanitizer.sanitize_chunk(chunk1.as_bytes(), &engine, &mut out1).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk1.as_bytes(), &engine, &mut out1)
+        .unwrap();
 
     let out1_str = String::from_utf8_lossy(&out1);
 
@@ -1183,19 +1737,30 @@ fn test_stream_sanitizer_multi_block_pem_with_incomplete_second_block() {
     );
 
     // Block 1 should be sanitized and safe prefix emitted
-    assert!(out1_str.contains("[REDACTED]"), "Completed Block 1 in prefix must be sanitized");
+    assert!(
+        out1_str.contains("[REDACTED]"),
+        "Completed Block 1 in prefix must be sanitized"
+    );
 
     // Chunk 2 delivers the closing delimiter for block 2
     let mut out2 = Vec::new();
-    sanitizer.sanitize_chunk(block2_part2.as_bytes(), &engine, &mut out2).unwrap();
+    sanitizer
+        .sanitize_chunk(block2_part2.as_bytes(), &engine, &mut out2)
+        .unwrap();
     sanitizer.flush_final(&engine, &mut out2).unwrap();
 
     let out2_str = String::from_utf8_lossy(&out2);
     let total = format!("{}{}", out1_str, out2_str);
 
     // Both keys must be fully redacted, zero raw key material leaked
-    assert!(!total.contains("LeakedSecretKeyByteSequenceDoNotEmit"), "Secret bytes must never be emitted raw");
-    assert!(!total.contains("0Y5k1vABCD01234567890"), "Block 1 key bytes must never be emitted raw");
+    assert!(
+        !total.contains("LeakedSecretKeyByteSequenceDoNotEmit"),
+        "Secret bytes must never be emitted raw"
+    );
+    assert!(
+        !total.contains("0Y5k1vABCD01234567890"),
+        "Block 1 key bytes must never be emitted raw"
+    );
 }
 
 #[test]
@@ -1210,7 +1775,9 @@ fn test_stream_sanitizer_type_aware_pem_matching() {
     let chunk = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Y5k1vMismatchedKeyData=\n-----END EC PRIVATE KEY-----\n";
 
     let mut out = Vec::new();
-    sanitizer.sanitize_chunk(chunk.as_bytes(), &engine, &mut out).unwrap();
+    sanitizer
+        .sanitize_chunk(chunk.as_bytes(), &engine, &mut out)
+        .unwrap();
 
     // Since END EC does not match BEGIN RSA, it must be detected as UNCLOSED and held back
     let out_str = String::from_utf8_lossy(&out);
@@ -1222,8 +1789,14 @@ fn test_stream_sanitizer_type_aware_pem_matching() {
     // At final flush, unclosed candidate must be redacted in place
     sanitizer.flush_final(&engine, &mut out).unwrap();
     let total = String::from_utf8_lossy(&out);
-    assert!(!total.contains("MismatchedKeyData"), "Unclosed candidate must be redacted at EOF");
-    assert!(total.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "Must fail closed with redaction block at EOF");
+    assert!(
+        !total.contains("MismatchedKeyData"),
+        "Unclosed candidate must be redacted at EOF"
+    );
+    assert!(
+        total.contains("[REDACTED_PRIVATE_KEY_BLOCK]"),
+        "Must fail closed with redaction block at EOF"
+    );
 }
 
 #[test]
@@ -1245,7 +1818,9 @@ fn test_stream_sanitizer_adversarial_boundary_and_fuzz() {
         let chunk2 = &full_pem.as_bytes()[split_idx..];
 
         let mut out1 = Vec::new();
-        sanitizer.sanitize_chunk(chunk1, &engine, &mut out1).unwrap();
+        sanitizer
+            .sanitize_chunk(chunk1, &engine, &mut out1)
+            .unwrap();
         let out1_str = String::from_utf8_lossy(&out1);
         assert!(
             !out1_str.contains(sensitive_snippet),
@@ -1255,7 +1830,9 @@ fn test_stream_sanitizer_adversarial_boundary_and_fuzz() {
         );
 
         let mut out2 = Vec::new();
-        sanitizer.sanitize_chunk(chunk2, &engine, &mut out2).unwrap();
+        sanitizer
+            .sanitize_chunk(chunk2, &engine, &mut out2)
+            .unwrap();
         sanitizer.flush_final(&engine, &mut out2).unwrap();
 
         let total = format!("{}{}", out1_str, String::from_utf8_lossy(&out2));
@@ -1287,13 +1864,24 @@ fn test_stream_sanitizer_adversarial_boundary_and_fuzz() {
         );
 
         let mut out = Vec::new();
-        sanitizer.sanitize_chunk(nested_stream.as_bytes(), &engine, &mut out).unwrap();
+        sanitizer
+            .sanitize_chunk(nested_stream.as_bytes(), &engine, &mut out)
+            .unwrap();
         sanitizer.flush_final(&engine, &mut out).unwrap();
         let out_str = String::from_utf8_lossy(&out);
 
-        assert!(!out_str.contains("InnerEcSecretData9988"), "Nested EC key payload must be sanitized");
-        assert!(!out_str.contains("OuterRsaPart1"), "Outer RSA part 1 payload must be sanitized");
-        assert!(!out_str.contains("OuterRsaPart2"), "Outer RSA part 2 payload must be sanitized");
+        assert!(
+            !out_str.contains("InnerEcSecretData9988"),
+            "Nested EC key payload must be sanitized"
+        );
+        assert!(
+            !out_str.contains("OuterRsaPart1"),
+            "Outer RSA part 1 payload must be sanitized"
+        );
+        assert!(
+            !out_str.contains("OuterRsaPart2"),
+            "Outer RSA part 2 payload must be sanitized"
+        );
         assert!(out_str.contains("[REDACTED]"), "Must contain redactions");
     }
 
@@ -1306,13 +1894,25 @@ fn test_stream_sanitizer_adversarial_boundary_and_fuzz() {
         binary_chunk.extend_from_slice(&[0x00, 0xC0, 0xAF, 0x0A]);
 
         let mut out = Vec::new();
-        sanitizer.sanitize_chunk(&binary_chunk, &engine, &mut out).unwrap();
+        sanitizer
+            .sanitize_chunk(&binary_chunk, &engine, &mut out)
+            .unwrap();
         sanitizer.flush_final(&engine, &mut out).unwrap();
 
         let out_str = String::from_utf8_lossy(&out);
-        assert!(!out_str.contains("OpenSshSecretNoise"), "Binary-embedded OpenSSH payload must be sanitized");
-        assert!(out_str.contains("[REDACTED]"), "Completed binary-embedded block must be sanitized");
-        assert_eq!(&out[..6], &[0x00, 0xFF, 0xFE, 0x80, 0x7F, 0x1B], "Binary prefix must be byte-for-byte preserved");
+        assert!(
+            !out_str.contains("OpenSshSecretNoise"),
+            "Binary-embedded OpenSSH payload must be sanitized"
+        );
+        assert!(
+            out_str.contains("[REDACTED]"),
+            "Completed binary-embedded block must be sanitized"
+        );
+        assert_eq!(
+            &out[..6],
+            &[0x00, 0xFF, 0xFE, 0x80, 0x7F, 0x1B],
+            "Binary prefix must be byte-for-byte preserved"
+        );
     }
 
     // 4. Unusual, Custom, and Long PEM type labels
@@ -1325,12 +1925,20 @@ fn test_stream_sanitizer_adversarial_boundary_and_fuzz() {
         );
 
         let mut out = Vec::new();
-        sanitizer.sanitize_chunk(custom_type_pem.as_bytes(), &engine, &mut out).unwrap();
+        sanitizer
+            .sanitize_chunk(custom_type_pem.as_bytes(), &engine, &mut out)
+            .unwrap();
         sanitizer.flush_final(&engine, &mut out).unwrap();
 
         let out_str = String::from_utf8_lossy(&out);
-        assert!(!out_str.contains("LongCustomHsmKeyPayload12345"), "Custom long-label PEM must be sanitized");
-        assert!(out_str.contains("[REDACTED]"), "Custom long-label PEM must be marked [REDACTED]");
+        assert!(
+            !out_str.contains("LongCustomHsmKeyPayload12345"),
+            "Custom long-label PEM must be sanitized"
+        );
+        assert!(
+            out_str.contains("[REDACTED]"),
+            "Custom long-label PEM must be marked [REDACTED]"
+        );
     }
 }
 
@@ -1401,21 +2009,29 @@ mod unix_pty_test_support {
             return Err("posix_openpt failed".into());
         }
         if unsafe { grantpt(master) } != 0 {
-            unsafe { close(master); }
+            unsafe {
+                close(master);
+            }
             return Err("grantpt failed".into());
         }
         if unsafe { unlockpt(master) } != 0 {
-            unsafe { close(master); }
+            unsafe {
+                close(master);
+            }
             return Err("unlockpt failed".into());
         }
         let pts = unsafe { ptsname(master) };
         if pts.is_null() {
-            unsafe { close(master); }
+            unsafe {
+                close(master);
+            }
             return Err("ptsname returned null".into());
         }
         let slave = unsafe { open(pts, O_RDWR, 0) };
         if slave < 0 {
-            unsafe { close(master); }
+            unsafe {
+                close(master);
+            }
             return Err("open slave pty failed".into());
         }
         Ok((master, slave))
@@ -1441,33 +2057,49 @@ fn test_real_signal_delivery_and_disposition_restoration() {
     const SIGTERM: i32 = 15;
 
     // Unix exit status convention: 128 + signal
-    assert_eq!(128 + SIGINT, 130, "SIGINT exit code must strictly equal 130");
-    assert_eq!(128 + SIGTERM, 143, "SIGTERM exit code must strictly equal 143");
+    assert_eq!(
+        128 + SIGINT,
+        130,
+        "SIGINT exit code must strictly equal 130"
+    );
+    assert_eq!(
+        128 + SIGTERM,
+        143,
+        "SIGTERM exit code must strictly equal 143"
+    );
 
     #[cfg(unix)]
     {
-        use std::process::{Command, Stdio};
-        use std::os::unix::process::ExitStatusExt;
-        use std::os::unix::io::FromRawFd;
         use std::io::Read;
+        use std::os::unix::io::FromRawFd;
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{Command, Stdio};
         use unix_pty_test_support::*;
 
         let exe = std::env::current_exe().expect("Must have current test binary path");
 
         let run_signal_test = |sig_to_send: i32, expected_exit_code: i32| {
-            let (master_fd, slave_fd) = open_test_pty().expect("PTY allocation must succeed to test terminal signal handling");
+            let (master_fd, slave_fd) = open_test_pty()
+                .expect("PTY allocation must succeed to test terminal signal handling");
 
             // Duplicate slave descriptor into an independent observer descriptor.
             // This observer descriptor is held exclusively by the parent test process
             // so tcgetattr() can inspect terminal state after the child exits without
             // using a descriptor transferred to or closed by the child.
             let observer_fd = unsafe { dup(slave_fd) };
-            assert!(observer_fd >= 0, "dup(slave_fd) must succeed to create observer descriptor");
+            assert!(
+                observer_fd >= 0,
+                "dup(slave_fd) must succeed to create observer descriptor"
+            );
 
             // Convert slave_fd into File instances for child standard streams
             let slave_in = unsafe { fs::File::from_raw_fd(slave_fd) };
-            let slave_out = slave_in.try_clone().expect("Failed to clone slave fd for stdout");
-            let slave_err = slave_in.try_clone().expect("Failed to clone slave fd for stderr");
+            let slave_out = slave_in
+                .try_clone()
+                .expect("Failed to clone slave fd for stdout");
+            let slave_err = slave_in
+                .try_clone()
+                .expect("Failed to clone slave fd for stderr");
 
             let mut master_file = unsafe { fs::File::from_raw_fd(master_fd) };
 
@@ -1553,27 +2185,32 @@ fn test_real_signal_delivery_and_disposition_restoration() {
             }
 
             // Send target signal to child process
-            unsafe { kill(child.id() as i32, sig_to_send); }
+            unsafe {
+                kill(child.id() as i32, sig_to_send);
+            }
 
-            // Await child termination
-            let status = child.wait().expect("Child must terminate upon receiving signal");
-            let code = status.code().unwrap_or_else(|| status.signal().map(|s| 128 + s).unwrap_or(0));
+            // Await child termination with a bounded 5s deadline
+            let status = wait_for_child_with_timeout(&mut child, Duration::from_secs(5));
+            let code = status
+                .code()
+                .unwrap_or_else(|| status.signal().map(|s| 128 + s).unwrap_or(0));
             assert_eq!(
-                code,
-                expected_exit_code,
+                code, expected_exit_code,
                 "Child interrupted by signal {} must exit with code {} (received code: {})",
-                sig_to_send,
-                expected_exit_code,
-                code
+                sig_to_send, expected_exit_code, code
             );
 
             // Inspect terminal echo restoration using the independent observer descriptor.
             // tcgetattr failure is a hard test failure (no silent skipping).
             let mut term = unsafe { std::mem::zeroed::<Termios>() };
-            let tc_res = unsafe { tcgetattr(observer_fd, &mut term as *mut Termios as *mut std::ffi::c_void) };
+            let tc_res = unsafe {
+                tcgetattr(
+                    observer_fd,
+                    &mut term as *mut Termios as *mut std::ffi::c_void,
+                )
+            };
             assert_eq!(
-                tc_res,
-                0,
+                tc_res, 0,
                 "tcgetattr() must succeed on observer descriptor after child termination"
             );
 
@@ -1598,8 +2235,13 @@ fn test_real_signal_delivery_and_disposition_restoration() {
 
         // Verify parent process signal dispositions are intact
         let current_disp = unsafe { signal(SIGINT, 0) };
-        unsafe { signal(SIGINT, current_disp); }
-        assert_ne!(current_disp, !0usize, "Signal disposition must be queryable and restored");
+        unsafe {
+            signal(SIGINT, current_disp);
+        }
+        assert_ne!(
+            current_disp, !0usize,
+            "Signal disposition must be queryable and restored"
+        );
     }
 }
 
@@ -1621,7 +2263,10 @@ fn test_read_password_hidden_multithread_serialization() {
                     let tx_clone = tx.clone();
                     handles.push(thread::spawn(move || {
                         // Call the ACTUAL production function under multi-threaded concurrency!
-                        let res = secretguard::vault::read_password_hidden(&format!("WorkerPrompt{}: ", id));
+                        let res = secretguard::vault::read_password_hidden(&format!(
+                            "WorkerPrompt{}: ",
+                            id
+                        ));
                         match res {
                             Ok(pass) => {
                                 let _ = tx_clone.send((id, pass));
@@ -1646,7 +2291,11 @@ fn test_read_password_hidden_multithread_serialization() {
 
                 // Verify all 3 threads successfully acquired the serialized lock,
                 // suppressed terminal echo, restored echo, and read their distinct passwords
-                assert_eq!(results.len(), 3, "All 3 threads must complete password input");
+                assert_eq!(
+                    results.len(),
+                    3,
+                    "All 3 threads must complete password input"
+                );
                 let mut passwords: Vec<String> = results.into_iter().map(|(_, p)| p).collect();
                 passwords.sort();
                 assert_eq!(
@@ -1659,17 +2308,22 @@ fn test_read_password_hidden_multithread_serialization() {
             }
         }
 
-        use std::process::{Command, Stdio};
-        use std::os::unix::io::FromRawFd;
-        use std::io::Write;
         use std::fs;
+        use std::io::Write;
+        use std::os::unix::io::FromRawFd;
+        use std::process::{Command, Stdio};
         use unix_pty_test_support::*;
 
         // Open a controlled PTY for the concurrent worker process
-        let (master_fd, slave_fd) = open_test_pty().expect("PTY allocation must succeed for concurrency test");
+        let (master_fd, slave_fd) =
+            open_test_pty().expect("PTY allocation must succeed for concurrency test");
         let slave_in = unsafe { fs::File::from_raw_fd(slave_fd) };
-        let slave_out = slave_in.try_clone().expect("Failed to clone slave fd for stdout");
-        let slave_err = slave_in.try_clone().expect("Failed to clone slave fd for stderr");
+        let slave_out = slave_in
+            .try_clone()
+            .expect("Failed to clone slave fd for stdout");
+        let slave_err = slave_in
+            .try_clone()
+            .expect("Failed to clone slave fd for stderr");
         let mut master_file = unsafe { fs::File::from_raw_fd(master_fd) };
 
         let exe = std::env::current_exe().expect("Must have current test binary path");
@@ -1684,24 +2338,33 @@ fn test_read_password_hidden_multithread_serialization() {
 
         // Feed passwords sequentially into master PTY with small pauses.
         // As each thread acquires TERMINAL_INPUT_LOCK and configures stty, it reads one complete line.
-        let inputs = ["secret_alpha_111\n", "secret_beta_222\n", "secret_gamma_333\n"];
+        let inputs = [
+            "secret_alpha_111\n",
+            "secret_beta_222\n",
+            "secret_gamma_333\n",
+        ];
         for line in &inputs {
             std::thread::sleep(std::time::Duration::from_millis(60));
-            master_file.write_all(line.as_bytes()).expect("write to master PTY");
+            master_file
+                .write_all(line.as_bytes())
+                .expect("write to master PTY");
             master_file.flush().expect("flush master PTY");
         }
 
-        // Bounded wait with 5s timeout
-        let status = child.wait().expect("Child worker must terminate");
-        assert!(status.success(), "Concurrent child worker calling read_password_hidden() must exit 0");
+        // Bounded wait with 5s timeout using reusable helper
+        let status = wait_for_child_with_timeout(&mut child, Duration::from_secs(5));
+        assert!(
+            status.success(),
+            "Concurrent child worker calling read_password_hidden() must exit 0"
+        );
     }
 
     #[cfg(windows)]
     {
         // On Windows, verify that TERMINAL_INPUT_LOCK strictly enforces mutual exclusion across concurrent threads
         use secretguard::vault::TERMINAL_INPUT_LOCK;
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
         use std::thread;
         use std::time::Duration;
 
@@ -1711,11 +2374,17 @@ fn test_read_password_hidden_multithread_serialization() {
         for _ in 0..8 {
             let cnt = Arc::clone(&counter);
             handles.push(thread::spawn(move || {
-                let _lock = TERMINAL_INPUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let _lock = TERMINAL_INPUT_LOCK
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 let prev = cnt.fetch_add(1, Ordering::SeqCst);
                 thread::sleep(Duration::from_millis(5));
                 let curr = cnt.load(Ordering::SeqCst);
-                assert_eq!(curr, prev + 1, "Serialized terminal lock must enforce mutual exclusion");
+                assert_eq!(
+                    curr,
+                    prev + 1,
+                    "Serialized terminal lock must enforce mutual exclusion"
+                );
             }));
         }
 
@@ -1730,7 +2399,9 @@ fn test_read_password_hidden_multithread_serialization() {
 fn test_windows_ancestor_directory_anchoring_prevents_rename() {
     #[cfg(windows)]
     {
-        use secretguard::vault::{anchor_ancestor_directories, create_secure_file_exclusive, open_secure_file_for_read};
+        use secretguard::vault::{
+            anchor_ancestor_directories, create_secure_file_exclusive, open_secure_file_for_read,
+        };
         use std::fs;
         use std::io::{Read, Write};
         use std::sync::mpsc;
@@ -1751,7 +2422,9 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
         // validates target security descriptor, and automatically releases ancestor locks upon completion.
         let mut created_file = create_secure_file_exclusive(&target_file, 0o600)
             .expect("create_secure_file_exclusive must succeed in valid directory hierarchy");
-        created_file.write_all(b"production vaulted payload").expect("Write must succeed");
+        created_file
+            .write_all(b"production vaulted payload")
+            .expect("Write must succeed");
         created_file.flush().expect("Flush must succeed");
         drop(created_file);
 
@@ -1762,24 +2435,40 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
             .expect("open_secure_file_for_read must succeed on valid target")
             .expect("File must exist");
         let mut read_buf = Vec::new();
-        opened_file.read_to_end(&mut read_buf).expect("Read must succeed");
-        assert_eq!(read_buf, b"production vaulted payload", "Data read back via open_secure_file_for_read must match");
+        opened_file
+            .read_to_end(&mut read_buf)
+            .expect("Read must succeed");
+        assert_eq!(
+            read_buf, b"production vaulted payload",
+            "Data read back via open_secure_file_for_read must match"
+        );
         drop(opened_file);
 
         // 3. Verify handle cleanup on success path:
         // Ancestor handles held during production operations must be fully released by AncestorGuards drop.
         let rename_after_success = fs::rename(&ancestor_dir, &renamed_dir);
-        assert!(rename_after_success.is_ok(), "Ancestor directory must be unlocked and renameable after production function returns");
-        fs::rename(&renamed_dir, &ancestor_dir).expect("Restoring original directory name must succeed");
+        assert!(
+            rename_after_success.is_ok(),
+            "Ancestor directory must be unlocked and renameable after production function returns"
+        );
+        fs::rename(&renamed_dir, &ancestor_dir)
+            .expect("Restoring original directory name must succeed");
 
         // 4. Verify handle cleanup on error paths:
         let err_target = open_secure_file_for_read(&ancestor_dir);
         assert!(err_target.is_err(), "Opening directory as file must fail");
-        assert!(err_target.unwrap_err().contains("directory"), "Error must state target is a directory");
+        assert!(
+            err_target.unwrap_err().contains("directory"),
+            "Error must state target is a directory"
+        );
 
         let rename_after_error = fs::rename(&ancestor_dir, &renamed_dir);
-        assert!(rename_after_error.is_ok(), "Ancestor directory handles must be dropped even on error return paths");
-        fs::rename(&renamed_dir, &ancestor_dir).expect("Restoring original directory name must succeed");
+        assert!(
+            rename_after_error.is_ok(),
+            "Ancestor directory handles must be dropped even on error return paths"
+        );
+        fs::rename(&renamed_dir, &ancestor_dir)
+            .expect("Restoring original directory name must succeed");
 
         // 5. Synchronization-based Concurrent Test:
         // Spawns an attacker thread attempting to rename the ancestor directory
@@ -1795,7 +2484,9 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
             rx_ready.recv().expect("Failed to receive ready signal");
             // Attempt rename while production ancestor handles are actively held
             let rename_res = fs::rename(&ancestor_dir_clone, &renamed_dir_clone);
-            tx_done.send(rename_res).expect("Failed to send rename result");
+            tx_done
+                .send(rename_res)
+                .expect("Failed to send rename result");
         });
 
         // Production operation actively anchors ancestor directories:
@@ -1806,8 +2497,13 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
         tx_ready.send(()).expect("Failed to signal attacker");
 
         // Attacker's rename must be blocked by Windows kernel with ERROR_SHARING_VIOLATION (32)
-        let rename_during = rx_done.recv().expect("Failed to receive rename attempt result");
-        assert!(rename_during.is_err(), "Concurrent rename while production handles are held MUST be rejected");
+        let rename_during = rx_done
+            .recv()
+            .expect("Failed to receive rename attempt result");
+        assert!(
+            rename_during.is_err(),
+            "Concurrent rename while production handles are held MUST be rejected"
+        );
         let err = rename_during.unwrap_err();
         assert_eq!(
             err.raw_os_error(),
@@ -1817,11 +2513,16 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
 
         // Production operation finishes and drops its ancestor handles:
         drop(guards);
-        attacker_thread.join().expect("Attacker thread failed to join");
+        attacker_thread
+            .join()
+            .expect("Attacker thread failed to join");
 
         // Verify that after production operation releases handles, rename succeeds immediately
         let rename_unlocked = fs::rename(&ancestor_dir, &renamed_dir);
-        assert!(rename_unlocked.is_ok(), "Rename must succeed once production ancestor handles are released");
+        assert!(
+            rename_unlocked.is_ok(),
+            "Rename must succeed once production ancestor handles are released"
+        );
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -1829,9 +2530,9 @@ fn test_windows_ancestor_directory_anchoring_prevents_rename() {
 
 #[test]
 fn test_stream_sanitizer_multi_chunk_random_partition_fuzz() {
+    use rand_core::{OsRng, RngCore};
     use secretguard::vault::StreamSanitizer;
     use secretguard::SecretGuardEngine;
-    use rand_core::{OsRng, RngCore};
 
     let engine = SecretGuardEngine::new();
 
@@ -1893,7 +2594,9 @@ fn test_stream_sanitizer_multi_chunk_random_partition_fuzz() {
 
         for (chunk_idx, chunk) in chunks.iter().enumerate() {
             let mut chunk_out = Vec::new();
-            sanitizer.sanitize_chunk(chunk, &engine, &mut chunk_out).unwrap();
+            sanitizer
+                .sanitize_chunk(chunk, &engine, &mut chunk_out)
+                .unwrap();
 
             let chunk_str = String::from_utf8_lossy(&chunk_out);
             for secret in &forbidden_secrets {
@@ -1935,8 +2638,20 @@ fn test_stream_sanitizer_multi_chunk_random_partition_fuzz() {
         }
 
         // Verify non-secret markers are preserved and redaction markers are present
-        assert!(total_str.contains("=== SYSTEM BOOT SEQUENCE START ==="), "Prefix must be preserved in iteration {}", iteration);
-        assert!(total_str.contains("=== SYSTEM BOOT SEQUENCE COMPLETE: LISTENING ON PORT 8443 ==="), "Suffix must be preserved in iteration {}", iteration);
-        assert!(total_str.contains("[REDACTED]"), "Must contain [REDACTED] markers in iteration {}", iteration);
+        assert!(
+            total_str.contains("=== SYSTEM BOOT SEQUENCE START ==="),
+            "Prefix must be preserved in iteration {}",
+            iteration
+        );
+        assert!(
+            total_str.contains("=== SYSTEM BOOT SEQUENCE COMPLETE: LISTENING ON PORT 8443 ==="),
+            "Suffix must be preserved in iteration {}",
+            iteration
+        );
+        assert!(
+            total_str.contains("[REDACTED]"),
+            "Must contain [REDACTED] markers in iteration {}",
+            iteration
+        );
     }
 }

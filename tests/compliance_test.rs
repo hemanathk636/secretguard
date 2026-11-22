@@ -7,7 +7,10 @@ fn test_compliance_report_generator() {
     let engine = SecretGuardEngine::new();
     let temp_dir = std::env::temp_dir().join(format!(
         "sg_audit_test_{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     fs::create_dir_all(&temp_dir).unwrap();
 
@@ -22,7 +25,11 @@ fn test_compliance_report_generator() {
 
     // 2. Tainted workspace fails with specific violations
     let tainted_file = temp_dir.join("leaked.env");
-    fs::write(&tainted_file, "SECRET_TOKEN=sk-proj-1234567890abcdef1234567890abcdef1234567890\n").unwrap();
+    fs::write(
+        &tainted_file,
+        "SECRET_TOKEN=sk-proj-1234567890abcdef1234567890abcdef1234567890\n",
+    )
+    .unwrap();
 
     let tainted_rep = ComplianceAuditor::audit_workspace(&temp_dir, &engine);
     assert!(!tainted_rep.passed);

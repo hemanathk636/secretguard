@@ -8,7 +8,10 @@ impl CompletionsGenerator {
             "fish" => print!("{}", Self::generate_fish()),
             "powershell" | "pwsh" => print!("{}", Self::generate_powershell()),
             _ => {
-                eprintln!("Unsupported shell: {}. Supported shells: zsh, bash, fish, powershell", shell);
+                eprintln!(
+                    "Unsupported shell: {}. Supported shells: zsh, bash, fish, powershell",
+                    shell
+                );
                 std::process::exit(1);
             }
         }

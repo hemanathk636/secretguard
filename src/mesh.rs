@@ -31,7 +31,9 @@ pub struct MeshManager;
 impl MeshManager {
     /// Get path to `.secretguard/mesh.vault` in the active repository or directory
     pub fn get_mesh_vault_path(repo_path: Option<&Path>) -> PathBuf {
-        let base = repo_path.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+        let base = repo_path
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
         base.join(".secretguard").join("mesh.vault")
     }
 
@@ -54,7 +56,8 @@ impl MeshManager {
     ) -> Result<PathBuf, String> {
         let vault_path = Self::get_mesh_vault_path(repo_path);
         if let Some(parent) = vault_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("Failed to create .secretguard dir: {}", e))?;
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create .secretguard dir: {}", e))?;
         }
 
         // 1. Generate an authentic 256-bit cryptographically secure random Project Master Key
@@ -119,7 +122,8 @@ impl MeshManager {
         if !vault_path.exists() {
             return Err("No Mesh Vault found. Run 'secretguard mesh init' first.".to_string());
         }
-        let data = fs::read_to_string(&vault_path).map_err(|e| format!("Failed to read vault: {}", e))?;
+        let data =
+            fs::read_to_string(&vault_path).map_err(|e| format!("Failed to read vault: {}", e))?;
         serde_json::from_str(&data).map_err(|e| format!("Invalid vault format: {}", e))
     }
 
@@ -129,10 +133,12 @@ impl MeshManager {
         member_name: &str,
         member_passphrase: &str,
     ) -> Result<[u8; 32], String> {
-        let member = store
-            .members
-            .get(member_name)
-            .ok_or_else(|| format!("Member '{}' is not registered in this mesh vault.", member_name))?;
+        let member = store.members.get(member_name).ok_or_else(|| {
+            format!(
+                "Member '{}' is not registered in this mesh vault.",
+                member_name
+            )
+        })?;
 
         let key_bytes = Self::derive_key(member_passphrase);
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
@@ -142,7 +148,9 @@ impl MeshManager {
 
         let decrypted = cipher
             .decrypt(Nonce::from_slice(&nonce), enc_mk.as_ref())
-            .map_err(|_| "Access Denied: Invalid member passphrase or corrupted key entry.".to_string())?;
+            .map_err(|_| {
+                "Access Denied: Invalid member passphrase or corrupted key entry.".to_string()
+            })?;
 
         if decrypted.len() != 32 {
             return Err("Decrypted master key is corrupted.".to_string());
@@ -169,7 +177,8 @@ impl MeshManager {
             .decrypt(Nonce::from_slice(&nonce), enc_payload.as_ref())
             .map_err(|e| format!("Failed to decrypt mesh payload: {}", e))?;
 
-        let json_str = String::from_utf8(decrypted).map_err(|e| format!("Payload utf8 error: {}", e))?;
+        let json_str =
+            String::from_utf8(decrypted).map_err(|e| format!("Payload utf8 error: {}", e))?;
         let map: HashMap<String, String> =
             serde_json::from_str(&json_str).map_err(|e| format!("Payload parse error: {}", e))?;
         Ok(map)
@@ -230,7 +239,8 @@ impl MeshManager {
 
         secrets.insert(key.to_string(), value.to_string());
 
-        let json_payload = serde_json::to_string(&secrets).map_err(|e| format!("JSON error: {}", e))?;
+        let json_payload =
+            serde_json::to_string(&secrets).map_err(|e| format!("JSON error: {}", e))?;
         let master_cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&master_key));
 
         let mut payload_nonce = [0u8; 12];
@@ -329,15 +339,22 @@ SUBCOMMANDS:
         match args[0].as_str() {
             "init" => {
                 if args.len() < 4 {
-                    eprintln!("Usage: secretguard mesh init <PROJECT_NAME> <CREATOR_NAME> <CREATOR_PASS>");
+                    eprintln!(
+                        "Usage: secretguard mesh init <PROJECT_NAME> <CREATOR_NAME> <CREATOR_PASS>"
+                    );
                     std::process::exit(2);
                 }
                 match Self::init_mesh(&args[2], &args[3], &args[1], None) {
                     Ok(path) => {
                         println!("🎉 Zero-Knowledge Mesh Vault initialized successfully!");
                         println!("📁 Stored at: \x1b[32m{}\x1b[0m", path.display());
-                        println!("👤 Initialized with admin member: \x1b[1m{}\x1b[0m", args[2]);
-                        println!("💡 You can commit .secretguard/mesh.vault safely to your repository.");
+                        println!(
+                            "👤 Initialized with admin member: \x1b[1m{}\x1b[0m",
+                            args[2]
+                        );
+                        println!(
+                            "💡 You can commit .secretguard/mesh.vault safely to your repository."
+                        );
                     }
                     Err(e) => {
                         eprintln!("❌ Mesh initialization failed: {}", e);
@@ -360,20 +377,25 @@ SUBCOMMANDS:
                     }
                 }
             }
-            "members" => {
-                match Self::read_store(None) {
-                    Ok(store) => {
-                        println!("🕸️ Project Mesh: \x1b[1m{}\x1b[0m ({} members)", store.project_name, store.members.len());
-                        for (name, m) in &store.members {
-                            println!("  • \x1b[33m{}\x1b[0m [Fingerprint: {}]", name, m.public_key_fingerprint);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("❌ {}", e);
-                        std::process::exit(1);
+            "members" => match Self::read_store(None) {
+                Ok(store) => {
+                    println!(
+                        "🕸️ Project Mesh: \x1b[1m{}\x1b[0m ({} members)",
+                        store.project_name,
+                        store.members.len()
+                    );
+                    for (name, m) in &store.members {
+                        println!(
+                            "  • \x1b[33m{}\x1b[0m [Fingerprint: {}]",
+                            name, m.public_key_fingerprint
+                        );
                     }
                 }
-            }
+                Err(e) => {
+                    eprintln!("❌ {}", e);
+                    std::process::exit(1);
+                }
+            },
             "set" => {
                 if args.len() < 5 {
                     eprintln!("Usage: secretguard mesh set <USER> <PASSWORD> <KEY> <VALUE>");
@@ -381,7 +403,10 @@ SUBCOMMANDS:
                 }
                 match Self::set_secret(None, &args[1], &args[2], &args[3], &args[4]) {
                     Ok(_) => {
-                        println!("🔒 Secret '\x1b[32m{}\x1b[0m' encrypted and saved to team mesh vault.", args[3]);
+                        println!(
+                            "🔒 Secret '\x1b[32m{}\x1b[0m' encrypted and saved to team mesh vault.",
+                            args[3]
+                        );
                     }
                     Err(e) => {
                         eprintln!("❌ Failed to store secret: {}", e);

@@ -7,7 +7,10 @@ fn test_docker_scan_catches_baked_env_and_copy() {
     let engine = SecretGuardEngine::new();
     let temp_dir = std::env::temp_dir().join(format!(
         "sg_docker_test_{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     fs::create_dir_all(&temp_dir).unwrap();
 
@@ -35,7 +38,10 @@ fn test_clean_dockerfile_passes() {
     let engine = SecretGuardEngine::new();
     let temp_dir = std::env::temp_dir().join(format!(
         "sg_docker_clean_{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     fs::create_dir_all(&temp_dir).unwrap();
 

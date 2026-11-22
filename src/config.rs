@@ -128,7 +128,12 @@ SUBCOMMANDS:
                 let cfg = Self::load();
                 println!("⚙️  Active SecretGuard Configuration");
                 println!("────────────────────────────────────────────");
-                println!("Config File:       {}", Self::locate_config_file().map(|p| p.display().to_string()).unwrap_or_else(|| "None (Using built-in defaults)".to_string()));
+                println!(
+                    "Config File:       {}",
+                    Self::locate_config_file()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "None (Using built-in defaults)".to_string())
+                );
                 println!("Entropy Threshold: {}", cfg.entropy_threshold);
                 println!("Custom Patterns:   {}", cfg.custom_patterns.len());
                 for p in &cfg.custom_patterns {
@@ -147,7 +152,10 @@ SUBCOMMANDS:
                 }
             }
             _ => {
-                eprintln!("Unknown config subcommand: '{}'. Run 'secretguard config --help'", args[0]);
+                eprintln!(
+                    "Unknown config subcommand: '{}'. Run 'secretguard config --help'",
+                    args[0]
+                );
                 std::process::exit(1);
             }
         }
@@ -194,7 +202,11 @@ fn toml_parse(content: &str) -> Result<SecretGuardConfig, String> {
             in_whitelist = true;
             if line.contains(']') {
                 // Single line whitelist
-                let inner = line.split('[').nth(1).and_then(|s| s.split(']').next()).unwrap_or("");
+                let inner = line
+                    .split('[')
+                    .nth(1)
+                    .and_then(|s| s.split(']').next())
+                    .unwrap_or("");
                 for item in inner.split(',') {
                     let clean = item.trim().trim_matches('"').trim_matches('\'').trim();
                     if !clean.is_empty() {
@@ -211,7 +223,12 @@ fn toml_parse(content: &str) -> Result<SecretGuardConfig, String> {
                 in_whitelist = false;
                 continue;
             }
-            let clean = line.trim_matches(',').trim().trim_matches('"').trim_matches('\'').trim();
+            let clean = line
+                .trim_matches(',')
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim();
             if !clean.is_empty() {
                 config.whitelist.push(clean.to_string());
             }

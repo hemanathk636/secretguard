@@ -22,13 +22,16 @@ pub struct DockerScanner;
 
 impl DockerScanner {
     /// Scans a Dockerfile for baked-in environment variables, build arguments, or hardcoded secrets
-    pub fn scan_dockerfile(path: &Path, engine: &SecretGuardEngine) -> Result<DockerScanReport, String> {
+    pub fn scan_dockerfile(
+        path: &Path,
+        engine: &SecretGuardEngine,
+    ) -> Result<DockerScanReport, String> {
         if !path.exists() {
             return Err(format!("Dockerfile not found at: {}", path.display()));
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read Dockerfile: {}", e))?;
+        let content =
+            fs::read_to_string(path).map_err(|e| format!("Failed to read Dockerfile: {}", e))?;
 
         let mut leaks = Vec::new();
 
@@ -79,17 +82,29 @@ impl DockerScanner {
             Path::new("Dockerfile")
         };
 
-        println!("🐳 Running Docker Layer & Build Argument X-Ray on \x1b[36m{}\x1b[0m...\n", dockerfile_path.display());
+        println!(
+            "🐳 Running Docker Layer & Build Argument X-Ray on \x1b[36m{}\x1b[0m...\n",
+            dockerfile_path.display()
+        );
 
         match Self::scan_dockerfile(dockerfile_path, engine) {
             Ok(report) => {
                 if report.clean {
                     println!("✅ 100% Clean! Zero hardcoded credentials or risky build layer copies found in Dockerfile.");
                 } else {
-                    println!("🚨 Detected {} Docker image security vulnerabilities:\n", report.leaks.len());
+                    println!(
+                        "🚨 Detected {} Docker image security vulnerabilities:\n",
+                        report.leaks.len()
+                    );
                     for leak in &report.leaks {
-                        println!("  • \x1b[31mLine {}\x1b[0m [{}]: \x1b[33m{}\x1b[0m", leak.line_number, leak.instruction, leak.raw_line);
-                        println!("    ├── Detected: \x1b[36m{}\x1b[0m", leak.detected_secrets.join(", "));
+                        println!(
+                            "  • \x1b[31mLine {}\x1b[0m [{}]: \x1b[33m{}\x1b[0m",
+                            leak.line_number, leak.instruction, leak.raw_line
+                        );
+                        println!(
+                            "    ├── Detected: \x1b[36m{}\x1b[0m",
+                            leak.detected_secrets.join(", ")
+                        );
                         println!("    └── Fix:      {}", leak.recommendation);
                         println!();
                     }

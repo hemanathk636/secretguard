@@ -1,5 +1,5 @@
-use secretguard::SecretGuardEngine;
 use secretguard::encoding::decode_base64;
+use secretguard::SecretGuardEngine;
 
 #[test]
 fn test_base64_decode_utility() {
@@ -19,8 +19,14 @@ fn test_base64_encoded_openai_key_detection() {
     let command = format!("echo {} | base64 -d", b64_token);
 
     let res = engine.scan_and_sanitize(&command);
-    assert!(res.has_secret, "Engine failed to catch Base64-encoded OpenAI key");
-    assert!(res.matched_rules.iter().any(|r| r.contains("Encoded (OpenAI API Key)")));
+    assert!(
+        res.has_secret,
+        "Engine failed to catch Base64-encoded OpenAI key"
+    );
+    assert!(res
+        .matched_rules
+        .iter()
+        .any(|r| r.contains("Encoded (OpenAI API Key)")));
     assert!(!res.sanitized_text.contains(b64_token));
     assert!(res.sanitized_text.contains("[REDACTED_ENCODED_SECRET]"));
 }
@@ -34,8 +40,14 @@ fn test_base64_encoded_aws_key_detection() {
     let command = format!("export AWS_B64_KEY={}", b64_token);
 
     let res = engine.scan_and_sanitize(&command);
-    assert!(res.has_secret, "Engine failed to catch Base64-encoded AWS key");
-    assert!(res.matched_rules.iter().any(|r| r.contains("Encoded (AWS Access Key)")));
+    assert!(
+        res.has_secret,
+        "Engine failed to catch Base64-encoded AWS key"
+    );
+    assert!(res
+        .matched_rules
+        .iter()
+        .any(|r| r.contains("Encoded (AWS Access Key)")));
     assert!(!res.sanitized_text.contains(b64_token));
 }
 
@@ -48,5 +60,8 @@ fn test_url_encoded_secret_detection() {
     let command = format!("DATABASE_URL={}", url_encoded);
 
     let res = engine.scan_and_sanitize(&command);
-    assert!(res.has_secret, "Engine failed to catch URL percent-encoded database connection string");
+    assert!(
+        res.has_secret,
+        "Engine failed to catch URL percent-encoded database connection string"
+    );
 }

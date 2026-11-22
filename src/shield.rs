@@ -22,7 +22,11 @@ impl ScreenShield {
         #[cfg(target_os = "windows")]
         {
             let output = Command::new("powershell")
-                .args(["-NoProfile", "-Command", "Get-Process | Select-Object -ExpandProperty ProcessName"])
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "Get-Process | Select-Object -ExpandProperty ProcessName",
+                ])
                 .output();
 
             if let Ok(out) = output {
@@ -75,7 +79,10 @@ impl ScreenShield {
             let res = engine.scan_and_sanitize(line);
             if res.has_secret {
                 // High-visibility block masking for screen shares
-                format!("\x1b[41;37;1m 🛡️ [SCREEN-SHIELD BLURRED] \x1b[0m {}", res.sanitized_text)
+                format!(
+                    "\x1b[41;37;1m 🛡️ [SCREEN-SHIELD BLURRED] \x1b[0m {}",
+                    res.sanitized_text
+                )
             } else {
                 line.to_string()
             }
@@ -123,7 +130,11 @@ USAGE:
                 let child_cmd = &args[1];
                 let child_args = &args[2..];
 
-                println!("🛡️ Screen-Share Privacy Shield active for command: \x1b[36m{} {}\x1b[0m\n", child_cmd, child_args.join(" "));
+                println!(
+                    "🛡️ Screen-Share Privacy Shield active for command: \x1b[36m{} {}\x1b[0m\n",
+                    child_cmd,
+                    child_args.join(" ")
+                );
 
                 let mut child = Command::new(child_cmd)
                     .args(child_args)
@@ -164,7 +175,10 @@ USAGE:
                 }
             }
             _ => {
-                eprintln!("Unknown subcommand: {}. Use 'status', 'run', or 'auto'.", args[0]);
+                eprintln!(
+                    "Unknown subcommand: {}. Use 'status', 'run', or 'auto'.",
+                    args[0]
+                );
                 std::process::exit(2);
             }
         }

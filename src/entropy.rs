@@ -59,7 +59,11 @@ pub fn scan_contextual_entropy(input: &str) -> Vec<(String, usize, usize)> {
             let entropy = calculate_shannon_entropy(secret_str);
             // High entropy threshold for passwords/tokens (typically >= 3.6 for 12+ char secrets)
             if entropy >= 3.6 {
-                detected.push((secret_str.to_string(), matched_val.start(), matched_val.end()));
+                detected.push((
+                    secret_str.to_string(),
+                    matched_val.start(),
+                    matched_val.end(),
+                ));
             }
         }
     }

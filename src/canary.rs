@@ -91,9 +91,15 @@ AI prompt exfiltration, and malicious internal reconnaissance.
             "generate" => {
                 let token_type = if args.len() >= 2 { &args[1] } else { "openai" };
                 let canary = Self::generate_canary(token_type, "adhoc");
-                println!("🐤 Generated Honeytoken Tripwire ({})", canary.token_type.to_uppercase());
+                println!(
+                    "🐤 Generated Honeytoken Tripwire ({})",
+                    canary.token_type.to_uppercase()
+                );
                 println!("  • Decoy Secret:    \x1b[33m{}\x1b[0m", canary.token_value);
-                println!("  • Tripwire Hash:   \x1b[36m{}\x1b[0m", canary.tripwire_hash);
+                println!(
+                    "  • Tripwire Hash:   \x1b[36m{}\x1b[0m",
+                    canary.tripwire_hash
+                );
                 println!("💡 {}", canary.instructions);
             }
             "plant" => {
@@ -118,7 +124,10 @@ AI prompt exfiltration, and malicious internal reconnaissance.
                 }
             }
             _ => {
-                eprintln!("Unknown subcommand: {}. Use 'generate' or 'plant'.", args[0]);
+                eprintln!(
+                    "Unknown subcommand: {}. Use 'generate' or 'plant'.",
+                    args[0]
+                );
                 std::process::exit(2);
             }
         }

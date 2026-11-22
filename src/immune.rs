@@ -49,8 +49,10 @@ impl ImmuneEngine {
             let output = Command::new("curl")
                 .args([
                     "-s",
-                    "-X", "POST",
-                    "-H", &format!("Authorization: Bearer {}", token),
+                    "-X",
+                    "POST",
+                    "-H",
+                    &format!("Authorization: Bearer {}", token),
                     "https://slack.com/api/auth.revoke",
                 ])
                 .output();
@@ -70,9 +72,12 @@ impl ImmuneEngine {
             let output = Command::new("curl")
                 .args([
                     "-s",
-                    "-o", "/dev/null",
-                    "-w", "%{http_code}",
-                    "-u", &format!("{}:", token),
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{http_code}",
+                    "-u",
+                    &format!("{}:", token),
                     "https://api.stripe.com/v1/account",
                 ])
                 .output();
@@ -165,10 +170,17 @@ impl ImmuneEngine {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let ephemeral_quarantine_key = format!("quarantined_{}_{:x}", provider.to_lowercase().replace(' ', "_"), epoch_nano);
-        
+        let ephemeral_quarantine_key = format!(
+            "quarantined_{}_{:x}",
+            provider.to_lowercase().replace(' ', "_"),
+            epoch_nano
+        );
+
         let _ = crate::vault::load_vault(None).map(|mut store| {
-            store.secrets.insert(format!("QUARANTINED_{}", provider.replace(' ', "_")), ephemeral_quarantine_key.clone());
+            store.secrets.insert(
+                format!("QUARANTINED_{}", provider.replace(' ', "_")),
+                ephemeral_quarantine_key.clone(),
+            );
             let _ = crate::vault::save_vault(&store, None);
         });
 
@@ -223,26 +235,41 @@ USAGE:
                 println!("  • Provider Detected:      {}", report.provider);
                 println!("  • Compromised Token:      {}", report.token_fingerprint);
                 println!("  • Revocation Pipeline:    {}", report.revocation_status);
-                println!("  • Local Ephemeral Key:    {}", report.auto_rotated_new_key);
+                println!(
+                    "  • Local Ephemeral Key:    {}",
+                    report.auto_rotated_new_key
+                );
                 println!("  • Provider Console URL:   {}", report.direct_rotation_url);
                 println!("  • Git Tree Protection:    {}", report.git_scrub_status);
-                println!("  • Incident Latency:       {} ms (Sub-second guaranteed)", report.containment_latency_ms);
+                println!(
+                    "  • Incident Latency:       {} ms (Sub-second guaranteed)",
+                    report.containment_latency_ms
+                );
                 println!("─────────────────────────────────────────────────────────────────");
-                println!("🔒 Circuit breaker active. All local terminals and AI workflows shielded.");
+                println!(
+                    "🔒 Circuit breaker active. All local terminals and AI workflows shielded."
+                );
             }
             "status" => {
                 println!("🛡️  SecretGuard Immune System Status:");
                 println!("   • Active Tripwires:      OpenAI, AWS, GitHub, Stripe, Slack");
                 println!("   • Mean Time to Contain (MTTC): <200ms");
                 println!("   • Containment Mode:      Zero-Tolerance Local Circuit-Breaker + Upstream Verification");
-                println!("   • Git Safety Shield:     Enabled (Automatic Pre-Commit & Time-Machine)");
+                println!(
+                    "   • Git Safety Shield:     Enabled (Automatic Pre-Commit & Time-Machine)"
+                );
             }
             "auto" => {
                 println!("⚡ Continuous background immune circuit breaker engaged.");
-                println!("   Monitoring terminal command history and AI agent workspace activity...");
+                println!(
+                    "   Monitoring terminal command history and AI agent workspace activity..."
+                );
             }
             _ => {
-                eprintln!("Unknown immune command: {}. Run 'secretguard immune --help'", args[0]);
+                eprintln!(
+                    "Unknown immune command: {}. Run 'secretguard immune --help'",
+                    args[0]
+                );
                 std::process::exit(2);
             }
         }

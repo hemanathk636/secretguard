@@ -34,9 +34,17 @@ impl ComplianceAuditor {
 
         let passed = findings.is_empty();
         let (soc2, hipaa, gdpr) = if passed {
-            ("COMPLIANT (CC6.1 / CC6.6 Passed)".to_string(), "COMPLIANT (§164.312 Passed)".to_string(), "COMPLIANT (Art 32 Passed)".to_string())
+            (
+                "COMPLIANT (CC6.1 / CC6.6 Passed)".to_string(),
+                "COMPLIANT (§164.312 Passed)".to_string(),
+                "COMPLIANT (Art 32 Passed)".to_string(),
+            )
         } else {
-            ("NON-COMPLIANT (Plaintext Credentials Found)".to_string(), "NON-COMPLIANT (Unencrypted Keys)".to_string(), "NON-COMPLIANT (Exposed PII/Secrets)".to_string())
+            (
+                "NON-COMPLIANT (Plaintext Credentials Found)".to_string(),
+                "NON-COMPLIANT (Unencrypted Keys)".to_string(),
+                "NON-COMPLIANT (Exposed PII/Secrets)".to_string(),
+            )
         };
 
         ComplianceReport {
@@ -51,7 +59,12 @@ impl ComplianceAuditor {
         }
     }
 
-    fn walk_and_audit(dir: &Path, engine: &SecretGuardEngine, findings: &mut Vec<ComplianceFinding>, total_files: &mut usize) {
+    fn walk_and_audit(
+        dir: &Path,
+        engine: &SecretGuardEngine,
+        findings: &mut Vec<ComplianceFinding>,
+        total_files: &mut usize,
+    ) {
         let entries = match fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
@@ -77,7 +90,8 @@ impl ComplianceAuditor {
                                 file: path.display().to_string(),
                                 line: idx + 1,
                                 rule: res.matched_rules.join(", "),
-                                standard_violation: "SOC2 Trust Criteria CC6.1 & GDPR Article 32".to_string(),
+                                standard_violation: "SOC2 Trust Criteria CC6.1 & GDPR Article 32"
+                                    .to_string(),
                             });
                         }
                     }
@@ -102,18 +116,45 @@ impl ComplianceAuditor {
         println!("============================================================");
         println!("  • Workspace:         {}", rep.workspace_scanned);
         println!("  • Files Audited:     {}", rep.total_files_audited);
-        println!("  • SOC 2 Type II:     {}", if rep.passed { "\x1b[32mCOMPLIANT\x1b[0m" } else { "\x1b[31mVIOLATION DETECTED\x1b[0m" });
-        println!("  • HIPAA Security:    {}", if rep.passed { "\x1b[32mCOMPLIANT\x1b[0m" } else { "\x1b[31mVIOLATION DETECTED\x1b[0m" });
-        println!("  • GDPR Article 32:   {}", if rep.passed { "\x1b[32mCOMPLIANT\x1b[0m" } else { "\x1b[31mVIOLATION DETECTED\x1b[0m" });
+        println!(
+            "  • SOC 2 Type II:     {}",
+            if rep.passed {
+                "\x1b[32mCOMPLIANT\x1b[0m"
+            } else {
+                "\x1b[31mVIOLATION DETECTED\x1b[0m"
+            }
+        );
+        println!(
+            "  • HIPAA Security:    {}",
+            if rep.passed {
+                "\x1b[32mCOMPLIANT\x1b[0m"
+            } else {
+                "\x1b[31mVIOLATION DETECTED\x1b[0m"
+            }
+        );
+        println!(
+            "  • GDPR Article 32:   {}",
+            if rep.passed {
+                "\x1b[32mCOMPLIANT\x1b[0m"
+            } else {
+                "\x1b[31mVIOLATION DETECTED\x1b[0m"
+            }
+        );
         println!("============================================================");
 
         if rep.passed {
             println!("\n✅ PASS: Zero plaintext credentials or cryptographic keys found.");
             println!("Ready for submission to security auditors and SOC 2 compliance assessors.");
         } else {
-            println!("\n🚨 FAIL: Found {} compliance violations:\n", rep.findings.len());
+            println!(
+                "\n🚨 FAIL: Found {} compliance violations:\n",
+                rep.findings.len()
+            );
             for f in &rep.findings {
-                println!("  • \x1b[33m{}:{}\x1b[0m: {} [{}]", f.file, f.line, f.rule, f.standard_violation);
+                println!(
+                    "  • \x1b[33m{}:{}\x1b[0m: {} [{}]",
+                    f.file, f.line, f.rule, f.standard_violation
+                );
             }
             std::process::exit(1);
         }

@@ -35,7 +35,11 @@ impl PiiScrubber {
         // 1. Credit Cards
         for cap in RE_CREDIT_CARD.find_iter(text) {
             let matched = cap.as_str();
-            let masked = format!("{}[REDACTED_CC]{}", &matched[..4], &matched[matched.len().saturating_sub(4)..]);
+            let masked = format!(
+                "{}[REDACTED_CC]{}",
+                &matched[..4],
+                &matched[matched.len().saturating_sub(4)..]
+            );
             findings.push(PiiFinding {
                 pii_type: "Payment Card (PCI-DSS)".to_string(),
                 original_snippet: matched.to_string(),
@@ -96,7 +100,10 @@ Sanitizes Credit Cards, SSNs, and IBANs before sending prompts to LLMs or AI ass
         if result.has_pii {
             eprintln!("🚨 PII or sensitive data detected and sanitized:");
             for f in &result.findings {
-                eprintln!("  • \x1b[31m{}\x1b[0m: {} -> \x1b[32m{}\x1b[0m", f.pii_type, f.original_snippet, f.sanitized_snippet);
+                eprintln!(
+                    "  • \x1b[31m{}\x1b[0m: {} -> \x1b[32m{}\x1b[0m",
+                    f.pii_type, f.original_snippet, f.sanitized_snippet
+                );
             }
             eprintln!();
         }

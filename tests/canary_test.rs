@@ -18,7 +18,10 @@ fn test_canary_generation_formats() {
 fn test_plant_canary_tripwire() {
     let temp_dir = std::env::temp_dir().join(format!(
         "sg_canary_test_{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     fs::create_dir_all(&temp_dir).unwrap();
 

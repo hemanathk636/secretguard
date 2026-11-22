@@ -33,7 +33,12 @@ impl BlastRadiusScanner {
             query.to_string()
         };
 
-        Self::walk_and_scan(root, &search_pattern, &mut affected_files, &mut total_scanned);
+        Self::walk_and_scan(
+            root,
+            &search_pattern,
+            &mut affected_files,
+            &mut total_scanned,
+        );
 
         let files_count = affected_files.len();
         let risk_score = if files_count == 0 {
@@ -129,21 +134,35 @@ Dockerfiles, configuration files, and dependencies to assess leak impact.
             None
         };
 
-        println!("💣 Calculating blast-radius for token pattern: \x1b[33m{}\x1b[0m...", query);
+        println!(
+            "💣 Calculating blast-radius for token pattern: \x1b[33m{}\x1b[0m...",
+            query
+        );
         let report = Self::calculate_blast_radius(query, target_dir);
 
         println!("\n📊 Blast-Radius Analysis Report:");
         println!("  ├── Scanned Files:   {}", report.total_files_scanned);
         println!("  ├── Affected Files:  {}", report.affected_files.len());
-        println!("  ├── Risk Score:      \x1b[1m{:.1}/10.0\x1b[0m", report.risk_score);
-        println!("  └── Threat Level:    \x1b[31m{}\x1b[0m\n", report.risk_level);
+        println!(
+            "  ├── Risk Score:      \x1b[1m{:.1}/10.0\x1b[0m",
+            report.risk_score
+        );
+        println!(
+            "  └── Threat Level:    \x1b[31m{}\x1b[0m\n",
+            report.risk_level
+        );
 
         if report.affected_files.is_empty() {
-            println!("✅ Zero references found across scanned files. The token has no local footprint!");
+            println!(
+                "✅ Zero references found across scanned files. The token has no local footprint!"
+            );
         } else {
             println!("Impacted File Locations:");
             for hit in &report.affected_files {
-                println!("  • \x1b[36m{}:{}\x1b[0m -> {}", hit.file_path, hit.line_number, hit.masked_context);
+                println!(
+                    "  • \x1b[36m{}:{}\x1b[0m -> {}",
+                    hit.file_path, hit.line_number, hit.masked_context
+                );
             }
         }
     }

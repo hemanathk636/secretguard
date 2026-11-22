@@ -1,5 +1,5 @@
-use secretguard::SecretGuardEngine;
 use secretguard::ghost::GhostVirtualizer;
+use secretguard::SecretGuardEngine;
 
 #[test]
 fn test_shell_history_leak_prevention() {
@@ -13,15 +13,22 @@ fn test_shell_history_leak_prevention() {
     // Simulated dangerous history lines from actual developer sessions
     let test_history_lines = vec![
         format!("export STRIPE_SECRET_KEY={}", stripe_key),
-        format!("curl -H 'Authorization: Bearer {}' https://api.openai.com", openai_key),
+        format!(
+            "curl -H 'Authorization: Bearer {}' https://api.openai.com",
+            openai_key
+        ),
         format!("aws s3 cp file.txt s3://bucket/ --access-key {}", aws_key),
         format!("npm publish --token {}", npm_key),
     ];
 
     for line in &test_history_lines {
         let res = engine.scan_and_sanitize(line);
-        assert!(res.has_secret, "Failed to catch secret in history candidate: {}", line);
-        
+        assert!(
+            res.has_secret,
+            "Failed to catch secret in history candidate: {}",
+            line
+        );
+
         // Assert raw secret strings are completely scrubbed from the sanitized output
         assert!(!res.sanitized_text.contains(&stripe_key));
         assert!(!res.sanitized_text.contains(&openai_key));
@@ -75,7 +82,10 @@ fn test_zero_false_positives_on_standard_developer_code() {
             "FALSE POSITIVE DETECTED on clean code: '{}' (flagged as: {:?})",
             input, res.matched_rules
         );
-        assert_eq!(res.sanitized_text, input, "Clean input was unnecessarily modified");
+        assert_eq!(
+            res.sanitized_text, input,
+            "Clean input was unnecessarily modified"
+        );
     }
 }
 

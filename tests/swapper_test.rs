@@ -11,7 +11,8 @@ fn test_swapper_payload_rewriting() {
         "sk-test-REAL1234567890".to_string(),
     );
 
-    let raw_req = b"POST /v1/chat HTTP/1.1\r\nAuthorization: Bearer sk-proj-FAKE000000000000\r\n\r\n{}";
+    let raw_req =
+        b"POST /v1/chat HTTP/1.1\r\nAuthorization: Bearer sk-proj-FAKE000000000000\r\n\r\n{}";
     let (swapped_req, count) = SecretSwapper::swap_request_payload(raw_req, &config);
     assert_eq!(count, 1);
     let swapped_str = String::from_utf8(swapped_req).unwrap();

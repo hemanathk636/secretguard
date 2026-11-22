@@ -132,7 +132,9 @@ fn run_audit(target_path: Option<&str>, engine: &SecretGuardEngine) {
         } else if bash.exists() {
             bash
         } else {
-            eprintln!("❌ No .zsh_history or .bash_history found. Provide path: secretguard audit <PATH>");
+            eprintln!(
+                "❌ No .zsh_history or .bash_history found. Provide path: secretguard audit <PATH>"
+            );
             process::exit(1);
         }
     };
@@ -171,7 +173,10 @@ fn run_audit(target_path: Option<&str>, engine: &SecretGuardEngine) {
     if leaks == 0 {
         println!("✅ Clean! Zero unmasked secrets found in history.");
     } else {
-        println!("🚨 Found {} exposed credentials in your history file!", leaks);
+        println!(
+            "🚨 Found {} exposed credentials in your history file!",
+            leaks
+        );
     }
 }
 
@@ -252,7 +257,11 @@ fn run_clean_history(target_path: Option<&str>, dry_run: bool, engine: &SecretGu
         return;
     }
 
-    print!("\n⚠️  Safely sanitize {} exposed secrets in {}? (y/N): ", leaks_found, file_path.display());
+    print!(
+        "\n⚠️  Safely sanitize {} exposed secrets in {}? (y/N): ",
+        leaks_found,
+        file_path.display()
+    );
     io::stdout().flush().unwrap();
     let mut answer = String::new();
     io::stdin().read_line(&mut answer).unwrap_or(0);
@@ -269,7 +278,11 @@ fn run_clean_history(target_path: Option<&str>, dry_run: bool, engine: &SecretGu
     let backup_path = file_path.with_extension(format!("backup.{}", timestamp));
 
     if let Err(e) = std::fs::copy(&file_path, &backup_path) {
-        eprintln!("❌ Failed to create safe backup at {}: {}", backup_path.display(), e);
+        eprintln!(
+            "❌ Failed to create safe backup at {}: {}",
+            backup_path.display(),
+            e
+        );
         eprintln!("Aborting operation to prevent any data loss.");
         process::exit(1);
     }
@@ -299,7 +312,10 @@ fn run_clean_history(target_path: Option<&str>, dry_run: bool, engine: &SecretGu
     }
 
     println!("✨ Successfully sanitized {} commands!", leaks_found);
-    println!("🔒 Your history file is now safe. Backup preserved at: {}", backup_path.display());
+    println!(
+        "🔒 Your history file is now safe. Backup preserved at: {}",
+        backup_path.display()
+    );
 }
 
 fn run_doctor(engine: &SecretGuardEngine) {
@@ -315,7 +331,11 @@ fn run_doctor(engine: &SecretGuardEngine) {
 
     if res.has_secret {
         println!("✓ Dual-Tier Engine: Active (RegexSet + Shannon Entropy H >= 3.6)");
-        println!("✓ Live Latency:     {:.2} µs ({:.3} ms) — Sub-millisecond verified", elapsed_micros, elapsed.as_secs_f64() * 1000.0);
+        println!(
+            "✓ Live Latency:     {:.2} µs ({:.3} ms) — Sub-millisecond verified",
+            elapsed_micros,
+            elapsed.as_secs_f64() * 1000.0
+        );
     } else {
         println!("⚠️  Detection Engine: Test key evaluation failed");
     }
@@ -324,7 +344,7 @@ fn run_doctor(engine: &SecretGuardEngine) {
     let home = env::var("HOME")
         .or_else(|_| env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string());
-    
+
     let zshrc = Path::new(&home).join(".zshrc");
     let bashrc = Path::new(&home).join(".bashrc");
     let mut shell_found = false;
@@ -356,7 +376,13 @@ fn run_doctor(engine: &SecretGuardEngine) {
     // 3. Shell History Status
     let zsh_hist = Path::new(&home).join(".zsh_history");
     let bash_hist = Path::new(&home).join(".bash_history");
-    let hist_target = if zsh_hist.exists() { Some(zsh_hist) } else if bash_hist.exists() { Some(bash_hist) } else { None };
+    let hist_target = if zsh_hist.exists() {
+        Some(zsh_hist)
+    } else if bash_hist.exists() {
+        Some(bash_hist)
+    } else {
+        None
+    };
 
     if let Some(hist) = hist_target {
         let metadata = std::fs::metadata(&hist);
@@ -419,7 +445,10 @@ fn run_doctor(engine: &SecretGuardEngine) {
 
 fn run_protect_agent(target_dir: Option<&str>, engine: &SecretGuardEngine) {
     let base = Path::new(target_dir.unwrap_or("."));
-    println!("🤖 SecretGuard AI Agent Shield: Inspecting '{}'...\n", base.display());
+    println!(
+        "🤖 SecretGuard AI Agent Shield: Inspecting '{}'...\n",
+        base.display()
+    );
 
     let agent_targets = [
         ".claude/settings.local.json",
@@ -441,7 +470,10 @@ fn run_protect_agent(target_dir: Option<&str>, engine: &SecretGuardEngine) {
                 let res = engine.scan_and_sanitize(&content);
                 if res.has_secret {
                     found_issues += 1;
-                    println!("   🚨 Live secrets detected in {}: {:?}", target, res.matched_rules);
+                    println!(
+                        "   🚨 Live secrets detected in {}: {:?}",
+                        target, res.matched_rules
+                    );
                 } else {
                     println!("   ✅ No unmasked secrets detected.");
                 }
@@ -464,7 +496,9 @@ fn run_protect_agent(target_dir: Option<&str>, engine: &SecretGuardEngine) {
                 for m in &missing {
                     println!("   • {}", m);
                 }
-                println!("💡 Tip: Add them to .gitignore to prevent AI agents from pushing credentials!");
+                println!(
+                    "💡 Tip: Add them to .gitignore to prevent AI agents from pushing credentials!"
+                );
             } else {
                 println!("\n✅ .gitignore protects .claude/ and .env* files.");
             }
@@ -477,7 +511,10 @@ fn run_protect_agent(target_dir: Option<&str>, engine: &SecretGuardEngine) {
     if found_issues == 0 {
         println!("🛡️  Agent Shield: Workspace is safe from AI agent credential leaks!");
     } else {
-        println!("🚨 Found {} AI agent files containing exposed credentials!", found_issues);
+        println!(
+            "🚨 Found {} AI agent files containing exposed credentials!",
+            found_issues
+        );
     }
 }
 
@@ -485,7 +522,10 @@ fn run_install_pre_commit(target_dir: Option<&str>) {
     let base = Path::new(target_dir.unwrap_or("."));
     let git_dir = base.join(".git");
     if !git_dir.exists() {
-        eprintln!("❌ Not a git repository (no .git directory found at '{}').", base.display());
+        eprintln!(
+            "❌ Not a git repository (no .git directory found at '{}').",
+            base.display()
+        );
         process::exit(1);
     }
 
@@ -525,7 +565,10 @@ exit 0
     if pre_commit_path.exists() {
         if let Ok(existing) = std::fs::read_to_string(&pre_commit_path) {
             if existing.contains("secretguard") {
-                println!("✓ SecretGuard pre-commit hook is already installed in: {}", pre_commit_path.display());
+                println!(
+                    "✓ SecretGuard pre-commit hook is already installed in: {}",
+                    pre_commit_path.display()
+                );
                 return;
             }
         }
@@ -580,7 +623,14 @@ fn scan_file(path: &Path, engine: &SecretGuardEngine, json_mode: bool) -> (usize
     (lines_count, leaks_count)
 }
 
-fn scan_dir_recursive(dir: &Path, engine: &SecretGuardEngine, total_files: &mut usize, total_lines: &mut usize, total_leaks: &mut usize, json_mode: bool) {
+fn scan_dir_recursive(
+    dir: &Path,
+    engine: &SecretGuardEngine,
+    total_files: &mut usize,
+    total_lines: &mut usize,
+    total_leaks: &mut usize,
+    json_mode: bool,
+) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -592,7 +642,13 @@ fn scan_dir_recursive(dir: &Path, engine: &SecretGuardEngine, total_files: &mut 
         if name.starts_with('.') && name != ".env" && !name.starts_with(".env.") {
             continue;
         }
-        if name == "target" || name == "node_modules" || name == "vendor" || name == "dist" || name == "build" || name == ".git" {
+        if name == "target"
+            || name == "node_modules"
+            || name == "vendor"
+            || name == "dist"
+            || name == "build"
+            || name == ".git"
+        {
             continue;
         }
 
@@ -610,7 +666,10 @@ fn scan_dir_recursive(dir: &Path, engine: &SecretGuardEngine, total_files: &mut 
 fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bool) {
     let path = PathBuf::from(target_path.unwrap_or("."));
     if !json_mode {
-        println!("🔍 SecretGuard Advanced Scanner: Inspecting '{}'...\n", path.display());
+        println!(
+            "🔍 SecretGuard Advanced Scanner: Inspecting '{}'...\n",
+            path.display()
+        );
     }
 
     let mut total_files = 0;
@@ -624,7 +683,14 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
         total_lines = lines;
         total_leaks = leaks;
     } else if path.is_dir() {
-        scan_dir_recursive(&path, engine, &mut total_files, &mut total_lines, &mut total_leaks, json_mode);
+        scan_dir_recursive(
+            &path,
+            engine,
+            &mut total_files,
+            &mut total_lines,
+            &mut total_leaks,
+            json_mode,
+        );
     } else {
         eprintln!("❌ Target path '{}' does not exist.", path.display());
         process::exit(1);
@@ -652,12 +718,23 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
     println!("────────────────────────────────────────────");
     println!("Files Scanned:    {}", total_files);
     println!("Lines Scanned:    {}", total_lines);
-    println!("Execution Time:   {:.2} ms ({:.0} lines/sec)", elapsed.as_secs_f64() * 1000.0, if elapsed.as_secs_f64() > 0.0 { total_lines as f64 / elapsed.as_secs_f64() } else { 0.0 });
+    println!(
+        "Execution Time:   {:.2} ms ({:.0} lines/sec)",
+        elapsed.as_secs_f64() * 1000.0,
+        if elapsed.as_secs_f64() > 0.0 {
+            total_lines as f64 / elapsed.as_secs_f64()
+        } else {
+            0.0
+        }
+    );
     if total_leaks == 0 {
         println!("✅ Clean! Zero unmasked secrets found across codebase.");
         process::exit(0);
     } else {
-        println!("🚨 Found {} exposed credentials across scanned files!", total_leaks);
+        println!(
+            "🚨 Found {} exposed credentials across scanned files!",
+            total_leaks
+        );
         process::exit(1);
     }
 }
@@ -762,7 +839,10 @@ if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) {
 }
 "#
         ),
-        _ => eprintln!("Unsupported shell: {}. Supported: zsh, bash, fish, nushell, powershell", shell),
+        _ => eprintln!(
+            "Unsupported shell: {}. Supported: zsh, bash, fish, nushell, powershell",
+            shell
+        ),
     }
 }
 
@@ -842,15 +922,27 @@ fn main() {
                     print_hook(shell);
                 }
                 "dashboard" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::dashboard::DashboardServer::run_cli(&target_args, &engine);
                 }
                 "ghost" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::ghost::GhostVirtualizer::run_cli(&target_args, &engine);
                 }
                 "tun" | "swapper" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::swapper::SecretSwapper::run_cli(&target_args);
                 }
                 "wrap" => {
@@ -863,7 +955,11 @@ fn main() {
                     run_wrapped_command(child_cmd, child_args, &engine);
                 }
                 "screen" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::shield::ScreenShield::run_cli(&target_args, &engine);
                 }
                 "status" | "auto" | "run" => {
@@ -871,19 +967,35 @@ fn main() {
                     secretguard::shield::ScreenShield::run_cli(&target_args, &engine);
                 }
                 "clipboard" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::clipboard::ClipboardGuardian::run_cli(&target_args, &engine);
                 }
                 "radar" | "trojan-radar" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::radar::UnicodeRadar::run_cli(&target_args);
                 }
                 "agent" | "protect-agent" => {
-                    let target = if args.len() >= 4 { Some(args[3].as_str()) } else { None };
+                    let target = if args.len() >= 4 {
+                        Some(args[3].as_str())
+                    } else {
+                        None
+                    };
                     run_protect_agent(target, &engine);
                 }
                 "firewall" | "agent-firewall" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::firewall::run_agent_firewall(&target_args, &engine);
                 }
                 _ => {
@@ -904,11 +1016,19 @@ fn main() {
             let sub = args[2].as_str();
             match sub {
                 "mesh" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::mesh::MeshManager::run_cli(&target_args);
                 }
                 "canary" | "honeytoken" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::canary::CanaryManager::run_cli(&target_args);
                 }
                 _ => {
@@ -940,11 +1060,19 @@ fn main() {
                     run_scan(target, &engine, json_mode);
                 }
                 "git" | "time-machine" | "timemachine" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::timemachine::TimeMachine::run_cli(&target_args, &engine);
                 }
                 "history" => {
-                    let target = if args.len() >= 4 { Some(args[3].as_str()) } else { None };
+                    let target = if args.len() >= 4 {
+                        Some(args[3].as_str())
+                    } else {
+                        None
+                    };
                     run_audit(target, &engine);
                 }
                 "clean-history" | "clean" => {
@@ -960,35 +1088,67 @@ fn main() {
                     run_clean_history(target, dry_run, &engine);
                 }
                 "docker" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::docker::DockerScanner::run_cli(&target_args, &engine);
                 }
                 "verify" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::verifier::KeyVerifier::run_cli(&target_args);
                 }
                 "blast" | "blast-radius" | "blastradius" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::blastradius::BlastRadiusScanner::run_cli(&target_args);
                 }
                 "pii" | "scrub-pii" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::pii::PiiScrubber::run_cli(&target_args, &engine);
                 }
                 "report" | "compliance" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::compliance::ComplianceAuditor::run_cli(&target_args, &engine);
                 }
                 "proxy" | "mock-proxy" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::proxy::MockProxyServer::run_cli(&target_args);
                 }
                 "panic" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::panic::run_panic_emergency(&target_args, &engine);
                 }
                 "immune" => {
-                    let target_args = if args.len() >= 4 { args[3..].to_vec() } else { Vec::new() };
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     secretguard::immune::ImmuneEngine::run_cli(&target_args, &engine);
                 }
                 _ => {
@@ -1002,7 +1162,11 @@ fn main() {
         // 🚀 POPULAR SHORTCUT ALIASES (Direct Access)
         // ==========================================
         "init" => {
-            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
             secretguard::init::SetupWizard::run_cli(&target_args);
         }
         "completions" => {
@@ -1010,11 +1174,19 @@ fn main() {
             secretguard::completions::CompletionsGenerator::print_completions(shell);
         }
         "ghost" => {
-            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
             secretguard::ghost::GhostVirtualizer::run_cli(&target_args, &engine);
         }
         "immune" => {
-            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
             secretguard::immune::ImmuneEngine::run_cli(&target_args, &engine);
         }
         "check" => {
@@ -1096,18 +1268,30 @@ fn main() {
             run_clean_history(target, dry_run, &engine);
         }
         "protect-agent" => {
-            let target = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
+            let target = if args.len() >= 3 {
+                Some(args[2].as_str())
+            } else {
+                None
+            };
             run_protect_agent(target, &engine);
         }
         "doctor" => {
             run_doctor(&engine);
         }
         "dashboard" => {
-            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
             secretguard::dashboard::DashboardServer::run_cli(&target_args, &engine);
         }
         "config" => {
-            let target_args = if args.len() >= 3 { args[2..].to_vec() } else { Vec::new() };
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
             secretguard::config::SecretGuardConfig::run_cli(&target_args);
         }
         "scan" => {
@@ -1122,7 +1306,11 @@ fn main() {
             run_scan(target, &engine, json_mode);
         }
         "install-pre-commit" | "pre-commit" => {
-            let target = if args.len() >= 3 { Some(args[2].as_str()) } else { None };
+            let target = if args.len() >= 3 {
+                Some(args[2].as_str())
+            } else {
+                None
+            };
             run_install_pre_commit(target);
         }
         "mcp" => {

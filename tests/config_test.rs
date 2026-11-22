@@ -3,7 +3,13 @@ use secretguard::SecretGuardEngine;
 
 #[test]
 fn test_config_template_generation() {
-    let temp_dir = std::env::temp_dir().join(format!("sg_cfg_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_cfg_test_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     std::fs::create_dir_all(&temp_dir).unwrap();
     let cfg_path = temp_dir.join("secretguard.toml");
 

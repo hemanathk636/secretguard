@@ -22,7 +22,11 @@ fn test_pillar_help_screens() {
         .args(["shield", "--help"])
         .output()
         .expect("Failed to run shield help");
-    let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(combined.contains("SecretGuard Shield — Pillar 1: Ambient Shield & Runtime Defense"));
     assert!(combined.contains("hook"));
     assert!(combined.contains("tun"));
@@ -34,7 +38,11 @@ fn test_pillar_help_screens() {
         .args(["vault", "--help"])
         .output()
         .expect("Failed to run vault help");
-    let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(combined.contains("SecretGuard Vault — Pillar 2: Zero-Knowledge Keystore & Team Mesh"));
     assert!(combined.contains("init"));
     assert!(combined.contains("mesh"));
@@ -45,7 +53,11 @@ fn test_pillar_help_screens() {
         .args(["audit", "--help"])
         .output()
         .expect("Failed to run audit help");
-    let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(combined.contains("SecretGuard Audit — Pillar 3: Repository Auditing & Remediation"));
     assert!(combined.contains("scan"));
     assert!(combined.contains("git"));

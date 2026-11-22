@@ -1,8 +1,8 @@
 pub mod blastradius;
 pub mod canary;
 pub mod clipboard;
-pub mod compliance;
 pub mod completions;
+pub mod compliance;
 pub mod config;
 pub mod dashboard;
 pub mod docker;
@@ -86,7 +86,9 @@ impl SecretGuardEngine {
             if let Ok(re) = regex::Regex::new(&cp.regex) {
                 patterns.push(SecretPattern {
                     name: Box::leak(cp.name.clone().into_boxed_str()),
-                    description: Box::leak(cp.description.clone().unwrap_or_default().into_boxed_str()),
+                    description: Box::leak(
+                        cp.description.clone().unwrap_or_default().into_boxed_str(),
+                    ),
                     regex: re,
                 });
             }
@@ -185,7 +187,11 @@ impl SecretGuardEngine {
             if detected_rule.is_none() {
                 let hits = scan_contextual_entropy(&decoded_str);
                 let lower = decoded_str.to_lowercase();
-                if !hits.is_empty() || lower.contains("password") || lower.contains("secret") || (decoded_str.contains(':') && decoded_str.len() >= 10) {
+                if !hits.is_empty()
+                    || lower.contains("password")
+                    || lower.contains("secret")
+                    || (decoded_str.contains(':') && decoded_str.len() >= 10)
+                {
                     detected_rule = Some("Encoded (Credential/Token)".to_string());
                 }
             }
@@ -207,7 +213,9 @@ impl SecretGuardEngine {
         if input.contains('\x1b') {
             let stripped_ansi = strip_ansi_escapes(input);
             for p in &self.patterns {
-                if p.regex.is_match(&stripped_ansi) && !matched_rules.iter().any(|r| r.contains(p.name)) {
+                if p.regex.is_match(&stripped_ansi)
+                    && !matched_rules.iter().any(|r| r.contains(p.name))
+                {
                     matched_rules.push(format!("ANSI-Obfuscated ({})", p.name));
                     sanitized = "[REDACTED_ANSI_SECRET]".to_string();
                     synthetic = "[SYNTHETIC_MOCK_ANSI_TOKEN]".to_string();

@@ -49,7 +49,11 @@ pub fn identify_revocation_info(secret: &str) -> Option<RevocationInfo> {
             dashboard_url: "https://platform.openai.com/api-keys",
             api_revoke_cmd: None,
         })
-    } else if secret.starts_with("ghp_") || secret.starts_with("gho_") || secret.starts_with("ghu_") || secret.starts_with("ghs_") {
+    } else if secret.starts_with("ghp_")
+        || secret.starts_with("gho_")
+        || secret.starts_with("ghu_")
+        || secret.starts_with("ghs_")
+    {
         Some(RevocationInfo {
             provider: "GitHub",
             dashboard_url: "https://github.com/settings/tokens",
@@ -58,13 +62,19 @@ pub fn identify_revocation_info(secret: &str) -> Option<RevocationInfo> {
                 secret
             )),
         })
-    } else if secret.starts_with("sk_live_") || secret.starts_with("sk_test_") || secret.starts_with("rk_live_") {
+    } else if secret.starts_with("sk_live_")
+        || secret.starts_with("sk_test_")
+        || secret.starts_with("rk_live_")
+    {
         Some(RevocationInfo {
             provider: "Stripe",
             dashboard_url: "https://dashboard.stripe.com/apikeys",
             api_revoke_cmd: None,
         })
-    } else if secret.starts_with("xoxb-") || secret.starts_with("xoxp-") || secret.starts_with("xoxa-") {
+    } else if secret.starts_with("xoxb-")
+        || secret.starts_with("xoxp-")
+        || secret.starts_with("xoxa-")
+    {
         Some(RevocationInfo {
             provider: "Slack",
             dashboard_url: "https://api.slack.com/apps",
@@ -98,7 +108,9 @@ pub fn identify_revocation_info(secret: &str) -> Option<RevocationInfo> {
 
 pub fn emergency_scrub_git_head(engine: &SecretGuardEngine) -> Result<usize, String> {
     // Check if in git repository
-    let git_check = Command::new("git").args(["rev-parse", "--is-inside-work-tree"]).output();
+    let git_check = Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .output();
     if git_check.is_err() || !git_check.unwrap().status.success() {
         return Ok(0);
     }
@@ -142,7 +154,9 @@ pub fn emergency_scrub_git_head(engine: &SecretGuardEngine) -> Result<usize, Str
 }
 
 /// Comprehensive Git history scrubber: rewrites all reachable commits in history
-pub fn emergency_deep_history_scrub(engine: &SecretGuardEngine) -> Result<crate::timemachine::TimeMachineScrubResult, String> {
+pub fn emergency_deep_history_scrub(
+    engine: &SecretGuardEngine,
+) -> Result<crate::timemachine::TimeMachineScrubResult, String> {
     crate::timemachine::TimeMachine::scrub_history(engine, None, false)
 }
 
@@ -223,7 +237,10 @@ pub fn run_panic_emergency(args: &[String], engine: &SecretGuardEngine) {
         print!("1️⃣  Rewriting Git history across all commits... ");
         match emergency_deep_history_scrub(engine) {
             Ok(res) => {
-                println!("🔒 Scrubbed {} tainted commit(s)! Backup branch preserved: {}", res.commits_scrubbed, res.backup_ref);
+                println!(
+                    "🔒 Scrubbed {} tainted commit(s)! Backup branch preserved: {}",
+                    res.commits_scrubbed, res.backup_ref
+                );
             }
             Err(e) => {
                 println!("ℹ️  Git history scrub skipped: {}", e);
@@ -233,7 +250,10 @@ pub fn run_panic_emergency(args: &[String], engine: &SecretGuardEngine) {
         print!("1️⃣  Inspecting latest Git commit (use --deep for all commits)... ");
         match emergency_scrub_git_head(engine) {
             Ok(count) if count > 0 => {
-                println!("🔒 Surgically scrubbed and amended {} file(s) in HEAD with synthetic mocks!", count);
+                println!(
+                    "🔒 Surgically scrubbed and amended {} file(s) in HEAD with synthetic mocks!",
+                    count
+                );
             }
             Ok(_) => {
                 println!("✅ Clean (No unmasked secrets in latest commit).");
@@ -248,7 +268,10 @@ pub fn run_panic_emergency(args: &[String], engine: &SecretGuardEngine) {
     print!("2️⃣  Purging unmasked secrets from shell history... ");
     let scrubbed_history = emergency_clean_shell_history(engine);
     if scrubbed_history > 0 {
-        println!("🧹 Erased {} exposed credential(s) from history with atomic backup!", scrubbed_history);
+        println!(
+            "🧹 Erased {} exposed credential(s) from history with atomic backup!",
+            scrubbed_history
+        );
     } else {
         println!("✅ Clean (No exposed secrets in shell history).");
     }

@@ -41,13 +41,18 @@ impl TimeMachine {
         }
         cmd.args(["rev-parse", "--is-inside-work-tree"]);
         match cmd.output() {
-            Ok(out) => out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true",
+            Ok(out) => {
+                out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true"
+            }
             Err(_) => false,
         }
     }
 
     /// Retrieve the list of commit hashes in chronological order (or limit)
-    pub fn get_commit_hashes(repo_path: Option<&Path>, max_commits: Option<usize>) -> Result<Vec<String>, String> {
+    pub fn get_commit_hashes(
+        repo_path: Option<&Path>,
+        max_commits: Option<usize>,
+    ) -> Result<Vec<String>, String> {
         let mut cmd = Command::new("git");
         if let Some(p) = repo_path {
             cmd.current_dir(p);
@@ -57,7 +62,9 @@ impl TimeMachine {
             cmd.arg(format!("-n{}", n));
         }
 
-        let out = cmd.output().map_err(|e| format!("Failed to run git log: {}", e))?;
+        let out = cmd
+            .output()
+            .map_err(|e| format!("Failed to run git log: {}", e))?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).to_string());
         }
@@ -107,7 +114,12 @@ impl TimeMachine {
             let (short_hash, author, date, summary) = if parts.len() >= 4 {
                 (parts[0], parts[1], parts[2], parts[3])
             } else {
-                (&hash[..7.min(hash.len())], "Unknown", "Unknown", "No commit message")
+                (
+                    &hash[..7.min(hash.len())],
+                    "Unknown",
+                    "Unknown",
+                    "No commit message",
+                )
             };
 
             // Inspect diff added lines (lines starting with '+')
@@ -163,7 +175,8 @@ impl TimeMachine {
                 success: true,
                 commits_scrubbed: 0,
                 backup_ref: String::new(),
-                message: "No secrets detected in commit history. Git history is 100% clean!".to_string(),
+                message: "No secrets detected in commit history. Git history is 100% clean!"
+                    .to_string(),
             });
         }
 
@@ -254,8 +267,13 @@ done
 
         // Write filter script to temporary location
         let temp_dir = std::env::temp_dir();
-        let script_ext = if cfg!(target_os = "windows") { "ps1" } else { "sh" };
-        let script_path = temp_dir.join(format!("secretguard_scrubber_{}.{}", timestamp, script_ext));
+        let script_ext = if cfg!(target_os = "windows") {
+            "ps1"
+        } else {
+            "sh"
+        };
+        let script_path =
+            temp_dir.join(format!("secretguard_scrubber_{}.{}", timestamp, script_ext));
         let mut script_file = fs::File::create(&script_path)
             .map_err(|e| format!("Failed to create temporary filter script: {}", e))?;
         script_file
@@ -265,7 +283,10 @@ done
         // 3. Execute git filter-branch across all branches with safety override
         let normalized_path = script_path.to_string_lossy().replace('\\', "/");
         let tree_filter_arg = if cfg!(target_os = "windows") {
-            format!("powershell -ExecutionPolicy Bypass -File \"{}\"", normalized_path)
+            format!(
+                "powershell -ExecutionPolicy Bypass -File \"{}\"",
+                normalized_path
+            )
         } else {
             format!("sh \"{}\"", normalized_path)
         };
@@ -342,7 +363,9 @@ SUBCOMMANDS:
                     Ok(report) => {
                         println!("📊 Scanned {} commits.", report.total_commits_scanned);
                         if report.clean {
-                            println!("✅ Zero secrets found in Git history! History is 100% clean.");
+                            println!(
+                                "✅ Zero secrets found in Git history! History is 100% clean."
+                            );
                         } else {
                             println!(
                                 "🚨 Found {} tainted commits containing exposed credentials:\n",
@@ -383,8 +406,14 @@ SUBCOMMANDS:
                         } else {
                             println!("🎉 {}", res.message);
                             if !dry_run {
-                                println!("🛡️ Safety backup branch created at: \x1b[32m{}\x1b[0m", res.backup_ref);
-                                println!("⚠️ To revert anytime: \x1b[36mgit reset --hard {}\x1b[0m", res.backup_ref);
+                                println!(
+                                    "🛡️ Safety backup branch created at: \x1b[32m{}\x1b[0m",
+                                    res.backup_ref
+                                );
+                                println!(
+                                    "⚠️ To revert anytime: \x1b[36mgit reset --hard {}\x1b[0m",
+                                    res.backup_ref
+                                );
                             }
                         }
                     }

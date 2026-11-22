@@ -40,7 +40,10 @@ impl UnicodeRadar {
                 }
 
                 // 2. Invisible Zero-Width Characters (AI Prompt Injection Vector)
-                if matches!(u, 0x200B | 0x200C | 0x200D | 0xFEFF | 0x2060 | 0x200E | 0x200F) {
+                if matches!(
+                    u,
+                    0x200B | 0x200C | 0x200D | 0xFEFF | 0x2060 | 0x200E | 0x200F
+                ) {
                     threats.push(UnicodeThreatHit {
                         file_path: file_path.to_string(),
                         line_number: line_idx + 1,
@@ -134,7 +137,10 @@ impl UnicodeRadar {
                 if report.clean {
                     println!("✅ 100% Clean! Zero invisible homoglyphs, BiDi overrides, or zero-width prompt injections detected.");
                 } else {
-                    println!("🚨 Detected {} stealth Unicode threats:\n", report.threats_found.len());
+                    println!(
+                        "🚨 Detected {} stealth Unicode threats:\n",
+                        report.threats_found.len()
+                    );
                     for t in &report.threats_found {
                         println!(
                             "  • \x1b[31m{}\x1b[0m [{}] at \x1b[33m{}:{}\x1b[0m",

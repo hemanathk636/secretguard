@@ -37,13 +37,22 @@ impl MockProxyServer {
         let req_str = String::from_utf8_lossy(&buffer[..bytes_read]);
         let (status_code, body) = if req_str.contains("/v1/chat/completions") {
             // OpenAI Mock Response
-            ("200 OK", r#"{"id":"chatcmpl-mock123","object":"chat.completion","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"[SecretGuard Offline Mock]: Successfully responded without invoking real OpenAI API."},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":15,"total_tokens":25}}"#)
+            (
+                "200 OK",
+                r#"{"id":"chatcmpl-mock123","object":"chat.completion","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"[SecretGuard Offline Mock]: Successfully responded without invoking real OpenAI API."},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":15,"total_tokens":25}}"#,
+            )
         } else if req_str.contains("/v1/charges") || req_str.contains("/v1/payment_intents") {
             // Stripe Mock Response
-            ("200 OK", r#"{"id":"pi_mock123","object":"payment_intent","amount":2000,"currency":"usd","status":"succeeded","client_secret":"pi_mock123_secret_mock"}"#)
+            (
+                "200 OK",
+                r#"{"id":"pi_mock123","object":"payment_intent","amount":2000,"currency":"usd","status":"succeeded","client_secret":"pi_mock123_secret_mock"}"#,
+            )
         } else {
             // Generic 200 OK
-            ("200 OK", r#"{"status":"success","mock":true,"engine":"SecretGuard Offline Mock API"}"#)
+            (
+                "200 OK",
+                r#"{"status":"success","mock":true,"engine":"SecretGuard Offline Mock API"}"#,
+            )
         };
 
         let response = format!(
@@ -69,7 +78,10 @@ impl MockProxyServer {
         let bind_target = format!("127.0.0.1:{}", port);
         match Self::start(&bind_target) {
             Ok(addr) => {
-                println!("🌐 SecretGuard Offline Mock API Proxy active on: \x1b[32mhttp://{}\x1b[0m", addr);
+                println!(
+                    "🌐 SecretGuard Offline Mock API Proxy active on: \x1b[32mhttp://{}\x1b[0m",
+                    addr
+                );
                 println!("💡 Point your development SDKs to http://{}:", addr);
                 println!("   • OpenAI Base URL: http://{}/v1", addr);
                 println!("   • Stripe Base URL: http://{}", addr);

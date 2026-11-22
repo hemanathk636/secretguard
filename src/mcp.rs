@@ -234,7 +234,10 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         })
                     }
                     "scan_path" => {
-                        let target_path_str = arguments.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                        let target_path_str = arguments
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(".");
                         let path = Path::new(target_path_str);
                         let mut findings = Vec::new();
 
@@ -275,7 +278,10 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         })
                     }
                     "eval_firewall_policy" => {
-                        let cmd = arguments.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                        let cmd = arguments
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         let verdict = crate::firewall::evaluate_firewall_command(cmd);
                         json!({
                             "content": [

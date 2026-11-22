@@ -41,9 +41,16 @@ impl SetupWizard {
                 actions_taken.push("✓ PowerShell: Hook already active in $PROFILE".to_string());
             } else {
                 let _ = fs::create_dir_all(&ps_dir);
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&ps_profile) {
+                if let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&ps_profile)
+                {
                     let _ = file.write_all(hook_code.as_bytes());
-                    actions_taken.push(format!("✓ PowerShell: Attached interceptor to {}", ps_profile.display()));
+                    actions_taken.push(format!(
+                        "✓ PowerShell: Attached interceptor to {}",
+                        ps_profile.display()
+                    ));
                 }
             }
         } else if shell_env.contains("zsh") || home_path.join(".zshrc").exists() {
@@ -61,7 +68,9 @@ impl SetupWizard {
                 actions_taken.push("✓ Zsh: Hook already active in ~/.zshrc".to_string());
             } else if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&zshrc) {
                 let _ = file.write_all(hook_code.as_bytes());
-                actions_taken.push("✓ Zsh: Attached 0.016ms pre-exec line interceptor to ~/.zshrc".to_string());
+                actions_taken.push(
+                    "✓ Zsh: Attached 0.016ms pre-exec line interceptor to ~/.zshrc".to_string(),
+                );
             }
         } else if shell_env.contains("bash") || home_path.join(".bashrc").exists() {
             let bashrc = home_path.join(".bashrc");
@@ -76,9 +85,12 @@ impl SetupWizard {
 
             if already_installed {
                 actions_taken.push("✓ Bash: Hook already active in ~/.bashrc".to_string());
-            } else if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&bashrc) {
+            } else if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&bashrc)
+            {
                 let _ = file.write_all(hook_code.as_bytes());
-                actions_taken.push("✓ Bash: Attached 0.016ms pre-exec line interceptor to ~/.bashrc".to_string());
+                actions_taken.push(
+                    "✓ Bash: Attached 0.016ms pre-exec line interceptor to ~/.bashrc".to_string(),
+                );
             }
         }
 
@@ -112,7 +124,9 @@ exit 0
             }
 
             if installed {
-                actions_taken.push("✓ Git: Pre-commit hook already active (.git/hooks/pre-commit)".to_string());
+                actions_taken.push(
+                    "✓ Git: Pre-commit hook already active (.git/hooks/pre-commit)".to_string(),
+                );
             } else if let Ok(_) = fs::write(&pre_commit, hook_script) {
                 #[cfg(unix)]
                 {
@@ -123,10 +137,15 @@ exit 0
                         let _ = fs::set_permissions(&pre_commit, perms);
                     }
                 }
-                actions_taken.push("✓ Git: Installed sub-millisecond (<0.02ms) commit protection hook".to_string());
+                actions_taken.push(
+                    "✓ Git: Installed sub-millisecond (<0.02ms) commit protection hook".to_string(),
+                );
             }
         } else {
-            actions_taken.push("ℹ️  Git: Standby (Run 'secretguard init' inside git repos to protect commits)".to_string());
+            actions_taken.push(
+                "ℹ️  Git: Standby (Run 'secretguard init' inside git repos to protect commits)"
+                    .to_string(),
+            );
         }
 
         // 3. AI Agent Workspace Shield (.claude, .env in .gitignore)
@@ -151,18 +170,31 @@ exit 0
                 to_append.push_str(item);
                 to_append.push('\n');
             }
-            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&gitignore) {
+            if let Ok(mut f) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&gitignore)
+            {
                 let _ = f.write_all(to_append.as_bytes());
-                actions_taken.push("✓ AI Agent Shield: Excluded .claude/, .env*, and .secretguard/ in .gitignore".to_string());
+                actions_taken.push(
+                    "✓ AI Agent Shield: Excluded .claude/, .env*, and .secretguard/ in .gitignore"
+                        .to_string(),
+                );
             }
         } else {
-            actions_taken.push("✓ AI Agent Shield: .gitignore already protects agent caches and secrets".to_string());
+            actions_taken.push(
+                "✓ AI Agent Shield: .gitignore already protects agent caches and secrets"
+                    .to_string(),
+            );
         }
 
         // 4. Zero-Knowledge Local Vault Directory
         let sg_dir = home_path.join(".secretguard");
         let _ = fs::create_dir_all(&sg_dir);
-        actions_taken.push("✓ Vault Keystore: Hardware-isolated directory initialized at ~/.secretguard/".to_string());
+        actions_taken.push(
+            "✓ Vault Keystore: Hardware-isolated directory initialized at ~/.secretguard/"
+                .to_string(),
+        );
 
         // 5. Output Results Dashboard
         println!("─────────────────────────────────────────────────────────────────");

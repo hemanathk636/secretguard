@@ -47,7 +47,9 @@ pub fn evaluate_firewall_command(cmd: &str) -> FirewallVerdict {
         risk_level = RiskLevel::Critical;
     }
     if RE_GIT_FORCE.is_match(cmd) {
-        reasons.push("Destructive force push to remote Git repository ('git push --force')".to_string());
+        reasons.push(
+            "Destructive force push to remote Git repository ('git push --force')".to_string(),
+        );
         risk_level = RiskLevel::Critical;
     }
     if RE_DROP_DB.is_match(cmd) {
@@ -61,11 +63,17 @@ pub fn evaluate_firewall_command(cmd: &str) -> FirewallVerdict {
 
     // 2. Data Exfiltration / Egress (Critical / Suspicious)
     if RE_EGRESS_EXFIL.is_match(cmd) {
-        reasons.push("Credential Exfiltration: Attempting to send private keys or .env files over network".to_string());
+        reasons.push(
+            "Credential Exfiltration: Attempting to send private keys or .env files over network"
+                .to_string(),
+        );
         risk_level = RiskLevel::Critical;
     }
     if RE_PIPED_EXFIL.is_match(cmd) {
-        reasons.push("Exfiltration Pipeline: Piping sensitive files into network tools or subshells".to_string());
+        reasons.push(
+            "Exfiltration Pipeline: Piping sensitive files into network tools or subshells"
+                .to_string(),
+        );
         risk_level = RiskLevel::Critical;
     }
     if RE_PIPE_TO_BASH.is_match(cmd) {
@@ -75,7 +83,10 @@ pub fn evaluate_firewall_command(cmd: &str) -> FirewallVerdict {
         }
     }
     if RE_CHMOD_777.is_match(cmd) {
-        reasons.push("Insecure permission escalation: Overly permissive permissions ('chmod 777')".to_string());
+        reasons.push(
+            "Insecure permission escalation: Overly permissive permissions ('chmod 777')"
+                .to_string(),
+        );
         if risk_level != RiskLevel::Critical {
             risk_level = RiskLevel::Suspicious;
         }
@@ -169,7 +180,10 @@ EXAMPLES:
         }
     }
 
-    println!("🛡️  SecretGuard AI Agent Firewall Active: Shielding session '{}'...", child_cmd);
+    println!(
+        "🛡️  SecretGuard AI Agent Firewall Active: Shielding session '{}'...",
+        child_cmd
+    );
 
     let mut child = Command::new(child_cmd)
         .args(child_args)

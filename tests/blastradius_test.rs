@@ -5,7 +5,10 @@ use std::fs;
 fn test_blast_radius_detection() {
     let temp_dir = std::env::temp_dir().join(format!(
         "sg_br_test_{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     fs::create_dir_all(&temp_dir).unwrap();
 
@@ -29,7 +32,8 @@ fn test_blast_radius_detection() {
     assert!(report.total_files_scanned >= 3);
 
     // Track a secret that doesn't exist
-    let report_clean = BlastRadiusScanner::calculate_blast_radius("nonexistent-key-999", Some(&temp_dir));
+    let report_clean =
+        BlastRadiusScanner::calculate_blast_radius("nonexistent-key-999", Some(&temp_dir));
     assert_eq!(report_clean.affected_files.len(), 0);
     assert_eq!(report_clean.risk_score, 0.0);
 

@@ -11,7 +11,8 @@ fn test_clipboard_payload_sanitizer() {
     assert_eq!(sanitized, safe_text);
 
     let exposed_token = "export OPENAI_API_KEY=sk-proj-1234567890abcdef1234567890abcdef1234567890";
-    let (detected, scrubbed) = ClipboardGuardian::sanitize_clipboard_payload(exposed_token, &engine);
+    let (detected, scrubbed) =
+        ClipboardGuardian::sanitize_clipboard_payload(exposed_token, &engine);
     assert!(detected);
     assert!(scrubbed.contains("[REDACTED]"));
     assert!(!scrubbed.contains("1234567890abcdef"));

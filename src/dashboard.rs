@@ -38,7 +38,9 @@ impl DashboardServer {
         if !no_open {
             let url = format!("http://127.0.0.1:{}", port);
             #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn();
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", &url])
+                .spawn();
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("open").arg(&url).spawn();
             #[cfg(target_os = "linux")]
@@ -111,7 +113,8 @@ fn handle_connection(mut stream: TcpStream, engine: &SecretGuardEngine) {
             },
             "compliance_score": "98.4%",
             "leaks_blocked_today": 0
-        }).to_string();
+        })
+        .to_string();
 
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -145,7 +148,8 @@ fn handle_connection(mut stream: TcpStream, engine: &SecretGuardEngine) {
             "synthetic_text": res.synthetic_text,
             "matched_rules": res.matched_rules,
             "latency_us": elapsed_us
-        }).to_string();
+        })
+        .to_string();
 
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

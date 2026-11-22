@@ -96,7 +96,10 @@ USAGE:
                     if detected {
                         Self::clear_system_clipboard();
                         println!("🚨 Exposed secret detected on clipboard!");
-                        println!("🧹 Clipboard wiped cleanly. Sanitized value was: \x1b[33m{}\x1b[0m", sanitized);
+                        println!(
+                            "🧹 Clipboard wiped cleanly. Sanitized value was: \x1b[33m{}\x1b[0m",
+                            sanitized
+                        );
                     } else {
                         println!("✅ OS clipboard is clean. Zero secrets exposed.");
                     }
@@ -111,7 +114,10 @@ USAGE:
                     30
                 };
 
-                println!("🛡️ Clipboard Privacy Guardian running (Self-destruct timer: {}s)...", timeout_secs);
+                println!(
+                    "🛡️ Clipboard Privacy Guardian running (Self-destruct timer: {}s)...",
+                    timeout_secs
+                );
                 println!("Press Ctrl+C to stop.");
 
                 let mut last_seen = String::new();
@@ -132,7 +138,10 @@ USAGE:
                 }
             }
             _ => {
-                eprintln!("Unknown subcommand: {}. Use 'clean' or 'watch'.", subcommand);
+                eprintln!(
+                    "Unknown subcommand: {}. Use 'clean' or 'watch'.",
+                    subcommand
+                );
                 std::process::exit(2);
             }
         }

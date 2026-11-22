@@ -34,7 +34,11 @@ pub fn decode_base64(input: &str) -> Option<String> {
     }
 
     // Must be valid printable UTF-8 to be a secret token
-    if buf.len() >= 10 && buf.iter().all(|&c| c >= 32 && c <= 126 || c == b'\n' || c == b'\r' || c == b'\t') {
+    if buf.len() >= 10
+        && buf
+            .iter()
+            .all(|&c| c >= 32 && c <= 126 || c == b'\n' || c == b'\r' || c == b'\t')
+    {
         String::from_utf8(buf).ok()
     } else {
         None
@@ -83,9 +87,13 @@ pub fn find_encoded_candidates(input: &str) -> Vec<(String, String)> {
     let mut candidates = Vec::new();
 
     // Check words/tokens
-    for part in input.split(|c: char| c.is_whitespace() || c == '=' || c == '"' || c == '\'' || c == ',' || c == ':' || c == ';') {
-        let clean = part.trim_matches(|c: char| !c.is_alphanumeric() && c != '+' && c != '/' && c != '=' && c != '-' && c != '_');
-        
+    for part in input.split(|c: char| {
+        c.is_whitespace() || c == '=' || c == '"' || c == '\'' || c == ',' || c == ':' || c == ';'
+    }) {
+        let clean = part.trim_matches(|c: char| {
+            !c.is_alphanumeric() && c != '+' && c != '/' && c != '=' && c != '-' && c != '_'
+        });
+
         // Base64 candidates typically >= 16 chars (e.g. 12+ raw bytes encoded)
         if clean.len() >= 16 {
             if let Some(decoded) = decode_base64(clean) {
