@@ -30,12 +30,35 @@ static RECEIVED_SIGNAL: AtomicI32 = AtomicI32::new(0);
 #[cfg(unix)]
 extern "C" {
     fn getuid() -> u32;
-    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    fn signal(signum: i32, handler: usize) -> usize;
     fn siginterrupt(signum: i32, flag: i32) -> i32;
     fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
     fn open(path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
     fn openat(dirfd: i32, path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
     fn close(fd: i32) -> i32;
+    fn sigemptyset(set: *mut sigset_t) -> i32;
+    fn sigaddset(set: *mut sigset_t, signum: i32) -> i32;
+    fn sigprocmask(how: i32, set: *const sigset_t, oldset: *mut sigset_t) -> i32;
+}
+
+#[cfg(unix)]
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct sigset_t {
+    __val: [u64; 16], // 128 bytes, aligned to 8 bytes. Safely accommodates all Unix platforms (Linux: 128B, macOS: 4B, BSD: 16B).
+}
+
+#[cfg(unix)]
+pub mod unix_signal_constants {
+    #[cfg(target_os = "macos")]
+    pub const SIG_BLOCK: i32 = 1;
+    #[cfg(target_os = "macos")]
+    pub const SIG_SETMASK: i32 = 3;
+
+    #[cfg(not(target_os = "macos"))]
+    pub const SIG_BLOCK: i32 = 0;
+    #[cfg(not(target_os = "macos"))]
+    pub const SIG_SETMASK: i32 = 2;
 }
 
 #[cfg(unix)]
@@ -1805,8 +1828,8 @@ struct SignalDispositionGuard {
 impl Drop for SignalDispositionGuard {
     fn drop(&mut self) {
         unsafe {
-            signal(2, std::mem::transmute(self.old_sigint));
-            signal(15, std::mem::transmute(self.old_sigterm));
+            signal(2, self.old_sigint);
+            signal(15, self.old_sigterm);
         }
     }
 }
@@ -1821,10 +1844,37 @@ impl Drop for SignalDispositionGuard {
 pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
     #[cfg(unix)]
     {
+        use unix_signal_constants::{SIG_BLOCK, SIG_SETMASK};
+
         eprint!("{}", prompt);
         let _ = io::stderr().flush();
 
-        // Disable echo and fail closed if stty fails
+        const SIGINT: i32 = 2;
+        const SIGTERM: i32 = 15;
+        const SIG_ERR: usize = !0usize;
+
+        // 1. Block SIGINT and SIGTERM during terminal configuration to eliminate the race window
+        // where a signal could arrive while terminal echo is disabled but before signal handlers are armed.
+        let mut block_mask = unsafe { std::mem::zeroed::<sigset_t>() };
+        let mut orig_mask = unsafe { std::mem::zeroed::<sigset_t>() };
+        if unsafe { sigemptyset(&mut block_mask) } != 0
+            || unsafe { sigaddset(&mut block_mask, SIGINT) } != 0
+            || unsafe { sigaddset(&mut block_mask, SIGTERM) } != 0
+            || unsafe { sigprocmask(SIG_BLOCK, &block_mask, &mut orig_mask) } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+
+        // RAII signal mask guard ensures the original signal mask is restored on ANY exit path
+        struct SigmaskGuard(sigset_t);
+        impl Drop for SigmaskGuard {
+            fn drop(&mut self) {
+                unsafe { sigprocmask(SIG_SETMASK, &self.0, std::ptr::null_mut()); }
+            }
+        }
+        let mask_guard = SigmaskGuard(orig_mask);
+
+        // 2. Disable echo and fail closed if stty fails
         let status = Command::new("stty")
             .arg("-echo")
             .status()
@@ -1841,28 +1891,24 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         TERMINAL_INTERRUPTED.store(false, Ordering::SeqCst);
         RECEIVED_SIGNAL.store(0, Ordering::SeqCst);
 
-        // Install async-signal-safe flag handlers for SIGINT (Ctrl+C) and SIGTERM
-        const SIGINT: i32 = 2;
-        const SIGTERM: i32 = 15;
-        const SIG_ERR: usize = !0usize;
-
-        let old_sigint = unsafe { signal(SIGINT, sig_flag_handler) };
+        // 3. Install async-signal-safe flag handlers for SIGINT (Ctrl+C) and SIGTERM using integer signal handler types
+        let old_sigint = unsafe { signal(SIGINT, sig_flag_handler as usize) };
         if old_sigint == SIG_ERR {
             let _ = Command::new("stty").arg("echo").status();
             return Err(io::Error::last_os_error());
         }
 
-        let old_sigterm = unsafe { signal(SIGTERM, sig_flag_handler) };
+        let old_sigterm = unsafe { signal(SIGTERM, sig_flag_handler as usize) };
         if old_sigterm == SIG_ERR {
-            unsafe { signal(SIGINT, std::mem::transmute(old_sigint)); }
+            unsafe { signal(SIGINT, old_sigint); }
             let _ = Command::new("stty").arg("echo").status();
             return Err(io::Error::last_os_error());
         }
 
         if unsafe { siginterrupt(SIGINT, 1) } != 0 {
             unsafe {
-                signal(SIGINT, std::mem::transmute(old_sigint));
-                signal(SIGTERM, std::mem::transmute(old_sigterm));
+                signal(SIGINT, old_sigint);
+                signal(SIGTERM, old_sigterm);
             }
             let _ = Command::new("stty").arg("echo").status();
             return Err(io::Error::last_os_error());
@@ -1870,8 +1916,8 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
 
         if unsafe { siginterrupt(SIGTERM, 1) } != 0 {
             unsafe {
-                signal(SIGINT, std::mem::transmute(old_sigint));
-                signal(SIGTERM, std::mem::transmute(old_sigterm));
+                signal(SIGINT, old_sigint);
+                signal(SIGTERM, old_sigterm);
             }
             let _ = Command::new("stty").arg("echo").status();
             return Err(io::Error::last_os_error());
@@ -1887,15 +1933,18 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         // RAII guard guarantees stty echo is restored even on panic or error
         let _guard = SttyEchoGuard;
 
+        // 4. Now that echo suppression and signal handlers are fully armed, unblock signals
+        drop(mask_guard);
+
         // Deterministic test-synchronization hook:
-        // Notifies parent test harness ONLY AFTER terminal echo is successfully suppressed
-        // and signal handlers (SIGINT and SIGTERM) are actively installed and armed.
+        // Notifies parent test harness ONLY AFTER terminal echo is successfully suppressed,
+        // signal handlers are actively installed and armed, and signals are unblocked.
         if std::env::var("SG_SIGNAL_TEST_ARMED").is_ok() {
             eprintln!("SG_ARMED");
             let _ = io::stderr().flush();
         }
 
-        // Check if a signal arrived before read started (eliminates race condition)
+        // Check if a signal arrived while blocked during setup (held pending by kernel)
         if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
             let sig = RECEIVED_SIGNAL.load(Ordering::SeqCst);
             let exit_code = if sig == SIGTERM { 143 } else if sig == SIGINT { 130 } else { 128 + sig };
@@ -1903,12 +1952,12 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             // Explicitly restore original signal dispositions before process exit
             // (std::process::exit terminates immediately without unwinding RAII drop guards)
             unsafe {
-                signal(SIGINT, std::mem::transmute(old_sigint));
-                signal(SIGTERM, std::mem::transmute(old_sigterm));
+                signal(SIGINT, old_sigint);
+                signal(SIGTERM, old_sigterm);
             }
             // Independently verify that dispositions match original handlers:
-            let cur_sigint = unsafe { signal(SIGINT, std::mem::transmute(old_sigint)) };
-            let cur_sigterm = unsafe { signal(SIGTERM, std::mem::transmute(old_sigterm)) };
+            let cur_sigint = unsafe { signal(SIGINT, old_sigint) };
+            let cur_sigterm = unsafe { signal(SIGTERM, old_sigterm) };
             if cur_sigint != old_sigint || cur_sigterm != old_sigterm {
                 eprintln!("SG_DISPOSITION_RESTORE_MISMATCH");
                 std::process::exit(99);
@@ -1959,12 +2008,12 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             // Explicitly restore original signal dispositions before process exit
             // (std::process::exit terminates immediately without unwinding RAII drop guards)
             unsafe {
-                signal(SIGINT, std::mem::transmute(old_sigint));
-                signal(SIGTERM, std::mem::transmute(old_sigterm));
+                signal(SIGINT, old_sigint);
+                signal(SIGTERM, old_sigterm);
             }
             // Independently verify that dispositions match original handlers:
-            let cur_sigint = unsafe { signal(SIGINT, std::mem::transmute(old_sigint)) };
-            let cur_sigterm = unsafe { signal(SIGTERM, std::mem::transmute(old_sigterm)) };
+            let cur_sigint = unsafe { signal(SIGINT, old_sigint) };
+            let cur_sigterm = unsafe { signal(SIGTERM, old_sigterm) };
             if cur_sigint != old_sigint || cur_sigterm != old_sigterm {
                 eprintln!("SG_DISPOSITION_RESTORE_MISMATCH");
                 std::process::exit(99);

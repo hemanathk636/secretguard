@@ -1363,6 +1363,49 @@ fn test_real_signal_delivery_and_disposition_restoration() {
         use std::os::unix::io::FromRawFd;
         use std::io::Read;
 
+        #[repr(C)]
+        struct pollfd {
+            fd: i32,
+            events: i16,
+            revents: i16,
+        }
+        const POLLIN: i16 = 0x0001;
+
+        #[cfg(target_os = "linux")]
+        #[repr(C)]
+        struct Termios {
+            c_iflag: u32,
+            c_oflag: u32,
+            c_cflag: u32,
+            c_lflag: u32,
+            c_line: u8,
+            c_cc: [u8; 32],
+            c_ispeed: u32,
+            c_ospeed: u32,
+        }
+
+        #[cfg(target_os = "macos")]
+        #[repr(C)]
+        struct Termios {
+            c_iflag: usize,
+            c_oflag: usize,
+            c_cflag: usize,
+            c_lflag: usize,
+            c_cc: [u8; 20],
+            c_ispeed: usize,
+            c_ospeed: usize,
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[repr(C)]
+        struct Termios {
+            c_iflag: u32,
+            c_oflag: u32,
+            c_cflag: u32,
+            c_lflag: u32,
+            c_cc: [u8; 32],
+        }
+
         extern "C" {
             fn posix_openpt(oflag: i32) -> i32;
             fn grantpt(fd: i32) -> i32;
@@ -1374,6 +1417,7 @@ fn test_real_signal_delivery_and_disposition_restoration() {
             fn kill(pid: i32, sig: i32) -> i32;
             fn tcgetattr(fd: i32, termios_p: *mut std::ffi::c_void) -> i32;
             fn signal(signum: i32, handler: usize) -> usize;
+            fn poll(fds: *mut pollfd, nfds: usize, timeout: i32) -> i32;
         }
 
         fn open_test_pty() -> Result<(i32, i32), String> {
@@ -1440,12 +1484,60 @@ fn test_real_signal_delivery_and_disposition_restoration() {
                 .spawn()
                 .expect("Failed to spawn child worker with slave PTY");
 
-            // Deterministic synchronization:
+            // Bounded deterministic synchronization:
             // Read from master PTY until child writes "SG_ARMED\n".
-            // "SG_ARMED" is emitted ONLY AFTER stty -echo succeeds and signal handlers are actively armed.
+            // "SG_ARMED" is emitted ONLY AFTER stty -echo succeeds, signal handlers are actively armed, and signals are unblocked.
+            // Uses poll() with a 5-second deadline so test never hangs if child stalls or crashes.
+            let start = std::time::Instant::now();
+            let deadline = std::time::Duration::from_secs(5);
             let mut ready_buf = Vec::new();
             let mut single = [0u8; 1];
+
             while !ready_buf.windows(8).any(|w| w == b"SG_ARMED") {
+                let elapsed = start.elapsed();
+                if elapsed >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "Timed out waiting for child SG_ARMED notification after 5s. Buffer: {:?}",
+                        String::from_utf8_lossy(&ready_buf)
+                    );
+                }
+
+                let remaining_ms = (deadline - elapsed).as_millis() as i32;
+                let mut pfd = pollfd {
+                    fd: master_fd,
+                    events: POLLIN,
+                    revents: 0,
+                };
+                let ret = unsafe { poll(&mut pfd, 1, remaining_ms) };
+                if ret < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("poll() failed while waiting for SG_ARMED: {}", err);
+                } else if ret == 0 {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "Timed out waiting for child SG_ARMED notification in poll (5s). Buffer: {:?}",
+                        String::from_utf8_lossy(&ready_buf)
+                    );
+                }
+
+                if let Ok(Some(exit_status)) = child.try_wait() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "Child process exited prematurely with status {:?} before emitting SG_ARMED. Buffer: {:?}",
+                        exit_status,
+                        String::from_utf8_lossy(&ready_buf)
+                    );
+                }
+
                 match master_file.read(&mut single) {
                     Ok(0) => break,
                     Ok(1) => ready_buf.push(single[0]),
@@ -1453,11 +1545,15 @@ fn test_real_signal_delivery_and_disposition_restoration() {
                     Err(_) => break,
                 }
             }
-            assert!(
-                ready_buf.windows(8).any(|w| w == b"SG_ARMED"),
-                "Child must deterministically notify SG_ARMED before signal is sent. Output received: {:?}",
-                String::from_utf8_lossy(&ready_buf)
-            );
+
+            if !ready_buf.windows(8).any(|w| w == b"SG_ARMED") {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "Child terminated without notifying SG_ARMED. Output received: {:?}",
+                    String::from_utf8_lossy(&ready_buf)
+                );
+            }
 
             // Send target signal to child process
             unsafe { kill(child.id() as i32, sig_to_send); }
@@ -1476,19 +1572,19 @@ fn test_real_signal_delivery_and_disposition_restoration() {
 
             // Inspect terminal echo restoration using the independent observer descriptor.
             // tcgetattr failure is a hard test failure (no silent skipping).
-            let mut termios_buf = vec![0u8; 256];
-            let tc_res = unsafe { tcgetattr(observer_fd, termios_buf.as_mut_ptr() as *mut std::ffi::c_void) };
+            let mut term = unsafe { std::mem::zeroed::<Termios>() };
+            let tc_res = unsafe { tcgetattr(observer_fd, &mut term as *mut Termios as *mut std::ffi::c_void) };
             assert_eq!(
                 tc_res,
                 0,
                 "tcgetattr() must succeed on observer descriptor after child termination"
             );
 
-            // In POSIX termios, local modes flag (c_lflag) is at offset 12 on Linux/BSD,
-            // with ECHO bit defined as 0o000010 (8).
-            let c_lflag = unsafe { *(termios_buf.as_ptr().offset(12) as *const u32) };
-            assert!(
-                (c_lflag & 0o000010) != 0,
+            // In POSIX termios (Linux, macOS, BSD), ECHO bit in c_lflag is 0x0008 (8).
+            const ECHO_FLAG: usize = 0x0008;
+            assert_ne!(
+                (term.c_lflag as usize & ECHO_FLAG),
+                0,
                 "Terminal echo (ECHO bit in c_lflag) must be restored after signal interruption"
             );
 
