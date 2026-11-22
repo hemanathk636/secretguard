@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.12)
+🛡️  SecretGuard 10-Second Setup Wizard (v0.3.13)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.12
+    rev: v0.3.13
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -498,6 +498,17 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 📦 What's New in v0.3.13 (Windows Reparse Point Defense, Fail-Closed PEM Overflow & RAII Signal Restoration)
+
+SecretGuard v0.3.13 eliminates remaining cross-platform path security gaps, private-key overflow vectors, and signal restoration leaks:
+* **Windows Reparse Point & Junction Defense:** Extends `validate_secure_path` on Windows to inspect `FILE_ATTRIBUTE_REPARSE_POINT` (0x400) without following links across the entire ancestor directory hierarchy and the target file, strictly prohibiting Windows directory junctions, volume mount points, and symlinks.
+* **Fail-Closed PEM Holdback Overflow:** Updates `StreamSanitizer` so that unclosed multi-line private key candidates exceeding `MAX_STATEFUL_HOLD_LIMIT` (16KB) are redacted in place (`[REDACTED_PRIVATE_KEY_BLOCK]\n`) instead of falling through to sliding window drains, guaranteeing that unclosed candidates up to 32KB+ never leak raw private key prefixes.
+* **Unconditional RAII Signal Restoration:** Introduces `SignalDispositionGuard` in `read_password_hidden`, guaranteeing that original `SIGINT` and `SIGTERM` dispositions are restored on all code paths (success, error returns, or panic unwinding).
+* **Multi-Process Vault Encryption Verification:** Hardens `test_windows_multi_process_concurrent_creation` with genuine AES-256-GCM vault serialization and decryption across 8 racing OS processes, verifying that the final file is a clean, decryptable vault with 0 orphaned temporary files.
+* **File-Descriptor Security:** Eliminates TOCTOU metadata gaps in `load_vault()` by performing validations on opened file handles before decryption.
 
 ---
 

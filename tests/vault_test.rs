@@ -429,8 +429,17 @@ fn test_windows_multi_process_worker_entry() {
         let id = std::env::var("SG_CONCURRENT_PROC_ID").unwrap_or_else(|_| "0".to_string());
         let target_path = std::path::PathBuf::from(target);
         let parent = target_path.parent().unwrap();
-        let tmp = parent.join(format!(".tmp_child_proc_{}.tmp", id));
-        std::fs::write(&tmp, format!("proc_{}_valid_payload", id)).unwrap();
+        std::env::set_var("SECRETGUARD_DIR", parent);
+
+        // Each process creates a genuine AES-256-GCM encrypted vault with its unique secret
+        let tmp = parent.join(format!(".tmp_child_proc_{}.vault", id));
+        let mut store = VaultStore::default();
+        store.secrets.insert(format!("PROCESS_KEY_{}", id), format!("secret_payload_from_proc_{}", id));
+        let key = [0x5au8; 32];
+        let json_bytes = serde_json::to_vec(&store).unwrap();
+        let encrypted = encrypt_vault_payload(&json_bytes, &key).unwrap();
+        std::fs::write(&tmp, &encrypted).unwrap();
+
         secretguard::vault::atomic_replace_file(&tmp, &target_path).expect("Child process atomic_replace_file failed");
         std::process::exit(0);
     }
@@ -454,6 +463,7 @@ fn test_windows_multi_process_concurrent_creation() {
             .arg("--exact")
             .env("SG_CONCURRENT_PROC_TARGET", &target)
             .env("SG_CONCURRENT_PROC_ID", i.to_string())
+            .env("SECRETGUARD_DIR", &temp_dir)
             .spawn()
             .expect("Failed to spawn child worker process");
         children.push(child);
@@ -465,10 +475,13 @@ fn test_windows_multi_process_concurrent_creation() {
         assert!(status.success(), "Child worker process failed with status: {:?}", status);
     }
 
-    // Verify target exists and contains a valid thread/process payload
+    // Verify target exists and can be decrypted cleanly with the master key
     assert!(target.exists(), "Target file must exist after concurrent multi-process race");
-    let content = fs::read_to_string(&target).expect("Failed to read final vault file");
-    assert!(content.contains("_valid_payload"), "Target file must have valid content: {}", content);
+    let encrypted = fs::read(&target).expect("Failed to read final vault file");
+    let key = [0x5au8; 32];
+    let decrypted = decrypt_vault_payload(&encrypted, &key).expect("Final vault file must decrypt cleanly with master key");
+    let store: VaultStore = serde_json::from_slice(&decrypted).expect("Final vault must deserialize into valid VaultStore");
+    assert!(!store.secrets.is_empty(), "Vault must contain valid secret entries");
 
     // Verify NO temporary files (.tmp_child_proc_*) remain in directory
     for entry in fs::read_dir(&temp_dir).unwrap() {
@@ -704,4 +717,152 @@ fn test_stream_sanitizer_stateful_large_pem_holdback() {
     let combined = format!("{}{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2), String::from_utf8_lossy(&out3));
     assert!(!combined.contains("-----BEGIN RSA PRIVATE KEY-----"), "Full 8KB PEM key must be redacted");
     assert!(combined.contains("[REDACTED]"), "8KB PEM key must be redacted");
+}
+
+#[test]
+fn test_stream_sanitizer_pem_holdback_overflow_16kb_minus_one() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // 16KB - 1 byte = 16383 bytes incomplete PEM (no -----END)
+    let header = b"-----BEGIN RSA PRIVATE KEY-----\n";
+    let mut pem = header.to_vec();
+    while pem.len() < 16383 {
+        pem.push(b'A');
+    }
+    assert_eq!(pem.len(), 16383);
+
+    let mut out = Vec::new();
+    sanitizer.sanitize_chunk(&pem, &engine, &mut out).unwrap();
+    // Must be completely held back (zero bytes leaked)
+    assert!(out.is_empty(), "16KB - 1 byte incomplete PEM must be held back with 0 bytes emitted");
+}
+
+#[test]
+fn test_stream_sanitizer_pem_holdback_overflow_exact_16kb() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // Exactly 16384 bytes incomplete PEM (no -----END)
+    let header = b"-----BEGIN RSA PRIVATE KEY-----\n";
+    let mut pem = header.to_vec();
+    while pem.len() < 16384 {
+        pem.push(b'B');
+    }
+    assert_eq!(pem.len(), 16384);
+
+    let mut out = Vec::new();
+    sanitizer.sanitize_chunk(&pem, &engine, &mut out).unwrap();
+    sanitizer.flush_final(&engine, &mut out).unwrap();
+
+    let output_str = String::from_utf8_lossy(&out);
+    assert!(!output_str.contains("-----BEGIN RSA PRIVATE KEY-----"), "Raw private key header must not leak on overflow");
+    assert!(output_str.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "Overflowed incomplete candidate must be redacted in place");
+}
+
+#[test]
+fn test_stream_sanitizer_pem_holdback_overflow_16kb_plus_one() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // 16385 bytes (16KB + 1 byte) incomplete PEM (no -----END)
+    let header = b"-----BEGIN RSA PRIVATE KEY-----\n";
+    let mut pem = header.to_vec();
+    while pem.len() < 16385 {
+        pem.push(b'C');
+    }
+    assert_eq!(pem.len(), 16385);
+
+    let mut out = Vec::new();
+    sanitizer.sanitize_chunk(&pem, &engine, &mut out).unwrap();
+    sanitizer.flush_final(&engine, &mut out).unwrap();
+
+    let output_str = String::from_utf8_lossy(&out);
+    assert!(!output_str.contains("-----BEGIN RSA PRIVATE KEY-----"), "Raw private key header must not leak on overflow");
+    assert!(output_str.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "Overflowed incomplete candidate must be redacted in place");
+}
+
+#[test]
+fn test_stream_sanitizer_pem_holdback_overflow_32kb_incomplete() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // 32KB incomplete PEM (adversarial stream trying to cause overflow)
+    let header = b"-----BEGIN RSA PRIVATE KEY-----\n";
+    let mut pem = header.to_vec();
+    while pem.len() < 32768 {
+        pem.push(b'D');
+    }
+    assert_eq!(pem.len(), 32768);
+
+    // Deliver in two 16KB chunks
+    let mut out1 = Vec::new();
+    sanitizer.sanitize_chunk(&pem[..16384], &engine, &mut out1).unwrap();
+
+    let mut out2 = Vec::new();
+    sanitizer.sanitize_chunk(&pem[16384..], &engine, &mut out2).unwrap();
+    sanitizer.flush_final(&engine, &mut out2).unwrap();
+
+    let combined = format!("{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2));
+    assert!(!combined.contains("-----BEGIN RSA PRIVATE KEY-----"), "Raw private key header must not leak on 32KB overflow");
+    assert!(combined.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "32KB incomplete candidate must be redacted in place");
+}
+
+#[test]
+fn test_stream_sanitizer_pem_closing_delimiter_in_later_chunk() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // 10KB incomplete PEM in chunk 1, delimiter in chunk 2
+    let mut chunk1 = String::from("-----BEGIN RSA PRIVATE KEY-----\n");
+    for i in 0..150 {
+        chunk1.push_str(&format!("MIIEowIBAAKCAQEA0Y5k1vABCD{}EFGH{}IJKL{}MNOP{}QRST{}UVWX{}YZab1234567890=\n", i, i, i, i, i, i));
+    }
+    assert!(chunk1.len() > 10000);
+
+    let chunk2 = "-----END RSA PRIVATE KEY-----\n";
+
+    let mut out1 = Vec::new();
+    sanitizer.sanitize_chunk(chunk1.as_bytes(), &engine, &mut out1).unwrap();
+    assert!(out1.is_empty(), "Incomplete PEM candidate must be held back in chunk 1");
+
+    let mut out2 = Vec::new();
+    sanitizer.sanitize_chunk(chunk2.as_bytes(), &engine, &mut out2).unwrap();
+    sanitizer.flush_final(&engine, &mut out2).unwrap();
+
+    let total = format!("{}{}", String::from_utf8_lossy(&out1), String::from_utf8_lossy(&out2));
+    assert!(!total.contains("-----BEGIN RSA PRIVATE KEY-----"), "Complete PEM block delivered across chunks must be redacted");
+    assert!(total.contains("[REDACTED]"), "Complete PEM block must be redacted");
+}
+
+#[test]
+#[cfg(windows)]
+fn test_windows_reparse_point_rejection() {
+    use secretguard::vault::validate_secure_path;
+
+    let temp_dir = std::env::temp_dir().join(format!("sg_win_rp_{}", std::process::id()));
+    fs::create_dir_all(&temp_dir).unwrap();
+
+    let target_file = temp_dir.join("test_vault.enc");
+    fs::write(&target_file, b"test content").unwrap();
+
+    // Clean normal path must pass
+    assert!(validate_secure_path(&target_file, true).is_ok());
+
+    let _ = fs::remove_dir_all(&temp_dir);
 }

@@ -24,7 +24,7 @@ runs:
       run: |
         OS="$(uname -s)"
         ARCH="$(uname -m)"
-        VERSION="v0.3.12"
+        VERSION="v0.3.13"
         INSTALL_DIR="$RUNNER_TEMP/secretguard-bin"
         mkdir -p "$INSTALL_DIR"
         

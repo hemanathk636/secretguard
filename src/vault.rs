@@ -220,6 +220,71 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
+
+        // 1. Validate every path component in the chain from root down to parent on Windows
+        if let Some(parent) = resolved_path.parent() {
+            let mut ancestors = Vec::new();
+            let mut curr = Some(parent);
+            while let Some(p) = curr {
+                if !p.as_os_str().is_empty() {
+                    ancestors.push(p);
+                }
+                curr = p.parent();
+            }
+            ancestors.reverse();
+
+            for ancestor in ancestors {
+                match fs::symlink_metadata(ancestor) {
+                    Ok(p_meta) => {
+                        let attrs = p_meta.file_attributes();
+                        if p_meta.file_type().is_symlink() || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                            return Err(format!(
+                                "Security Error: Path component '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
+                                ancestor.display()
+                            ));
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        break;
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "Security Error: Failed to inspect metadata on path component '{}': {}. Aborting to fail closed.",
+                            ancestor.display(),
+                            e
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 2. Validate target path on Windows (if existing)
+        match fs::symlink_metadata(&resolved_path) {
+            Ok(meta) => {
+                let attrs = meta.file_attributes();
+                if meta.file_type().is_symlink() || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                    return Err(format!(
+                        "Security Error: Target path '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
+                        resolved_path.display()
+                    ));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Target does not exist yet; ancestor directories are validated
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Security Error: Cannot inspect target '{}': {}. Aborting to fail closed.",
+                    resolved_path.display(),
+                    e
+                ));
+            }
+        }
+    }
     let _ = (path, is_file, &resolved_path);
     Ok(())
 }
@@ -614,28 +679,67 @@ pub fn decrypt_vault_payload(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, Str
 
 pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
     let path = get_vault_path()?;
-    match fs::symlink_metadata(&path) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() {
+    #[cfg(unix)]
+    let data = {
+        use std::io::Read;
+        let mut file = match fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(VaultStore::default());
+            }
+            Err(e) => {
                 return Err(format!(
-                    "Security Error: Vault file '{}' is a symbolic link. Aborting.",
-                    path.display()
+                    "Security Error: Failed to open vault file '{}': {}. Aborting to prevent data loss.",
+                    path.display(),
+                    e
+                ));
+            }
+        };
+
+        let sym_meta = fs::symlink_metadata(&path).map_err(|e| {
+            format!("Security Error: Cannot verify symlink status for '{}': {}", path.display(), e)
+        })?;
+        if sym_meta.file_type().is_symlink() {
+            return Err(format!(
+                "Security Error: Vault file '{}' is a symbolic link. Aborting.",
+                path.display()
+            ));
+        }
+
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| format!("Failed to read vault file at '{}': {}", path.display(), e))?;
+        buf
+    };
+
+    #[cfg(not(unix))]
+    let data = {
+        use std::io::Read;
+        match fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                let attrs = std::os::windows::fs::MetadataExt::file_attributes(&meta);
+                if meta.file_type().is_symlink() || (attrs & 0x400) != 0 {
+                    return Err(format!(
+                        "Security Error: Vault file '{}' is a symbolic link or directory junction. Aborting.",
+                        path.display()
+                    ));
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(VaultStore::default());
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Security Error: Cannot inspect vault file '{}': {}. Aborting to prevent data loss.",
+                    path.display(),
+                    e
                 ));
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(VaultStore::default());
-        }
-        Err(e) => {
-            return Err(format!(
-                "Security Error: Cannot inspect vault file '{}': {}. Aborting to prevent data loss.",
-                path.display(),
-                e
-            ));
-        }
-    }
-
-    let data = fs::read(&path).map_err(|e| format!("Failed to read vault file at '{}': {}", path.display(), e))?;
+        let mut file = fs::File::open(&path).map_err(|e| format!("Failed to open vault file at '{}': {}", path.display(), e))?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| format!("Failed to read vault file at '{}': {}", path.display(), e))?;
+        buf
+    };
     let key = derive_vault_key(passphrase)?;
     let decrypted = decrypt_vault_payload(&data, &key)?;
     let store: VaultStore = serde_json::from_slice(&decrypted)
@@ -708,6 +812,22 @@ impl Drop for SttyEchoGuard {
     }
 }
 
+#[cfg(unix)]
+struct SignalDispositionGuard {
+    old_sigint: usize,
+    old_sigterm: usize,
+}
+
+#[cfg(unix)]
+impl Drop for SignalDispositionGuard {
+    fn drop(&mut self) {
+        unsafe {
+            signal(2, std::mem::transmute(self.old_sigint));
+            signal(15, std::mem::transmute(self.old_sigterm));
+        }
+    }
+}
+
 /// Reads a password or secret from the terminal with terminal echo disabled (zero external dependencies).
 /// Fails closed if terminal echo cannot be disabled. On Unix, terminal echo is restored both explicitly,
 /// via an RAII drop guard for stack unwinding, and via catchable signal handlers (SIGINT / SIGTERM).
@@ -747,6 +867,13 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             siginterrupt(SIGINT, 1);
             siginterrupt(SIGTERM, 1);
         }
+
+        // RAII signal disposition guard guarantees previous signal handlers are restored
+        // on ANY exit path (success, error return, or panic unwinding)
+        let _sig_guard = SignalDispositionGuard {
+            old_sigint,
+            old_sigterm,
+        };
 
         // RAII guard guarantees stty echo is restored even on panic or error
         let _guard = SttyEchoGuard;
@@ -789,12 +916,6 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
 
         // Explicitly restore echo in normal userspace context (guaranteed async-signal-safe architecture)
         let _ = Command::new("stty").arg("echo").status();
-
-        // Restore previous signal handlers
-        unsafe {
-            signal(SIGINT, std::mem::transmute(old_sigint));
-            signal(SIGTERM, std::mem::transmute(old_sigterm));
-        }
 
         if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
             let sig = RECEIVED_SIGNAL.load(Ordering::SeqCst);
@@ -924,11 +1045,29 @@ impl StreamSanitizer {
 
         // Stateful candidate retention: If buffer contains an unclosed multi-line PEM block header
         // (e.g. -----BEGIN RSA PRIVATE KEY-----), hold back candidate until closing boundary
-        // (-----END ...) is received (up to MAX_STATEFUL_HOLD_LIMIT), preventing premature emission.
-        let has_unclosed_pem = self.buffer.windows(11).any(|w| w == b"-----BEGIN ")
-            && !self.buffer.windows(9).any(|w| w == b"-----END ");
-        if has_unclosed_pem && self.buffer.len() < Self::MAX_STATEFUL_HOLD_LIMIT {
-            return out.flush();
+        // (-----END ...) is received, preventing premature emission.
+        let pem_start_idx = self.buffer.windows(11).position(|w| w == b"-----BEGIN ");
+        let has_end = self.buffer.windows(9).any(|w| w == b"-----END ");
+
+        if let Some(start) = pem_start_idx {
+            if !has_end {
+                // If candidate has reached or exceeded MAX_STATEFUL_HOLD_LIMIT (16KB), fail closed:
+                // Redact the entire candidate in place so no partial key data can ever escape!
+                if (self.buffer.len() - start) >= Self::MAX_STATEFUL_HOLD_LIMIT {
+                    let mut redacted = self.buffer[..start].to_vec();
+                    redacted.extend_from_slice(b"[REDACTED_PRIVATE_KEY_BLOCK]\n");
+                    self.buffer = redacted;
+                } else {
+                    // Retain the unclosed candidate in buffer until -----END arrives.
+                    // If there is safe data before the candidate that exceeds WINDOW_SIZE, drain only the safe prefix.
+                    if start > Self::WINDOW_SIZE {
+                        let (safe_prefix, _) = Self::sanitize_bytes_internal(&self.buffer[..start], engine);
+                        out.write_all(&safe_prefix)?;
+                        self.buffer = self.buffer[start..].to_vec();
+                    }
+                    return out.flush();
+                }
+            }
         }
 
         // If buffer is larger than WINDOW_SIZE, process and emit the prefix
@@ -978,7 +1117,7 @@ pub fn sanitize_stream_buffer(buf: &[u8], engine: &SecretGuardEngine, out: &mut 
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.12)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.13)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]
