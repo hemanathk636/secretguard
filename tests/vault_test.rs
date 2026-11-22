@@ -854,6 +854,7 @@ fn test_stream_sanitizer_pem_closing_delimiter_in_later_chunk() {
 #[cfg(windows)]
 fn test_windows_reparse_point_rejection() {
     use secretguard::vault::validate_secure_path;
+    use std::process::Command;
 
     let temp_dir = std::env::temp_dir().join(format!("sg_win_rp_{}", std::process::id()));
     fs::create_dir_all(&temp_dir).unwrap();
@@ -861,10 +862,223 @@ fn test_windows_reparse_point_rejection() {
     let target_file = temp_dir.join("test_vault.enc");
     fs::write(&target_file, b"test content").unwrap();
 
-    // Clean normal path must pass
+    // 1. Clean normal path must pass
     assert!(validate_secure_path(&target_file, true).is_ok());
 
+    // 2. Real Windows Junction creation and rejection
+    let junc_src = temp_dir.join("junc_src");
+    let junc_dst = temp_dir.join("junc_dst");
+    fs::create_dir_all(&junc_src).unwrap();
+
+    let junc_output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "New-Item -ItemType Junction -Path '{}' -Target '{}'",
+                junc_dst.display(),
+                junc_src.display()
+            ),
+        ])
+        .output();
+
+    if let Ok(out) = junc_output {
+        if out.status.success() {
+            // Validating the junction directory itself must fail closed
+            let res = validate_secure_path(&junc_dst, false);
+            assert!(res.is_err(), "Windows Junction directory must be rejected");
+            let err = res.unwrap_err();
+            assert!(
+                err.contains("reparse point") || err.contains("symbolic link"),
+                "Error must state that reparse points/symlinks are prohibited: {}",
+                err
+            );
+
+            // Validating a file through the junction path must fail closed
+            let file_in_junc = junc_dst.join("vault.enc");
+            fs::write(junc_src.join("vault.enc"), b"secret data").unwrap();
+            let file_res = validate_secure_path(&file_in_junc, true);
+            assert!(file_res.is_err(), "Path through Windows Junction must be rejected");
+
+            let _ = Command::new("powershell")
+                .args(["-NoProfile", "-Command", &format!("Remove-Item -Force '{}'", junc_dst.display())])
+                .output();
+        }
+    }
+
     let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+#[cfg(windows)]
+fn test_windows_permissive_dacl_rejection() {
+    use secretguard::vault::{validate_secure_path, win32};
+    use std::ffi::c_void;
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn OpenProcessToken(ProcessHandle: *mut c_void, DesiredAccess: u32, TokenHandle: *mut *mut c_void) -> i32;
+        fn GetCurrentProcess() -> *mut c_void;
+        fn GetTokenInformation(TokenHandle: *mut c_void, TokenInformationClass: i32, TokenInformation: *mut c_void, TokenInformationLength: u32, ReturnLength: *mut u32) -> i32;
+        fn CloseHandle(hObject: *mut c_void) -> i32;
+        fn InitializeAcl(pAcl: *mut c_void, nAclLength: u32, dwAclRevision: u32) -> i32;
+        fn AddAccessAllowedAce(pAcl: *mut c_void, dwAceRevision: u32, AccessMask: u32, pSid: *const c_void) -> i32;
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!("sg_win_dacl_{}", std::process::id()));
+    fs::create_dir_all(&temp_dir).unwrap();
+
+    let target_file = temp_dir.join("insecure_vault.enc");
+    fs::write(&target_file, b"secret content").unwrap();
+
+    // Query current process user's SID
+    let mut h_token = std::ptr::null_mut();
+    unsafe { OpenProcessToken(GetCurrentProcess(), 0x0008, &mut h_token) };
+    let mut len = 0u32;
+    unsafe { GetTokenInformation(h_token, 1, std::ptr::null_mut(), 0, &mut len) };
+    let mut user_buf = vec![0u8; len as usize];
+    unsafe {
+        GetTokenInformation(h_token, 1, user_buf.as_mut_ptr() as *mut c_void, len, &mut len);
+        CloseHandle(h_token);
+    };
+    let current_user_sid = unsafe { (*(user_buf.as_ptr() as *const win32::TOKEN_USER)).User.Sid };
+
+    // 1. Test NULL DACL rejection via inspect_dacl_and_owner
+    let null_dacl_res = win32::inspect_dacl_and_owner(current_user_sid, std::ptr::null(), &target_file, true);
+    assert!(null_dacl_res.is_err(), "Target with NULL DACL must be rejected!");
+    let null_err = null_dacl_res.unwrap_err();
+    assert!(
+        null_err.contains("NULL DACL detected"),
+        "Error must indicate NULL DACL: {}",
+        null_err
+    );
+
+    // 2. Test Untrusted Owner SID rejection
+    let mut untrusted_sid = vec![0u8; 68];
+    let mut cb_sid = 68u32;
+    unsafe {
+        win32::CreateWellKnownSid(win32::WinWorldSid, std::ptr::null(), untrusted_sid.as_mut_ptr() as *mut c_void, &mut cb_sid);
+    }
+    let untrusted_owner_res = win32::inspect_dacl_and_owner(untrusted_sid.as_ptr() as *const c_void, 0x1 as *const c_void, &target_file, true);
+    assert!(untrusted_owner_res.is_err(), "Untrusted owner SID must be rejected!");
+    assert!(untrusted_owner_res.unwrap_err().contains("untrusted principal"));
+
+    // 3. Test Permissive ACE granting Everyone (WinWorldSid) Full Control
+    let mut world_sid_buf = vec![0u8; 68];
+    let mut cb_world = 68u32;
+    unsafe {
+        win32::CreateWellKnownSid(win32::WinWorldSid, std::ptr::null(), world_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_world);
+    }
+    let mut world_acl = vec![0u8; 1024];
+    unsafe {
+        InitializeAcl(world_acl.as_mut_ptr() as *mut c_void, 1024, 2);
+        AddAccessAllowedAce(world_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_ALL, world_sid_buf.as_ptr() as *const c_void);
+    }
+    let world_ace_res = win32::inspect_dacl_and_owner(current_user_sid, world_acl.as_ptr() as *const c_void, &target_file, true);
+    assert!(world_ace_res.is_err(), "Target with Everyone GENERIC_ALL ACE must be rejected!");
+    let world_err = world_ace_res.unwrap_err();
+    assert!(
+        world_err.contains("Overly permissive ACE") && world_err.contains("Everyone or Users"),
+        "Error must indicate overly permissive ACE for Everyone: {}",
+        world_err
+    );
+
+    // 4. Test Permissive ACE granting Users (WinBuiltinUsersSid) Write Data
+    let mut users_sid_buf = vec![0u8; 68];
+    let mut cb_users = 68u32;
+    unsafe {
+        win32::CreateWellKnownSid(win32::WinBuiltinUsersSid, std::ptr::null(), users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_users);
+    }
+    let mut users_acl = vec![0u8; 1024];
+    unsafe {
+        InitializeAcl(users_acl.as_mut_ptr() as *mut c_void, 1024, 2);
+        AddAccessAllowedAce(users_acl.as_mut_ptr() as *mut c_void, 2, win32::FILE_WRITE_DATA, users_sid_buf.as_ptr() as *const c_void);
+    }
+    let users_ace_res = win32::inspect_dacl_and_owner(current_user_sid, users_acl.as_ptr() as *const c_void, &target_file, true);
+    assert!(users_ace_res.is_err(), "Target with Users write ACE must be rejected!");
+    let users_err = users_ace_res.unwrap_err();
+    assert!(
+        users_err.contains("Overly permissive ACE") && users_err.contains("Everyone or Users"),
+        "Error must indicate overly permissive ACE for Users: {}",
+        users_err
+    );
+
+    // 5. Test Safe DACL granting access only to Current User
+    let mut safe_acl = vec![0u8; 1024];
+    unsafe {
+        InitializeAcl(safe_acl.as_mut_ptr() as *mut c_void, 1024, 2);
+        AddAccessAllowedAce(safe_acl.as_mut_ptr() as *mut c_void, 2, win32::GENERIC_ALL, current_user_sid);
+    }
+    let safe_res = win32::inspect_dacl_and_owner(current_user_sid, safe_acl.as_ptr() as *const c_void, &target_file, true);
+    assert!(safe_res.is_ok(), "Safe DACL restricted to owner must be accepted: {:?}", safe_res);
+
+    // 6. Test Filesystem Integration via validate_secure_path on the created target
+    let fs_res = validate_secure_path(&target_file, true);
+    assert!(fs_res.is_ok(), "Target created in temp directory with default user ownership must validate: {:?}", fs_res);
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_stream_sanitizer_multi_type_multi_block_split_across_chunks() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+
+    let engine = SecretGuardEngine::new();
+    let mut sanitizer = StreamSanitizer::new();
+
+    // 1. RSA Key (completed across chunks 1 and 2)
+    let rsa_part1 = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Y5k1vRSA";
+    let rsa_part2 = "KeyPayload0123456789=\n-----END RSA PRIVATE KEY-----\n";
+
+    // 2. EC Key (completed across chunks 2 and 3)
+    let ec_part1 = "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIEC";
+    let ec_part2 = "KeyPayload9876543210=\n-----END EC PRIVATE KEY-----\n";
+
+    // 3. OpenSSH Key (unclosed, arrives in chunk 3, flushed at EOF)
+    let openssh_part = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAE";
+
+    // Chunk 1: partial RSA
+    let mut out1 = Vec::new();
+    sanitizer.sanitize_chunk(rsa_part1.as_bytes(), &engine, &mut out1).unwrap();
+    assert!(out1.is_empty(), "Partial RSA in chunk 1 must be held back");
+
+    // Chunk 2: rest of RSA + filler + partial EC
+    let mut chunk2 = String::new();
+    chunk2.push_str(rsa_part2);
+    chunk2.push_str(&"B".repeat(5000));
+    chunk2.push('\n');
+    chunk2.push_str(ec_part1);
+
+    let mut out2 = Vec::new();
+    sanitizer.sanitize_chunk(chunk2.as_bytes(), &engine, &mut out2).unwrap();
+    let out2_str = String::from_utf8_lossy(&out2);
+
+    // RSA should be sanitized, EC should not leak
+    assert!(out2_str.contains("[REDACTED]"), "Completed RSA block must be sanitized");
+    assert!(!out2_str.contains("RSAKeyPayload0123456789"), "RSA key payload must not leak");
+    assert!(!out2_str.contains("ECKeyPayload9876543210"), "EC key payload must not leak in chunk 2");
+
+    // Chunk 3: rest of EC + filler + unclosed OpenSSH
+    let mut chunk3 = String::new();
+    chunk3.push_str(ec_part2);
+    chunk3.push_str(&"C".repeat(5000));
+    chunk3.push('\n');
+    chunk3.push_str(openssh_part);
+
+    let mut out3 = Vec::new();
+    sanitizer.sanitize_chunk(chunk3.as_bytes(), &engine, &mut out3).unwrap();
+    sanitizer.flush_final(&engine, &mut out3).unwrap();
+
+    let out3_str = String::from_utf8_lossy(&out3);
+    let total = format!("{}{}{}", String::from_utf8_lossy(&out1), out2_str, out3_str);
+
+    // All three key types must be sanitized; zero raw payload leaked
+    assert!(!total.contains("RSAKeyPayload0123456789"), "No RSA payload leaked");
+    assert!(!total.contains("ECKeyPayload9876543210"), "No EC payload leaked");
+    assert!(!total.contains("b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAE"), "No OpenSSH payload leaked");
+    assert!(total.contains("[REDACTED]"), "Completed blocks must be redacted");
+    assert!(total.contains("[REDACTED_PRIVATE_KEY_BLOCK]"), "Unclosed OpenSSH block must be redacted at EOF");
 }
 
 #[test]

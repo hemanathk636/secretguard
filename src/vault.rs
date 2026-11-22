@@ -42,11 +42,12 @@ extern "C" fn sig_flag_handler(sig: i32) {
 }
 
 #[cfg(windows)]
-mod win32 {
+#[allow(non_upper_case_globals, non_snake_case)]
+pub mod win32 {
+    use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
-    #[allow(dead_code)]
     pub const REPLACEFILE_WRITE_THROUGH: u32 = 0x00000001;
     #[allow(dead_code)]
     pub const REPLACEFILE_IGNORE_MERGE_ERRORS: u32 = 0x00000002;
@@ -55,37 +56,160 @@ mod win32 {
 
     pub const OWNER_SECURITY_INFORMATION: u32 = 0x00000001;
     pub const DACL_SECURITY_INFORMATION: u32 = 0x00000004;
+    #[allow(dead_code)]
+    pub const PROTECTED_DACL_SECURITY_INFORMATION: u32 = 0x80000000;
 
+    pub const TOKEN_QUERY: u32 = 0x0008;
+    pub const TokenUser: i32 = 1;
+    pub const AclSizeInformation: i32 = 2;
+    pub const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+    pub const WinWorldSid: i32 = 1;
+    pub const WinLocalSystemSid: i32 = 22;
+    pub const WinBuiltinAdministratorsSid: i32 = 26;
+    pub const WinBuiltinUsersSid: i32 = 27;
+
+    pub const FILE_WRITE_DATA: u32 = 0x0002;
+    pub const FILE_APPEND_DATA: u32 = 0x0004;
+    pub const FILE_WRITE_EA: u32 = 0x0010;
+    pub const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+    pub const DELETE: u32 = 0x00010000;
+    pub const WRITE_DAC: u32 = 0x00040000;
+    pub const WRITE_OWNER: u32 = 0x00080000;
+    pub const GENERIC_WRITE: u32 = 0x40000000;
+    pub const GENERIC_ALL: u32 = 0x10000000;
+
+    pub const DANGEROUS_WRITE_MASK: u32 = FILE_WRITE_DATA
+        | FILE_APPEND_DATA
+        | FILE_WRITE_EA
+        | FILE_WRITE_ATTRIBUTES
+        | DELETE
+        | WRITE_DAC
+        | WRITE_OWNER
+        | GENERIC_WRITE
+        | GENERIC_ALL;
+
+    pub const GENERIC_READ: u32 = 0x80000000;
+    pub const READ_CONTROL: u32 = 0x00020000;
+    pub const FILE_SHARE_READ: u32 = 0x00000001;
+    pub const OPEN_EXISTING: u32 = 3;
+    pub const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x00200000;
+    pub const FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080;
+    pub const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+    pub const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
+    pub const SE_FILE_OBJECT: i32 = 1;
+
+    #[repr(C)]
+    #[derive(Default, Debug)]
+    pub struct BY_HANDLE_FILE_INFORMATION {
+        pub dwFileAttributes: u32,
+        pub ftCreationTime: [u32; 2],
+        pub ftLastAccessTime: [u32; 2],
+        pub ftLastWriteTime: [u32; 2],
+        pub dwVolumeSerialNumber: u32,
+        pub nFileSizeHigh: u32,
+        pub nFileSizeLow: u32,
+        pub nNumberOfLinks: u32,
+        pub nFileIndexHigh: u32,
+        pub nFileIndexLow: u32,
+    }
+
+    #[repr(C)]
+    pub struct SID_AND_ATTRIBUTES {
+        pub Sid: *mut c_void,
+        pub Attributes: u32,
+    }
+
+    #[repr(C)]
+    pub struct TOKEN_USER {
+        pub User: SID_AND_ATTRIBUTES,
+    }
+
+    #[repr(C)]
+    #[derive(Default, Debug)]
+    pub struct ACL_SIZE_INFORMATION {
+        pub AceCount: u32,
+        pub AclBytesInUse: u32,
+        pub AclBytesFree: u32,
+    }
+
+    #[repr(C)]
+    pub struct ACE_HEADER {
+        pub AceType: u8,
+        pub AceFlags: u8,
+        pub AceSize: u16,
+    }
+
+    #[repr(C)]
+    pub struct ACCESS_ALLOWED_ACE {
+        pub Header: ACE_HEADER,
+        pub Mask: u32,
+        pub SidStart: u32,
+    }
+
+    #[link(name = "advapi32")]
+    #[link(name = "kernel32")]
     extern "system" {
         pub fn ReplaceFileW(
             lpReplacedFileName: *const u16,
             lpReplacementFileName: *const u16,
             lpBackupFileName: *const u16,
             dwReplaceFlags: u32,
-            lpExclude: *mut std::ffi::c_void,
-            lpReserved: *mut std::ffi::c_void,
+            lpExclude: *mut c_void,
+            lpReserved: *mut c_void,
         ) -> i32;
 
         pub fn GetLastError() -> u32;
 
+        pub fn GetCurrentProcess() -> *mut c_void;
+        pub fn OpenProcessToken(ProcessHandle: *mut c_void, DesiredAccess: u32, TokenHandle: *mut *mut c_void) -> i32;
+        pub fn GetTokenInformation(TokenHandle: *mut c_void, TokenInformationClass: i32, TokenInformation: *mut c_void, TokenInformationLength: u32, ReturnLength: *mut u32) -> i32;
+        pub fn CreateWellKnownSid(WellKnownSidType: i32, DomainSid: *const c_void, pSid: *mut c_void, cbSid: *mut u32) -> i32;
+        pub fn EqualSid(pSid1: *const c_void, pSid2: *const c_void) -> i32;
+        pub fn GetAclInformation(pAcl: *const c_void, pAclInformation: *mut c_void, nAclInformationLength: u32, dwAclInformationClass: i32) -> i32;
+        pub fn GetAce(pAcl: *const c_void, dwAceIndex: u32, pAce: *mut *mut c_void) -> i32;
+
+        pub fn CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *mut c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: *mut c_void,
+        ) -> *mut c_void;
+        pub fn GetFileInformationByHandle(hFile: *mut c_void, lpFileInformation: *mut BY_HANDLE_FILE_INFORMATION) -> i32;
+        pub fn CloseHandle(hObject: *mut c_void) -> i32;
+        pub fn GetSecurityInfo(
+            handle: *mut c_void,
+            ObjectType: i32,
+            SecurityInfo: u32,
+            ppsidOwner: *mut *mut c_void,
+            ppsidGroup: *mut *mut c_void,
+            ppDacl: *mut *mut c_void,
+            ppSacl: *mut *mut c_void,
+            ppSecurityDescriptor: *mut *mut c_void,
+        ) -> u32;
+        pub fn LocalFree(hMem: *mut c_void) -> *mut c_void;
+
         pub fn GetFileSecurityW(
             lpFileName: *const u16,
             RequestedInformation: u32,
-            pSecurityDescriptor: *mut std::ffi::c_void,
+            pSecurityDescriptor: *mut c_void,
             nLength: u32,
             lpnLengthNeeded: *mut u32,
         ) -> i32;
 
         pub fn GetSecurityDescriptorDacl(
-            pSecurityDescriptor: *const std::ffi::c_void,
+            pSecurityDescriptor: *const c_void,
             lpbDaclPresent: *mut i32,
-            pDacl: *mut *mut std::ffi::c_void,
+            pDacl: *mut *mut c_void,
             lpbDaclDefaulted: *mut i32,
         ) -> i32;
 
         pub fn GetSecurityDescriptorOwner(
-            pSecurityDescriptor: *const std::ffi::c_void,
-            pOwner: *mut *mut std::ffi::c_void,
+            pSecurityDescriptor: *const c_void,
+            pOwner: *mut *mut c_void,
             lpbOwnerDefaulted: *mut i32,
         ) -> i32;
     }
@@ -97,11 +221,135 @@ mod win32 {
             .collect()
     }
 
-    /// Inspects the Windows Security Descriptor on `path` to verify that:
-    /// 1. The security descriptor can be retrieved (caller has read_control permission).
-    /// 2. DACL is present and not NULL (a NULL DACL grants unconditional access to Everyone).
-    /// Fails closed if the security descriptor cannot be inspected or is improperly secured.
-    pub fn validate_windows_security_descriptor(path: &Path) -> Result<(), String> {
+    /// Core inspection logic for Windows security descriptors:
+    /// 1. Verifies Owner SID is present and matches the current user SID (or Administrators/SYSTEM).
+    /// 2. Verifies DACL is present and not NULL.
+    /// 3. Enumerates all ACEs in the DACL: strictly rejects any ACE granting write/delete/modify
+    ///    permissions to Everyone (World) or Users.
+    pub fn inspect_dacl_and_owner(p_owner: *const c_void, p_dacl: *const c_void, path: &Path, is_target: bool) -> Result<(), String> {
+        // If this is a drive root (e.g. "C:\"), it is the OS volume root mount
+        if path.parent().is_none() {
+            return Ok(());
+        }
+
+        if p_owner.is_null() {
+            return Err(format!(
+                "Security Error: Missing or NULL Owner SID on '{}'. Aborting to fail closed.",
+                path.display()
+            ));
+        }
+
+        // Get current process user's SID
+        let mut h_token = std::ptr::null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut h_token) } == 0 {
+            return Err(format!(
+                "Security Error: Failed to open process token to verify owner on '{}'. Aborting.",
+                path.display()
+            ));
+        }
+        let mut len = 0u32;
+        unsafe { GetTokenInformation(h_token, TokenUser, std::ptr::null_mut(), 0, &mut len) };
+        let mut user_buf = vec![0u8; len as usize];
+        if unsafe { GetTokenInformation(h_token, TokenUser, user_buf.as_mut_ptr() as *mut c_void, len, &mut len) } == 0 {
+            unsafe { CloseHandle(h_token) };
+            return Err(format!(
+                "Security Error: Failed to query user SID to verify owner on '{}'. Aborting.",
+                path.display()
+            ));
+        }
+        unsafe { CloseHandle(h_token) };
+        let current_user_sid = unsafe { (*(user_buf.as_ptr() as *const TOKEN_USER)).User.Sid };
+
+        // Well-known trusted administrative/system SIDs
+        let mut admin_sid_buf = vec![0u8; 68];
+        let mut cb_admin = 68u32;
+        unsafe { CreateWellKnownSid(WinBuiltinAdministratorsSid, std::ptr::null(), admin_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_admin) };
+
+        let mut system_sid_buf = vec![0u8; 68];
+        let mut cb_system = 68u32;
+        unsafe { CreateWellKnownSid(WinLocalSystemSid, std::ptr::null(), system_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_system) };
+
+        let is_user = unsafe { EqualSid(p_owner, current_user_sid) != 0 };
+        let is_admin = unsafe { EqualSid(p_owner, admin_sid_buf.as_ptr() as *const c_void) != 0 };
+        let is_system = unsafe { EqualSid(p_owner, system_sid_buf.as_ptr() as *const c_void) != 0 };
+
+        if is_target {
+            if !is_user && !is_admin {
+                return Err(format!(
+                    "Security Error: Target path '{}' is owned by an untrusted principal (SID mismatch). Expected current user or Administrators. Aborting to fail closed.",
+                    path.display()
+                ));
+            }
+        } else {
+            if !is_user && !is_admin && !is_system {
+                return Err(format!(
+                    "Security Error: Ancestor directory '{}' is owned by an untrusted principal (SID mismatch). Expected current user, SYSTEM, or Administrators. Aborting to fail closed.",
+                    path.display()
+                ));
+            }
+        }
+
+        // DACL validation
+        if p_dacl.is_null() {
+            return Err(format!(
+                "Security Error: Insecure permissions on '{}': NULL DACL detected (grants universal access). Aborting.",
+                path.display()
+            ));
+        }
+
+        let mut world_sid_buf = vec![0u8; 68];
+        let mut cb_world = 68u32;
+        unsafe { CreateWellKnownSid(WinWorldSid, std::ptr::null(), world_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_world) };
+
+        let mut users_sid_buf = vec![0u8; 68];
+        let mut cb_users = 68u32;
+        unsafe { CreateWellKnownSid(WinBuiltinUsersSid, std::ptr::null(), users_sid_buf.as_mut_ptr() as *mut c_void, &mut cb_users) };
+
+        let mut acl_size = ACL_SIZE_INFORMATION::default();
+        let ok = unsafe {
+            GetAclInformation(
+                p_dacl,
+                &mut acl_size as *mut _ as *mut c_void,
+                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        };
+        if ok == 0 {
+            return Err(format!(
+                "Security Error: Failed to inspect ACL information on '{}'. Aborting.",
+                path.display()
+            ));
+        }
+
+        for i in 0..acl_size.AceCount {
+            let mut p_ace = std::ptr::null_mut();
+            if unsafe { GetAce(p_dacl, i, &mut p_ace) } != 0 {
+                let ace = unsafe { &*(p_ace as *const ACCESS_ALLOWED_ACE) };
+                if ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE {
+                    let ace_sid = &ace.SidStart as *const u32 as *const c_void;
+                    let mask = ace.Mask;
+
+                    let is_world = unsafe { EqualSid(ace_sid, world_sid_buf.as_ptr() as *const c_void) != 0 };
+                    let is_builtin_users = unsafe { EqualSid(ace_sid, users_sid_buf.as_ptr() as *const c_void) != 0 };
+
+                    if is_world || is_builtin_users {
+                        if (mask & DANGEROUS_WRITE_MASK) != 0 {
+                            return Err(format!(
+                                "Security Error: Insecure permissions on '{}': Overly permissive ACE grants write/modify/delete access to Everyone or Users (Mask: 0x{:08x}). Aborting to fail closed.",
+                                path.display(),
+                                mask
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Inspects the Windows Security Descriptor on `path` using `GetFileSecurityW`.
+    pub fn validate_windows_security_descriptor(path: &Path, is_target: bool) -> Result<(), String> {
         let wide = to_wide_null(path);
         let sec_info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
         let mut needed = 0u32;
@@ -119,7 +367,7 @@ mod win32 {
 
         let mut buf = vec![0u8; needed as usize];
         let ok = unsafe {
-            GetFileSecurityW(wide.as_ptr(), sec_info, buf.as_mut_ptr() as *mut std::ffi::c_void, needed, &mut needed)
+            GetFileSecurityW(wide.as_ptr(), sec_info, buf.as_mut_ptr() as *mut c_void, needed, &mut needed)
         };
         if ok == 0 {
             let err = unsafe { GetLastError() };
@@ -135,21 +383,15 @@ mod win32 {
         let mut dacl_defaulted = 0i32;
         let dacl_ok = unsafe {
             GetSecurityDescriptorDacl(
-                buf.as_ptr() as *const std::ffi::c_void,
+                buf.as_ptr() as *const c_void,
                 &mut dacl_present,
                 &mut p_dacl,
                 &mut dacl_defaulted,
             )
         };
-        if dacl_ok == 0 {
+        if dacl_ok == 0 || dacl_present == 0 {
             return Err(format!(
-                "Security Error: Failed to inspect DACL on '{}'. Aborting to fail closed.",
-                path.display()
-            ));
-        }
-        if dacl_present == 0 || p_dacl.is_null() {
-            return Err(format!(
-                "Security Error: Insecure permissions on '{}': NULL DACL detected (grants universal access). Aborting.",
+                "Security Error: Insecure permissions on '{}': NULL or missing DACL detected. Aborting to fail closed.",
                 path.display()
             ));
         }
@@ -158,19 +400,51 @@ mod win32 {
         let mut owner_defaulted = 0i32;
         let owner_ok = unsafe {
             GetSecurityDescriptorOwner(
-                buf.as_ptr() as *const std::ffi::c_void,
+                buf.as_ptr() as *const c_void,
                 &mut p_owner,
                 &mut owner_defaulted,
             )
         };
-        if owner_ok == 0 || p_owner.is_null() {
+        if owner_ok == 0 {
             return Err(format!(
-                "Security Error: Insecure permissions on '{}': Missing or NULL Owner SID in Windows security descriptor. Aborting.",
+                "Security Error: Failed to query Owner SID on '{}'. Aborting to fail closed.",
                 path.display()
             ));
         }
 
-        Ok(())
+        inspect_dacl_and_owner(p_owner, p_dacl, path, is_target)
+    }
+
+    /// Inspects the Windows Security Descriptor on an open file handle using `GetSecurityInfo`.
+    pub fn validate_windows_security_descriptor_handle(handle: *mut c_void, path: &Path) -> Result<(), String> {
+        let mut p_owner = std::ptr::null_mut();
+        let mut p_dacl = std::ptr::null_mut();
+        let mut p_sd = std::ptr::null_mut();
+
+        let ret = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut p_owner,
+                std::ptr::null_mut(),
+                &mut p_dacl,
+                std::ptr::null_mut(),
+                &mut p_sd,
+            )
+        };
+
+        if ret != 0 {
+            return Err(format!(
+                "Security Error: Failed to inspect security descriptor on open handle for '{}' (Win32 error: {}). Aborting.",
+                path.display(),
+                ret
+            ));
+        }
+
+        let res = inspect_dacl_and_owner(p_owner, p_dacl, path, true);
+        unsafe { LocalFree(p_sd) };
+        res
     }
 }
 
@@ -347,7 +621,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
                                 ancestor.display()
                             ));
                         }
-                        win32::validate_windows_security_descriptor(ancestor)?;
+                        win32::validate_windows_security_descriptor(ancestor, false)?;
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                         break;
@@ -373,7 +647,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
                         resolved_path.display()
                     ));
                 }
-                win32::validate_windows_security_descriptor(&resolved_path)?;
+                win32::validate_windows_security_descriptor(&resolved_path, true)?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Target does not exist yet; ancestor directories are validated
@@ -602,6 +876,17 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
                         ));
                     }
 
+                    use std::os::unix::fs::MetadataExt;
+                    let active_uid = unsafe { libc::getuid() };
+                    if meta.uid() != active_uid {
+                        return Err(format!(
+                            "Security Error: Master key descriptor '{}' is owned by UID {} but active user is UID {}. Aborting to fail closed.",
+                            path.display(),
+                            meta.uid(),
+                            active_uid
+                        ));
+                    }
+
                     let mode = meta.permissions().mode();
                     if mode & 0o077 != 0 {
                         file.set_permissions(fs::Permissions::from_mode(0o600)).map_err(|e| {
@@ -658,7 +943,88 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
                 }
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            use std::io::Read;
+            use std::os::windows::io::FromRawHandle;
+            let wide = win32::to_wide_null(&path);
+
+            let handle = unsafe {
+                win32::CreateFileW(
+                    wide.as_ptr(),
+                    win32::GENERIC_READ | win32::READ_CONTROL,
+                    win32::FILE_SHARE_READ,
+                    std::ptr::null_mut(),
+                    win32::OPEN_EXISTING,
+                    win32::FILE_ATTRIBUTE_NORMAL | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                    std::ptr::null_mut(),
+                )
+            };
+
+            if handle != (-1isize as *mut std::ffi::c_void) && !handle.is_null() {
+                let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
+                let info_ok = unsafe { win32::GetFileInformationByHandle(handle, &mut file_info) };
+                if info_ok == 0 {
+                    unsafe { win32::CloseHandle(handle); }
+                    return Err(format!(
+                        "Security Error: Failed to query attributes on open master key handle for '{}'. Aborting.",
+                        path.display()
+                    ));
+                }
+
+                if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                    unsafe { win32::CloseHandle(handle); }
+                    return Err(format!(
+                        "Security Error: Master key handle for '{}' is a symbolic link or directory junction (reparse point). Symbolic links are strictly prohibited for master keys.",
+                        path.display()
+                    ));
+                }
+
+                if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) != 0 {
+                    unsafe { win32::CloseHandle(handle); }
+                    return Err(format!(
+                        "Security Error: Master key handle for '{}' is a directory, not a regular file. Aborting.",
+                        path.display()
+                    ));
+                }
+
+                if let Err(e) = win32::validate_windows_security_descriptor_handle(handle, &path) {
+                    unsafe { win32::CloseHandle(handle); }
+                    return Err(e);
+                }
+
+                let mut file = unsafe { fs::File::from_raw_handle(handle as std::os::windows::io::RawHandle) };
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes).map_err(|e| {
+                    format!("Failed to read master key from handle at '{}': {}", path.display(), e)
+                })?;
+
+                if bytes.len() != 32 {
+                    return Err(format!(
+                        "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
+                         Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
+                        path.display(),
+                        bytes.len()
+                    ));
+                }
+
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                return Ok(key);
+            } else {
+                let err = unsafe { win32::GetLastError() };
+                if err != 2 {
+                    // Not ERROR_FILE_NOT_FOUND (2)
+                    return Err(format!(
+                        "Security Error: Failed to open master key handle for '{}' (Win32 error: {}). Aborting to fail closed.",
+                        path.display(),
+                        err
+                    ));
+                }
+                // File does not exist yet: fall through to key creation
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             // Inspect symlink metadata first to safely catch dangling symlinks without following them
             match fs::symlink_metadata(&path) {
@@ -845,7 +1211,9 @@ pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
     #[cfg(unix)]
     let data = {
         use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
         use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
 
         #[cfg(target_os = "linux")]
         const O_NOFOLLOW: i32 = 0o400000;
@@ -882,20 +1250,111 @@ pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
             ));
         }
 
+        let active_uid = unsafe { libc::getuid() };
+        if meta.uid() != active_uid {
+            return Err(format!(
+                "Security Error: Vault descriptor '{}' is owned by UID {} but active user is UID {}. Aborting to fail closed.",
+                path.display(),
+                meta.uid(),
+                active_uid
+            ));
+        }
+
+        let mode = meta.permissions().mode();
+        if (mode & 0o077) != 0 {
+            return Err(format!(
+                "Security Error: Vault descriptor '{}' has insecure permissions ({:o}, expected 0600). Aborting to fail closed.",
+                path.display(),
+                mode & 0o777
+            ));
+        }
+
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).map_err(|e| format!("Failed to read vault file descriptor at '{}': {}", path.display(), e))?;
         buf
     };
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let data = {
+        use std::io::Read;
+        use std::os::windows::io::FromRawHandle;
+        let wide = win32::to_wide_null(&path);
+
+        let handle = unsafe {
+            win32::CreateFileW(
+                wide.as_ptr(),
+                win32::GENERIC_READ | win32::READ_CONTROL,
+                win32::FILE_SHARE_READ,
+                std::ptr::null_mut(),
+                win32::OPEN_EXISTING,
+                win32::FILE_ATTRIBUTE_NORMAL | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if handle == (-1isize as *mut std::ffi::c_void) || handle.is_null() {
+            let err = unsafe { win32::GetLastError() };
+            if err == 2 {
+                // ERROR_FILE_NOT_FOUND (2): Target does not exist yet
+                return Ok(VaultStore::default());
+            }
+            return Err(format!(
+                "Security Error: Failed to open vault handle for '{}' (Win32 error: {}). Aborting to fail closed.",
+                path.display(),
+                err
+            ));
+        }
+
+        // 1. Inspect open handle attributes to verify it is NOT a reparse point and IS a regular file
+        let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
+        let info_ok = unsafe { win32::GetFileInformationByHandle(handle, &mut file_info) };
+        if info_ok == 0 {
+            unsafe { win32::CloseHandle(handle); }
+            return Err(format!(
+                "Security Error: Failed to query attributes on open vault handle for '{}'. Aborting.",
+                path.display()
+            ));
+        }
+
+        if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+            unsafe { win32::CloseHandle(handle); }
+            return Err(format!(
+                "Security Error: Vault handle for '{}' is a symbolic link or directory junction (reparse point). Symbolic links are strictly prohibited.",
+                path.display()
+            ));
+        }
+
+        if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) != 0 {
+            unsafe { win32::CloseHandle(handle); }
+            return Err(format!(
+                "Security Error: Vault handle for '{}' is a directory, not a regular file. Aborting.",
+                path.display()
+            ));
+        }
+
+        // 2. Inspect Windows Security Descriptor directly on the open handle
+        if let Err(e) = win32::validate_windows_security_descriptor_handle(handle, &path) {
+            unsafe { win32::CloseHandle(handle); }
+            return Err(e);
+        }
+
+        // 3. Read directly from the verified open handle
+        let mut file = unsafe { fs::File::from_raw_handle(handle as std::os::windows::io::RawHandle) };
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| {
+            format!("Failed to read vault file from handle at '{}': {}", path.display(), e)
+        })?;
+        buf
+    };
+
+    #[cfg(not(any(unix, windows)))]
     let data = {
         use std::io::Read;
         match fs::symlink_metadata(&path) {
             Ok(meta) => {
-                let attrs = std::os::windows::fs::MetadataExt::file_attributes(&meta);
-                if meta.file_type().is_symlink() || (attrs & 0x400) != 0 {
+                if meta.file_type().is_symlink() {
                     return Err(format!(
-                        "Security Error: Vault file '{}' is a symbolic link or directory junction. Aborting.",
+                        "Security Error: Vault file '{}' is a symbolic link. Aborting.",
                         path.display()
                     ));
                 }
@@ -1037,11 +1496,37 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         // Install async-signal-safe flag handlers for SIGINT (Ctrl+C) and SIGTERM
         const SIGINT: i32 = 2;
         const SIGTERM: i32 = 15;
+        const SIG_ERR: usize = !0usize;
+
         let old_sigint = unsafe { signal(SIGINT, sig_flag_handler) };
+        if old_sigint == SIG_ERR {
+            let _ = Command::new("stty").arg("echo").status();
+            return Err(io::Error::last_os_error());
+        }
+
         let old_sigterm = unsafe { signal(SIGTERM, sig_flag_handler) };
-        unsafe {
-            siginterrupt(SIGINT, 1);
-            siginterrupt(SIGTERM, 1);
+        if old_sigterm == SIG_ERR {
+            unsafe { signal(SIGINT, std::mem::transmute(old_sigint)); }
+            let _ = Command::new("stty").arg("echo").status();
+            return Err(io::Error::last_os_error());
+        }
+
+        if unsafe { siginterrupt(SIGINT, 1) } != 0 {
+            unsafe {
+                signal(SIGINT, std::mem::transmute(old_sigint));
+                signal(SIGTERM, std::mem::transmute(old_sigterm));
+            }
+            let _ = Command::new("stty").arg("echo").status();
+            return Err(io::Error::last_os_error());
+        }
+
+        if unsafe { siginterrupt(SIGTERM, 1) } != 0 {
+            unsafe {
+                signal(SIGINT, std::mem::transmute(old_sigint));
+                signal(SIGTERM, std::mem::transmute(old_sigterm));
+            }
+            let _ = Command::new("stty").arg("echo").status();
+            return Err(io::Error::last_os_error());
         }
 
         // RAII signal disposition guard guarantees previous signal handlers are restored
