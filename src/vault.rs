@@ -33,12 +33,85 @@ extern "C" {
     fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
     fn siginterrupt(signum: i32, flag: i32) -> i32;
     fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
+    fn open(path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
+    fn openat(dirfd: i32, path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
+    fn close(fd: i32) -> i32;
+}
+
+#[cfg(unix)]
+pub mod unix_flags {
+    pub const O_RDONLY: i32 = 0;
+    pub const O_RDWR: i32 = 2;
+
+    #[cfg(target_os = "linux")]
+    pub const O_CREAT: i32 = 0o100;
+    #[cfg(target_os = "macos")]
+    pub const O_CREAT: i32 = 0x0200;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub const O_CREAT: i32 = 0o100;
+
+    #[cfg(target_os = "linux")]
+    pub const O_EXCL: i32 = 0o200;
+    #[cfg(target_os = "macos")]
+    pub const O_EXCL: i32 = 0x0800;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub const O_EXCL: i32 = 0o200;
+
+    #[cfg(target_os = "linux")]
+    pub const O_DIRECTORY: i32 = 0o200000;
+    #[cfg(target_os = "macos")]
+    pub const O_DIRECTORY: i32 = 0x00100000;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub const O_DIRECTORY: i32 = 0o200000;
+
+    #[cfg(target_os = "linux")]
+    pub const O_NOFOLLOW: i32 = 0o400000;
+    #[cfg(target_os = "macos")]
+    pub const O_NOFOLLOW: i32 = 0x00000100;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub const O_NOFOLLOW: i32 = 0o400000;
+
+    #[cfg(target_os = "linux")]
+    pub const O_CLOEXEC: i32 = 0o2000000;
+    #[cfg(target_os = "macos")]
+    pub const O_CLOEXEC: i32 = 0x01000000;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub const O_CLOEXEC: i32 = 0o2000000;
+}
+
+#[cfg(unix)]
+struct FdGuard(pub i32);
+
+#[cfg(unix)]
+impl Drop for FdGuard {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            unsafe { close(self.0); }
+        }
+    }
 }
 
 #[cfg(unix)]
 extern "C" fn sig_flag_handler(sig: i32) {
     TERMINAL_INTERRUPTED.store(true, Ordering::SeqCst);
     RECEIVED_SIGNAL.store(sig, Ordering::SeqCst);
+}
+
+#[cfg(windows)]
+use std::ffi::c_void;
+
+#[cfg(windows)]
+pub struct AncestorGuards(pub Vec<*mut c_void>);
+
+#[cfg(windows)]
+impl Drop for AncestorGuards {
+    fn drop(&mut self) {
+        for &h in &self.0 {
+            if h != (-1isize as *mut c_void) && !h.is_null() {
+                unsafe { win32::CloseHandle(h); }
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -105,6 +178,7 @@ pub mod win32 {
     pub const FILE_SHARE_WRITE: u32 = 0x00000002;
     pub const FILE_SHARE_DELETE: u32 = 0x00000004;
     pub const OPEN_EXISTING: u32 = 3;
+    pub const CREATE_NEW: u32 = 1;
     pub const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x00200000;
     pub const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
     pub const FILE_ATTRIBUTE_NORMAL: u32 = 0x00000080;
@@ -668,6 +742,8 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
         // 1. Validate every path component in the chain from root down to parent on Windows using real handles
+        // Ancestor directory handles are opened without FILE_SHARE_DELETE and held open to lock the path against TOCTOU races
+        let mut ancestor_guards = AncestorGuards(Vec::new());
         if let Some(parent) = resolved_path.parent() {
             let mut ancestors = Vec::new();
             let mut curr = Some(parent);
@@ -685,7 +761,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
                     win32::CreateFileW(
                         wide.as_ptr(),
                         win32::GENERIC_READ | win32::READ_CONTROL,
-                        win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE | win32::FILE_SHARE_DELETE,
+                        win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE, // Omit FILE_SHARE_DELETE to prevent rename/delete races
                         std::ptr::null_mut(),
                         win32::OPEN_EXISTING,
                         win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
@@ -693,7 +769,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
                     )
                 };
 
-                if h_dir != (-1isize as *mut std::ffi::c_void) && !h_dir.is_null() {
+                if h_dir != (-1isize as *mut c_void) && !h_dir.is_null() {
                     let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
                     let info_ok = unsafe { win32::GetFileInformationByHandle(h_dir, &mut file_info) };
                     if info_ok == 0 {
@@ -721,8 +797,11 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
                     }
 
                     let val_res = win32::validate_windows_security_descriptor_handle(h_dir, ancestor, false);
-                    unsafe { win32::CloseHandle(h_dir); }
-                    val_res?;
+                    if let Err(e) = val_res {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(e);
+                    }
+                    ancestor_guards.0.push(h_dir);
                 } else {
                     let err = unsafe { win32::GetLastError() };
                     if err == 2 || err == 3 {
@@ -738,7 +817,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
             }
         }
 
-        // 2. Validate target path on Windows (if existing) using handle-based inspection
+        // 2. Validate target path on Windows (if existing) using handle-based inspection while ancestor handles are held
         let wide_target = win32::to_wide_null(&resolved_path);
         let h_target = unsafe {
             win32::CreateFileW(
@@ -752,7 +831,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
             )
         };
 
-        if h_target != (-1isize as *mut std::ffi::c_void) && !h_target.is_null() {
+        if h_target != (-1isize as *mut c_void) && !h_target.is_null() {
             let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
             let info_ok = unsafe { win32::GetFileInformationByHandle(h_target, &mut file_info) };
             if info_ok == 0 {
@@ -793,9 +872,656 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
                 ));
             }
         }
+        drop(ancestor_guards);
     }
     let _ = (path, is_file, &resolved_path);
     Ok(())
+}
+
+/// Opens a file securely for reading, guaranteeing immunity against symlink and TOCTOU directory swap attacks:
+/// - On Unix: walks all ancestor directories descriptor-relatively using `openat` with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`,
+///   verifying UID ownership and non-writable permissions on each descriptor, and opens the target file relative to the
+///   verified parent directory descriptor using `openat` with `O_NOFOLLOW | O_CLOEXEC`.
+/// - On Windows: locks every ancestor directory by opening its handle WITHOUT `FILE_SHARE_DELETE` (so the Windows kernel
+///   blocks any concurrent rename, move, unlink, or deletion of intermediate directories), verifies no reparse point,
+///   opens the target file handle with `FILE_FLAG_OPEN_REPARSE_POINT` while ancestor handles are held, verifies non-reparse
+///   and regular file attributes, validates the Security Descriptor directly on the handle (enforcing the strict target allow-list),
+///   and returns the open handle.
+pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String> {
+    for comp in path.components() {
+        if comp == std::path::Component::ParentDir {
+            return Err(format!(
+                "Security Error: Path '{}' contains parent directory ('..') traversal. Aborting.",
+                path.display()
+            ));
+        }
+    }
+
+    let resolved_path = if path.is_relative() {
+        let cwd = std::env::current_dir().map_err(|e| {
+            format!("Security Error: Cannot determine current working directory: {}. Aborting.", e)
+        })?;
+        cwd.join(path)
+    } else {
+        path.to_path_buf()
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::io::FromRawFd;
+
+        let parent = match resolved_path.parent() {
+            Some(p) => p,
+            None => return Err(format!("Security Error: Path '{}' has no parent directory.", resolved_path.display())),
+        };
+
+        let file_name = match resolved_path.file_name() {
+            Some(f) => f,
+            None => return Err(format!("Security Error: Path '{}' has no file name.", resolved_path.display())),
+        };
+
+        let active_uid = unsafe { getuid() };
+
+        let root_c = std::ffi::CString::new("/").map_err(|e| e.to_string())?;
+        let root_fd = unsafe {
+            open(
+                root_c.as_ptr(),
+                unix_flags::O_RDONLY | unix_flags::O_DIRECTORY | unix_flags::O_CLOEXEC,
+                0,
+            )
+        };
+        if root_fd < 0 {
+            return Err(format!("Security Error: Failed to open root directory descriptor: {}.", io::Error::last_os_error()));
+        }
+        let mut curr_guard = FdGuard(root_fd);
+
+        // Validate root directory descriptor
+        {
+            let root_ref = std::mem::ManuallyDrop::new(unsafe { fs::File::from_raw_fd(curr_guard.0) });
+            let meta = root_ref.metadata().map_err(|e| {
+                format!("Security Error: Failed to stat root directory: {}", e)
+            })?;
+            if meta.uid() != 0 && meta.uid() != active_uid {
+                return Err(format!("Security Error: Root directory owned by unexpected UID {}.", meta.uid()));
+            }
+            let mode = meta.permissions().mode();
+            if meta.uid() == 0 {
+                let is_sticky = (mode & 0o1000) != 0;
+                if !is_sticky && (mode & 0o022) != 0 {
+                    return Err("Security Error: Root directory is writable by group/others without sticky bit.".to_string());
+                }
+            } else if (mode & 0o022) != 0 {
+                return Err("Security Error: Root directory has insecure group/world-writable permissions.".to_string());
+            }
+        }
+
+        // Traverse ancestors descriptor-relatively using openat
+        for comp in parent.components() {
+            match comp {
+                std::path::Component::RootDir | std::path::Component::CurDir => continue,
+                std::path::Component::Normal(c) => {
+                    let c_bytes = c.as_bytes();
+                    let c_str = std::ffi::CString::new(c_bytes).map_err(|e| e.to_string())?;
+
+                    let next_fd = unsafe {
+                        openat(
+                            curr_guard.0,
+                            c_str.as_ptr(),
+                            unix_flags::O_RDONLY | unix_flags::O_DIRECTORY | unix_flags::O_NOFOLLOW | unix_flags::O_CLOEXEC,
+                            0,
+                        )
+                    };
+
+                    if next_fd < 0 {
+                        let err = io::Error::last_os_error();
+                        if err.kind() == io::ErrorKind::NotFound {
+                            return Ok(None);
+                        }
+                        return Err(format!(
+                            "Security Error: Failed to open directory descriptor for component '{}' relative to parent (O_NOFOLLOW): {}. Aborting.",
+                            c.to_string_lossy(),
+                            err
+                        ));
+                    }
+
+                    // Validate intermediate descriptor
+                    let next_ref = std::mem::ManuallyDrop::new(unsafe { fs::File::from_raw_fd(next_fd) });
+                    let meta = next_ref.metadata().map_err(|e| {
+                        unsafe { close(next_fd); }
+                        format!("Security Error: Failed to stat descriptor for '{}': {}", c.to_string_lossy(), e)
+                    })?;
+
+                    if !meta.is_dir() {
+                        unsafe { close(next_fd); }
+                        return Err(format!("Security Error: Path component '{}' is not a directory.", c.to_string_lossy()));
+                    }
+
+                    if meta.uid() != active_uid && meta.uid() != 0 {
+                        unsafe { close(next_fd); }
+                        return Err(format!(
+                            "Security Error: Path component '{}' descriptor is owned by UID {} (expected active user UID {} or root).",
+                            c.to_string_lossy(),
+                            meta.uid(),
+                            active_uid
+                        ));
+                    }
+
+                    let mode = meta.permissions().mode();
+                    if meta.uid() == 0 {
+                        let is_sticky = (mode & 0o1000) != 0;
+                        if !is_sticky && (mode & 0o022) != 0 {
+                            unsafe { close(next_fd); }
+                            return Err(format!(
+                                "Security Error: Root-owned directory '{}' is group/world-writable ({:o}) without sticky bit.",
+                                c.to_string_lossy(),
+                                mode & 0o777
+                            ));
+                        }
+                    } else if (mode & 0o022) != 0 {
+                        unsafe { close(next_fd); }
+                        return Err(format!(
+                            "Security Error: Directory component '{}' has insecure permissions ({:o}).",
+                            c.to_string_lossy(),
+                            mode & 0o777
+                        ));
+                    }
+
+                    curr_guard = FdGuard(next_fd);
+                }
+                std::path::Component::ParentDir | std::path::Component::Prefix(_) => {
+                    return Err("Security Error: Invalid path component.".to_string());
+                }
+            }
+        }
+
+        // Open target file strictly relative to verified parent descriptor with openat + O_NOFOLLOW
+        let file_cstr = std::ffi::CString::new(file_name.as_bytes()).map_err(|e| e.to_string())?;
+        let file_fd = unsafe {
+            openat(
+                curr_guard.0,
+                file_cstr.as_ptr(),
+                unix_flags::O_RDONLY | unix_flags::O_NOFOLLOW | unix_flags::O_CLOEXEC,
+                0,
+            )
+        };
+        drop(curr_guard);
+
+        if file_fd < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(format!(
+                "Security Error: Failed to open target file '{}' relative to parent descriptor (O_NOFOLLOW): {}. Aborting.",
+                resolved_path.display(),
+                err
+            ));
+        }
+
+        let file = unsafe { fs::File::from_raw_fd(file_fd) };
+        let meta = file.metadata().map_err(|e| {
+            format!("Security Error: Cannot stat target file descriptor '{}': {}", resolved_path.display(), e)
+        })?;
+
+        if !meta.is_file() {
+            return Err(format!(
+                "Security Error: Target path '{}' is not a regular file (symlink or special device).",
+                resolved_path.display()
+            ));
+        }
+
+        if meta.uid() != active_uid {
+            return Err(format!(
+                "Security Error: Target file descriptor '{}' is owned by UID {} but active user is UID {}. Aborting.",
+                resolved_path.display(),
+                meta.uid(),
+                active_uid
+            ));
+        }
+
+        let mode = meta.permissions().mode();
+        if (mode & 0o077) != 0 {
+            file.set_permissions(fs::Permissions::from_mode(0o600)).map_err(|e| {
+                format!("Security Error: Failed to tighten file permissions on '{}': {}", resolved_path.display(), e)
+            })?;
+            let re_meta = file.metadata().map_err(|e| {
+                format!("Security Error: Failed to re-verify permissions on '{}': {}", resolved_path.display(), e)
+            })?;
+            if (re_meta.permissions().mode() & 0o077) != 0 {
+                return Err(format!("Security Error: File permissions on '{}' remain insecure ({:o}).", resolved_path.display(), re_meta.permissions().mode() & 0o777));
+            }
+        }
+
+        return Ok(Some(file));
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::FromRawHandle;
+
+        let mut ancestor_guards = AncestorGuards(Vec::new());
+        if let Some(parent) = resolved_path.parent() {
+            let mut ancestors = Vec::new();
+            let mut curr = Some(parent);
+            while let Some(p) = curr {
+                if !p.as_os_str().is_empty() {
+                    ancestors.push(p);
+                }
+                curr = p.parent();
+            }
+            ancestors.reverse();
+
+            for ancestor in ancestors {
+                let wide = win32::to_wide_null(ancestor);
+                let h_dir = unsafe {
+                    win32::CreateFileW(
+                        wide.as_ptr(),
+                        win32::GENERIC_READ | win32::READ_CONTROL,
+                        win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE, // Omit FILE_SHARE_DELETE to prevent rename/delete races
+                        std::ptr::null_mut(),
+                        win32::OPEN_EXISTING,
+                        win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                        std::ptr::null_mut(),
+                    )
+                };
+
+                if h_dir != (-1isize as *mut c_void) && !h_dir.is_null() {
+                    let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
+                    let info_ok = unsafe { win32::GetFileInformationByHandle(h_dir, &mut file_info) };
+                    if info_ok == 0 {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(format!(
+                            "Security Error: Failed to query attributes on open handle for '{}'. Aborting.",
+                            ancestor.display()
+                        ));
+                    }
+
+                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(format!(
+                            "Security Error: Path component '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
+                            ancestor.display()
+                        ));
+                    }
+
+                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) == 0 {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(format!(
+                            "Security Error: Path component '{}' is not a directory. Aborting.",
+                            ancestor.display()
+                        ));
+                    }
+
+                    let val_res = win32::validate_windows_security_descriptor_handle(h_dir, ancestor, false);
+                    if let Err(e) = val_res {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(e);
+                    }
+                    ancestor_guards.0.push(h_dir);
+                } else {
+                    let err = unsafe { win32::GetLastError() };
+                    if err == 2 || err == 3 {
+                        return Ok(None);
+                    }
+                    return Err(format!(
+                        "Security Error: Cannot open directory handle for path component '{}' (Win32 error: {}). Aborting to fail closed.",
+                        ancestor.display(),
+                        err
+                    ));
+                }
+            }
+        }
+
+        // WHILE ancestor handles are actively held (locking path against TOCTOU rename/delete), open target file handle
+        let wide_target = win32::to_wide_null(&resolved_path);
+        let h_target = unsafe {
+            win32::CreateFileW(
+                wide_target.as_ptr(),
+                win32::GENERIC_READ | win32::READ_CONTROL,
+                win32::FILE_SHARE_READ,
+                std::ptr::null_mut(),
+                win32::OPEN_EXISTING,
+                win32::FILE_ATTRIBUTE_NORMAL | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if h_target == (-1isize as *mut c_void) || h_target.is_null() {
+            let err = unsafe { win32::GetLastError() };
+            if err == 2 || err == 3 {
+                return Ok(None);
+            }
+            return Err(format!(
+                "Security Error: Failed to open target handle for '{}' (Win32 error: {}). Aborting.",
+                resolved_path.display(),
+                err
+            ));
+        }
+
+        let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
+        let info_ok = unsafe { win32::GetFileInformationByHandle(h_target, &mut file_info) };
+        if info_ok == 0 {
+            unsafe { win32::CloseHandle(h_target); }
+            return Err(format!(
+                "Security Error: Failed to query attributes on open target handle for '{}'. Aborting.",
+                resolved_path.display()
+            ));
+        }
+
+        if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+            unsafe { win32::CloseHandle(h_target); }
+            return Err(format!(
+                "Security Error: Target path '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited.",
+                resolved_path.display()
+            ));
+        }
+
+        if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) != 0 {
+            unsafe { win32::CloseHandle(h_target); }
+            return Err(format!(
+                "Security Error: Target path '{}' is a directory, not a regular file. Aborting.",
+                resolved_path.display()
+            ));
+        }
+
+        let val_res = win32::validate_windows_security_descriptor_handle(h_target, &resolved_path, true);
+        if let Err(e) = val_res {
+            unsafe { win32::CloseHandle(h_target); }
+            return Err(e);
+        }
+
+        drop(ancestor_guards); // Release ancestor locks now that target handle is verified and anchored
+
+        let file = unsafe { fs::File::from_raw_handle(h_target as std::os::windows::io::RawHandle) };
+        return Ok(Some(file));
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        match fs::symlink_metadata(&resolved_path) {
+            Ok(m) => {
+                if m.file_type().is_symlink() {
+                    return Err(format!("Security Error: Path '{}' is a symlink. Aborting.", resolved_path.display()));
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("Security Error: Cannot stat '{}': {}", resolved_path.display(), e)),
+        }
+        let f = fs::File::open(&resolved_path).map_err(|e| format!("Failed to open '{}': {}", resolved_path.display(), e))?;
+        Ok(Some(f))
+    }
+}
+
+/// Exclusively creates a file, guaranteeing immunity against symlink and TOCTOU directory swap attacks:
+/// - On Unix: walks all ancestor directories descriptor-relatively using `openat` with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`,
+///   and creates the target file relative to the verified parent descriptor using `openat` with `O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC`.
+/// - On Windows: locks every ancestor directory by opening its handle WITHOUT `FILE_SHARE_DELETE`,
+///   creates the target file handle exclusively with `CREATE_NEW | FILE_FLAG_OPEN_REPARSE_POINT` while ancestor handles are held,
+///   verifies attributes and Security Descriptor directly on the handle, and returns the open handle.
+pub fn create_secure_file_exclusive(path: &Path, mode: u32) -> Result<fs::File, String> {
+    for comp in path.components() {
+        if comp == std::path::Component::ParentDir {
+            return Err(format!(
+                "Security Error: Path '{}' contains parent directory ('..') traversal. Aborting.",
+                path.display()
+            ));
+        }
+    }
+
+    let resolved_path = if path.is_relative() {
+        let cwd = std::env::current_dir().map_err(|e| {
+            format!("Security Error: Cannot determine current working directory: {}. Aborting.", e)
+        })?;
+        cwd.join(path)
+    } else {
+        path.to_path_buf()
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::io::FromRawFd;
+
+        let parent = match resolved_path.parent() {
+            Some(p) => p,
+            None => return Err(format!("Security Error: Path '{}' has no parent directory.", resolved_path.display())),
+        };
+
+        let file_name = match resolved_path.file_name() {
+            Some(f) => f,
+            None => return Err(format!("Security Error: Path '{}' has no file name.", resolved_path.display())),
+        };
+
+        let active_uid = unsafe { getuid() };
+
+        let root_c = std::ffi::CString::new("/").map_err(|e| e.to_string())?;
+        let root_fd = unsafe {
+            open(
+                root_c.as_ptr(),
+                unix_flags::O_RDONLY | unix_flags::O_DIRECTORY | unix_flags::O_CLOEXEC,
+                0,
+            )
+        };
+        if root_fd < 0 {
+            return Err(format!("Security Error: Failed to open root directory descriptor: {}.", io::Error::last_os_error()));
+        }
+        let mut curr_guard = FdGuard(root_fd);
+
+        for comp in parent.components() {
+            match comp {
+                std::path::Component::RootDir | std::path::Component::CurDir => continue,
+                std::path::Component::Normal(c) => {
+                    let c_bytes = c.as_bytes();
+                    let c_str = std::ffi::CString::new(c_bytes).map_err(|e| e.to_string())?;
+
+                    let next_fd = unsafe {
+                        openat(
+                            curr_guard.0,
+                            c_str.as_ptr(),
+                            unix_flags::O_RDONLY | unix_flags::O_DIRECTORY | unix_flags::O_NOFOLLOW | unix_flags::O_CLOEXEC,
+                            0,
+                        )
+                    };
+
+                    if next_fd < 0 {
+                        let err = io::Error::last_os_error();
+                        return Err(format!(
+                            "Security Error: Failed to open directory descriptor for component '{}' relative to parent (O_NOFOLLOW): {}. Aborting.",
+                            c.to_string_lossy(),
+                            err
+                        ));
+                    }
+
+                    let next_ref = std::mem::ManuallyDrop::new(unsafe { fs::File::from_raw_fd(next_fd) });
+                    let meta = next_ref.metadata().map_err(|e| {
+                        unsafe { close(next_fd); }
+                        format!("Security Error: Failed to stat descriptor for '{}': {}", c.to_string_lossy(), e)
+                    })?;
+
+                    if !meta.is_dir() {
+                        unsafe { close(next_fd); }
+                        return Err(format!("Security Error: Path component '{}' is not a directory.", c.to_string_lossy()));
+                    }
+
+                    if meta.uid() != active_uid && meta.uid() != 0 {
+                        unsafe { close(next_fd); }
+                        return Err(format!(
+                            "Security Error: Path component '{}' descriptor is owned by UID {} (expected active user UID {} or root).",
+                            c.to_string_lossy(),
+                            meta.uid(),
+                            active_uid
+                        ));
+                    }
+
+                    curr_guard = FdGuard(next_fd);
+                }
+                std::path::Component::ParentDir | std::path::Component::Prefix(_) => {
+                    return Err("Security Error: Invalid path component.".to_string());
+                }
+            }
+        }
+
+        // Exclusively create target file relative to verified parent descriptor using openat with O_CREAT | O_EXCL | O_NOFOLLOW
+        let file_cstr = std::ffi::CString::new(file_name.as_bytes()).map_err(|e| e.to_string())?;
+        let file_fd = unsafe {
+            openat(
+                curr_guard.0,
+                file_cstr.as_ptr(),
+                unix_flags::O_RDWR | unix_flags::O_CREAT | unix_flags::O_EXCL | unix_flags::O_NOFOLLOW | unix_flags::O_CLOEXEC,
+                mode,
+            )
+        };
+        drop(curr_guard);
+
+        if file_fd < 0 {
+            let err = io::Error::last_os_error();
+            return Err(format!(
+                "Security Error: Failed to create target file '{}' exclusively relative to parent descriptor (O_CREAT | O_EXCL | O_NOFOLLOW): {}. Aborting.",
+                resolved_path.display(),
+                err
+            ));
+        }
+
+        let file = unsafe { fs::File::from_raw_fd(file_fd) };
+        let meta = file.metadata().map_err(|e| {
+            format!("Security Error: Cannot stat newly created file descriptor '{}': {}", resolved_path.display(), e)
+        })?;
+
+        if !meta.is_file() {
+            return Err(format!("Security Error: Newly created target '{}' is not a regular file.", resolved_path.display()));
+        }
+
+        if meta.uid() != active_uid {
+            return Err(format!("Security Error: Newly created file '{}' is owned by UID {} (expected {}).", resolved_path.display(), meta.uid(), active_uid));
+        }
+
+        return Ok(file);
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::FromRawHandle;
+        let _ = mode;
+
+        let mut ancestor_guards = AncestorGuards(Vec::new());
+        if let Some(parent) = resolved_path.parent() {
+            let mut ancestors = Vec::new();
+            let mut curr = Some(parent);
+            while let Some(p) = curr {
+                if !p.as_os_str().is_empty() {
+                    ancestors.push(p);
+                }
+                curr = p.parent();
+            }
+            ancestors.reverse();
+
+            for ancestor in ancestors {
+                let wide = win32::to_wide_null(ancestor);
+                let h_dir = unsafe {
+                    win32::CreateFileW(
+                        wide.as_ptr(),
+                        win32::GENERIC_READ | win32::READ_CONTROL,
+                        win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE, // Omit FILE_SHARE_DELETE to prevent rename/delete races
+                        std::ptr::null_mut(),
+                        win32::OPEN_EXISTING,
+                        win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                        std::ptr::null_mut(),
+                    )
+                };
+
+                if h_dir != (-1isize as *mut c_void) && !h_dir.is_null() {
+                    let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
+                    let info_ok = unsafe { win32::GetFileInformationByHandle(h_dir, &mut file_info) };
+                    if info_ok == 0 {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(format!(
+                            "Security Error: Failed to query attributes on open handle for '{}'. Aborting.",
+                            ancestor.display()
+                        ));
+                    }
+
+                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(format!(
+                            "Security Error: Path component '{}' is a symbolic link or directory junction (reparse point). Reparse points are strictly prohibited for vault storage.",
+                            ancestor.display()
+                        ));
+                    }
+
+                    if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) == 0 {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(format!(
+                            "Security Error: Path component '{}' is not a directory. Aborting.",
+                            ancestor.display()
+                        ));
+                    }
+
+                    let val_res = win32::validate_windows_security_descriptor_handle(h_dir, ancestor, false);
+                    if let Err(e) = val_res {
+                        unsafe { win32::CloseHandle(h_dir); }
+                        return Err(e);
+                    }
+                    ancestor_guards.0.push(h_dir);
+                } else {
+                    let err = unsafe { win32::GetLastError() };
+                    return Err(format!(
+                        "Security Error: Cannot open directory handle for path component '{}' (Win32 error: {}). Aborting to fail closed.",
+                        ancestor.display(),
+                        err
+                    ));
+                }
+            }
+        }
+
+        // WHILE ancestor handles are actively held, open new target file exclusively
+        let wide_target = win32::to_wide_null(&resolved_path);
+        let h_target = unsafe {
+            win32::CreateFileW(
+                wide_target.as_ptr(),
+                win32::GENERIC_READ | win32::GENERIC_WRITE | win32::READ_CONTROL,
+                0, // Exclusive access: no sharing
+                std::ptr::null_mut(),
+                win32::CREATE_NEW,
+                win32::FILE_ATTRIBUTE_NORMAL | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if h_target == (-1isize as *mut c_void) || h_target.is_null() {
+            let err = unsafe { win32::GetLastError() };
+            return Err(format!(
+                "Security Error: Failed to create target file exclusively at '{}' (Win32 error: {}). Aborting.",
+                resolved_path.display(),
+                err
+            ));
+        }
+
+        let val_res = win32::validate_windows_security_descriptor_handle(h_target, &resolved_path, true);
+        if let Err(e) = val_res {
+            unsafe { win32::CloseHandle(h_target); }
+            let _ = fs::remove_file(&resolved_path);
+            return Err(e);
+        }
+
+        drop(ancestor_guards); // Release ancestor locks now that target file is created, verified, and anchored
+
+        let file = unsafe { fs::File::from_raw_handle(h_target as std::os::windows::io::RawHandle) };
+        return Ok(file);
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = mode;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&resolved_path)
+            .map_err(|e| format!("Failed to create '{}' exclusively: {}", resolved_path.display(), e))
+    }
 }
 
 /// Resolves or creates a secure, private per-user directory for SecretGuard state (never falls back to shared /tmp).
@@ -970,7 +1696,7 @@ pub fn parse_password_bytes(bytes: &[u8]) -> io::Result<String> {
 }
 
 /// Retrieves or generates a genuine 256-bit cryptographically secure random master key via CSPRNG (OsRng)
-/// with atomic, concurrency-safe 0600 file creation on Unix.
+/// with atomic, descriptor-relative/anchored 0600 file creation.
 ///
 /// Returns Err if the master key path is a symlink (including dangling symlinks),
 /// if permissions are insecure and cannot be tightened, or if the key length is corrupted.
@@ -979,308 +1705,63 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
 
     // Bounded retry loop (max 3 attempts) to eliminate recursion and prevent stack overflow
     for _attempt in 0..3 {
-        #[cfg(unix)]
-        {
+        if let Some(mut file) = open_secure_file_for_read(&path)? {
             use std::io::Read;
-            use std::os::unix::fs::OpenOptionsExt;
-            use std::os::unix::fs::PermissionsExt;
-
-            #[cfg(target_os = "linux")]
-            const O_NOFOLLOW: i32 = 0o400000;
-            #[cfg(target_os = "macos")]
-            const O_NOFOLLOW: i32 = 0x0100;
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            const O_NOFOLLOW: i32 = 0o400000;
-
-            let mut opts = fs::OpenOptions::new();
-            opts.read(true);
-            opts.custom_flags(O_NOFOLLOW);
-
-            match opts.open(&path) {
-                Ok(mut file) => {
-                    let meta = file.metadata().map_err(|e| {
-                        format!("Security Error: Cannot inspect master key descriptor for '{}': {}", path.display(), e)
-                    })?;
-
-                    if !meta.is_file() {
-                        return Err(format!(
-                            "Security Error: Master key path '{}' is not a regular file (symlink or special device). Symbolic links are strictly prohibited for master keys to prevent hijacking.",
-                            path.display()
-                        ));
-                    }
-
-                    use std::os::unix::fs::MetadataExt;
-                    let active_uid = unsafe { libc::getuid() };
-                    if meta.uid() != active_uid {
-                        return Err(format!(
-                            "Security Error: Master key descriptor '{}' is owned by UID {} but active user is UID {}. Aborting to fail closed.",
-                            path.display(),
-                            meta.uid(),
-                            active_uid
-                        ));
-                    }
-
-                    let mode = meta.permissions().mode();
-                    if mode & 0o077 != 0 {
-                        file.set_permissions(fs::Permissions::from_mode(0o600)).map_err(|e| {
-                            format!(
-                                "Security Error: Master key file '{}' permissions ({:o}) are insecure and could not be tightened to 0600: {}. Aborting for security.",
-                                path.display(),
-                                mode & 0o777,
-                                e
-                            )
-                        })?;
-                        let re_meta = file.metadata().map_err(|e| {
-                            format!("Failed to re-verify master key descriptor metadata after permission update: {}", e)
-                        })?;
-                        if re_meta.permissions().mode() & 0o077 != 0 {
-                            return Err(format!(
-                                "Security Error: Master key permissions on '{}' remain insecure ({:o}). Operation aborted.",
-                                path.display(),
-                                re_meta.permissions().mode() & 0o777
-                            ));
-                        }
-                    }
-
-                    let mut bytes = Vec::new();
-                    file.read_to_end(&mut bytes).map_err(|e| {
-                        format!(
-                            "Permission denied or I/O error reading master key descriptor at '{}': {}. Aborting to protect vault integrity.",
-                            path.display(),
-                            e
-                        )
-                    })?;
-
-                    if bytes.len() != 32 {
-                        return Err(format!(
-                            "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
-                             Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
-                            path.display(),
-                            bytes.len()
-                        ));
-                    }
-
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&bytes);
-                    return Ok(key);
-                }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    // File does not exist: fall through to create key
-                }
-                Err(e) => {
-                    return Err(format!(
-                        "Security Error: Failed to open master key file '{}' with O_NOFOLLOW: {}. Aborting to fail closed.",
-                        path.display(),
-                        e
-                    ));
-                }
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::io::Read;
-            use std::os::windows::io::FromRawHandle;
-            let wide = win32::to_wide_null(&path);
-
-            let handle = unsafe {
-                win32::CreateFileW(
-                    wide.as_ptr(),
-                    win32::GENERIC_READ | win32::READ_CONTROL,
-                    win32::FILE_SHARE_READ,
-                    std::ptr::null_mut(),
-                    win32::OPEN_EXISTING,
-                    win32::FILE_ATTRIBUTE_NORMAL | win32::FILE_FLAG_OPEN_REPARSE_POINT,
-                    std::ptr::null_mut(),
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).map_err(|e| {
+                format!(
+                    "Permission denied or I/O error reading master key descriptor at '{}': {}. Aborting to protect vault integrity.",
+                    path.display(),
+                    e
                 )
-            };
+            })?;
 
-            if handle != (-1isize as *mut std::ffi::c_void) && !handle.is_null() {
-                let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
-                let info_ok = unsafe { win32::GetFileInformationByHandle(handle, &mut file_info) };
-                if info_ok == 0 {
-                    unsafe { win32::CloseHandle(handle); }
+            if bytes.len() != 32 {
+                return Err(format!(
+                    "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
+                     Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
+                    path.display(),
+                    bytes.len()
+                ));
+            }
+
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&bytes);
+            return Ok(key);
+        }
+
+        // Master key does not exist yet: generate a new master key
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "Failed to create master key directory '{}': {}",
+                    parent.display(),
+                    err
+                )
+            })?;
+        }
+
+        match create_secure_file_exclusive(&path, 0o600) {
+            Ok(mut file) => {
+                if let Err(err) = file.write_all(&key).and_then(|_| file.sync_all()) {
+                    drop(file);
+                    let _ = fs::remove_file(&path);
                     return Err(format!(
-                        "Security Error: Failed to query attributes on open master key handle for '{}'. Aborting.",
-                        path.display()
-                    ));
-                }
-
-                if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
-                    unsafe { win32::CloseHandle(handle); }
-                    return Err(format!(
-                        "Security Error: Master key handle for '{}' is a symbolic link or directory junction (reparse point). Symbolic links are strictly prohibited for master keys.",
-                        path.display()
-                    ));
-                }
-
-                if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) != 0 {
-                    unsafe { win32::CloseHandle(handle); }
-                    return Err(format!(
-                        "Security Error: Master key handle for '{}' is a directory, not a regular file. Aborting.",
-                        path.display()
-                    ));
-                }
-
-                if let Err(e) = win32::validate_windows_security_descriptor_handle(handle, &path, true) {
-                    unsafe { win32::CloseHandle(handle); }
-                    return Err(e);
-                }
-
-                let mut file = unsafe { fs::File::from_raw_handle(handle as std::os::windows::io::RawHandle) };
-                let mut bytes = Vec::new();
-                file.read_to_end(&mut bytes).map_err(|e| {
-                    format!("Failed to read master key from handle at '{}': {}", path.display(), e)
-                })?;
-
-                if bytes.len() != 32 {
-                    return Err(format!(
-                        "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
-                         Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
-                        path.display(),
-                        bytes.len()
-                    ));
-                }
-
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&bytes);
-                return Ok(key);
-            } else {
-                let err = unsafe { win32::GetLastError() };
-                if err != 2 {
-                    // Not ERROR_FILE_NOT_FOUND (2)
-                    return Err(format!(
-                        "Security Error: Failed to open master key handle for '{}' (Win32 error: {}). Aborting to fail closed.",
+                        "Failed to persist master key to '{}': {}. Vault operations aborted.",
                         path.display(),
                         err
                     ));
                 }
-                // File does not exist yet: fall through to key creation
+                return Ok(key);
+            }
+            Err(_err) => {
+                // Concurrent process might have created it; loop to next attempt to read and validate it
+                continue;
             }
         }
-        #[cfg(not(any(unix, windows)))]
-        {
-            // Inspect symlink metadata first to safely catch dangling symlinks without following them
-            match fs::symlink_metadata(&path) {
-                Ok(meta) => {
-                    if meta.file_type().is_symlink() {
-                        return Err(format!(
-                            "Security Error: Master key path '{}' is a symbolic link (or dangling symlink). Symbolic links are strictly prohibited for master keys to prevent hijacking.",
-                            path.display()
-                        ));
-                    }
-
-                    let bytes = fs::read(&path).map_err(|e| {
-                        format!(
-                            "Permission denied or I/O error reading master key at '{}': {}. Aborting to protect vault integrity.",
-                            path.display(),
-                            e
-                        )
-                    })?;
-
-                    if bytes.len() != 32 {
-                        return Err(format!(
-                            "Master key file at '{}' is corrupted (expected 32 bytes, found {} bytes). \
-                             Aborting operation to prevent permanent vault data loss. Please restore your master key from backup.",
-                            path.display(),
-                            bytes.len()
-                        ));
-                    }
-
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&bytes);
-                    return Ok(key);
-                }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    // Fall through to creation
-                }
-                Err(e) => {
-                    return Err(format!(
-                        "Security Error: Cannot inspect master key at '{}': {}. Aborting to fail closed.",
-                        path.display(),
-                        e
-                    ));
-                }
-            }
-        }
-                // File does not exist: generate a new master key
-                let mut key = [0u8; 32];
-                OsRng.fill_bytes(&mut key);
-
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|err| {
-                        format!(
-                            "Failed to create master key directory '{}': {}",
-                            parent.display(),
-                            err
-                        )
-                    })?;
-                }
-
-                // Concurrency-safe exclusive creation
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    match fs::OpenOptions::new()
-                        .create_new(true)
-                        .write(true)
-                        .mode(0o600)
-                        .open(&path)
-                    {
-                        Ok(mut file) => {
-                            if let Err(err) = file.write_all(&key).and_then(|_| file.sync_all()) {
-                                let _ = fs::remove_file(&path);
-                                return Err(format!(
-                                    "Failed to persist master key to '{}': {}. Vault operations aborted.",
-                                    path.display(),
-                                    err
-                                ));
-                            }
-                            return Ok(key);
-                        }
-                        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                            // Concurrent process created file; continue to next loop iteration to read & validate it
-                            continue;
-                        }
-                        Err(err) => {
-                            return Err(format!(
-                                "Failed to create master key file '{}' with 0600 permissions: {}",
-                                path.display(),
-                                err
-                            ));
-                        }
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    use std::fs::OpenOptions;
-                    match OpenOptions::new()
-                        .create_new(true)
-                        .write(true)
-                        .open(&path)
-                    {
-                        Ok(mut file) => {
-                            if let Err(err) = file.write_all(&key).and_then(|_| file.sync_all()) {
-                                let _ = fs::remove_file(&path);
-                                return Err(format!(
-                                    "Failed to persist master key to '{}': {}. Vault operations aborted.",
-                                    path.display(),
-                                    err
-                                ));
-                            }
-                            return Ok(key);
-                        }
-                        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                            continue;
-                        }
-                        Err(err) => {
-                            return Err(format!(
-                                "Failed to create master key file '{}': {}",
-                                path.display(),
-                                err
-                            ));
-                        }
-                    }
-                }
     }
 
     Err(format!(
@@ -1341,173 +1822,17 @@ pub fn decrypt_vault_payload(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, Str
 
 pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
     let path = get_vault_path()?;
-    #[cfg(unix)]
-    let data = {
-        use std::io::Read;
-        use std::os::unix::fs::MetadataExt;
-        use std::os::unix::fs::OpenOptionsExt;
-        use std::os::unix::fs::PermissionsExt;
-
-        #[cfg(target_os = "linux")]
-        const O_NOFOLLOW: i32 = 0o400000;
-        #[cfg(target_os = "macos")]
-        const O_NOFOLLOW: i32 = 0x0100;
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        const O_NOFOLLOW: i32 = 0o400000;
-
-        let mut opts = fs::OpenOptions::new();
-        opts.read(true);
-        opts.custom_flags(O_NOFOLLOW);
-
-        let mut file = match opts.open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(VaultStore::default());
-            }
-            Err(e) => {
-                return Err(format!(
-                    "Security Error: Failed to open vault file '{}' with O_NOFOLLOW: {}. Aborting to fail closed.",
-                    path.display(),
-                    e
-                ));
-            }
-        };
-
-        let meta = file.metadata().map_err(|e| {
-            format!("Security Error: Cannot inspect open vault descriptor for '{}': {}", path.display(), e)
-        })?;
-        if !meta.is_file() {
-            return Err(format!(
-                "Security Error: Vault descriptor '{}' is not a regular file. Aborting.",
-                path.display()
-            ));
-        }
-
-        let active_uid = unsafe { libc::getuid() };
-        if meta.uid() != active_uid {
-            return Err(format!(
-                "Security Error: Vault descriptor '{}' is owned by UID {} but active user is UID {}. Aborting to fail closed.",
-                path.display(),
-                meta.uid(),
-                active_uid
-            ));
-        }
-
-        let mode = meta.permissions().mode();
-        if (mode & 0o077) != 0 {
-            return Err(format!(
-                "Security Error: Vault descriptor '{}' has insecure permissions ({:o}, expected 0600). Aborting to fail closed.",
-                path.display(),
-                mode & 0o777
-            ));
-        }
-
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf).map_err(|e| format!("Failed to read vault file descriptor at '{}': {}", path.display(), e))?;
-        buf
+    let mut file = match open_secure_file_for_read(&path)? {
+        Some(f) => f,
+        None => return Ok(VaultStore::default()),
     };
 
-    #[cfg(windows)]
-    let data = {
-        use std::io::Read;
-        use std::os::windows::io::FromRawHandle;
-        let wide = win32::to_wide_null(&path);
+    use std::io::Read;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).map_err(|e| {
+        format!("Failed to read vault file from handle at '{}': {}", path.display(), e)
+    })?;
 
-        let handle = unsafe {
-            win32::CreateFileW(
-                wide.as_ptr(),
-                win32::GENERIC_READ | win32::READ_CONTROL,
-                win32::FILE_SHARE_READ,
-                std::ptr::null_mut(),
-                win32::OPEN_EXISTING,
-                win32::FILE_ATTRIBUTE_NORMAL | win32::FILE_FLAG_OPEN_REPARSE_POINT,
-                std::ptr::null_mut(),
-            )
-        };
-
-        if handle == (-1isize as *mut std::ffi::c_void) || handle.is_null() {
-            let err = unsafe { win32::GetLastError() };
-            if err == 2 {
-                // ERROR_FILE_NOT_FOUND (2): Target does not exist yet
-                return Ok(VaultStore::default());
-            }
-            return Err(format!(
-                "Security Error: Failed to open vault handle for '{}' (Win32 error: {}). Aborting to fail closed.",
-                path.display(),
-                err
-            ));
-        }
-
-        // 1. Inspect open handle attributes to verify it is NOT a reparse point and IS a regular file
-        let mut file_info = win32::BY_HANDLE_FILE_INFORMATION::default();
-        let info_ok = unsafe { win32::GetFileInformationByHandle(handle, &mut file_info) };
-        if info_ok == 0 {
-            unsafe { win32::CloseHandle(handle); }
-            return Err(format!(
-                "Security Error: Failed to query attributes on open vault handle for '{}'. Aborting.",
-                path.display()
-            ));
-        }
-
-        if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
-            unsafe { win32::CloseHandle(handle); }
-            return Err(format!(
-                "Security Error: Vault handle for '{}' is a symbolic link or directory junction (reparse point). Symbolic links are strictly prohibited.",
-                path.display()
-            ));
-        }
-
-        if (file_info.dwFileAttributes & win32::FILE_ATTRIBUTE_DIRECTORY) != 0 {
-            unsafe { win32::CloseHandle(handle); }
-            return Err(format!(
-                "Security Error: Vault handle for '{}' is a directory, not a regular file. Aborting.",
-                path.display()
-            ));
-        }
-
-        // 2. Inspect Windows Security Descriptor directly on the open handle
-        if let Err(e) = win32::validate_windows_security_descriptor_handle(handle, &path, true) {
-            unsafe { win32::CloseHandle(handle); }
-            return Err(e);
-        }
-
-        // 3. Read directly from the verified open handle
-        let mut file = unsafe { fs::File::from_raw_handle(handle as std::os::windows::io::RawHandle) };
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf).map_err(|e| {
-            format!("Failed to read vault file from handle at '{}': {}", path.display(), e)
-        })?;
-        buf
-    };
-
-    #[cfg(not(any(unix, windows)))]
-    let data = {
-        use std::io::Read;
-        match fs::symlink_metadata(&path) {
-            Ok(meta) => {
-                if meta.file_type().is_symlink() {
-                    return Err(format!(
-                        "Security Error: Vault file '{}' is a symbolic link. Aborting.",
-                        path.display()
-                    ));
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(VaultStore::default());
-            }
-            Err(e) => {
-                return Err(format!(
-                    "Security Error: Cannot inspect vault file '{}': {}. Aborting to prevent data loss.",
-                    path.display(),
-                    e
-                ));
-            }
-        }
-        let mut file = fs::File::open(&path).map_err(|e| format!("Failed to open vault file at '{}': {}", path.display(), e))?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf).map_err(|e| format!("Failed to read vault file at '{}': {}", path.display(), e))?;
-        buf
-    };
     let key = derive_vault_key(passphrase)?;
     let decrypted = decrypt_vault_payload(&data, &key)?;
     let store: VaultStore = serde_json::from_slice(&decrypted)
@@ -1533,37 +1858,14 @@ pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), St
     let tmp_filename = format!(".vault.{}.{:x}.tmp", pid, u64::from_le_bytes(nonce));
     let tmp_path = parent.join(tmp_filename);
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&tmp_path)
-            .map_err(|e| format!("Failed to create unique temporary vault file {} with 0600 mode: {}", tmp_path.display(), e))?;
-        
-        let write_res = file.write_all(&encrypted).and_then(|_| file.sync_all());
-        if let Err(e) = write_res {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(format!("Failed to write and sync encrypted vault data to {}: {}", tmp_path.display(), e));
-        }
+    let mut file = create_secure_file_exclusive(&tmp_path, 0o600)?;
+    let write_res = file.write_all(&encrypted).and_then(|_| file.sync_all());
+    if let Err(e) = write_res {
+        drop(file);
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write and sync encrypted vault data to {}: {}", tmp_path.display(), e));
     }
-    #[cfg(not(unix))]
-    {
-        use std::fs::OpenOptions;
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp_path)
-            .map_err(|e| format!("Failed to create unique temporary vault file {}: {}", tmp_path.display(), e))?;
-        
-        let write_res = file.write_all(&encrypted).and_then(|_| file.sync_all());
-        if let Err(e) = write_res {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(format!("Failed to write and sync encrypted vault data to {}: {}", tmp_path.display(), e));
-        }
-    }
+    drop(file);
 
     atomic_replace_file(&tmp_path, &path)?;
 

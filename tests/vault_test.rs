@@ -1303,3 +1303,181 @@ fn test_real_signal_delivery_and_disposition_restoration() {
         }
     }
 }
+
+#[test]
+fn test_windows_ancestor_directory_anchoring_prevents_rename() {
+    #[cfg(windows)]
+    {
+        use secretguard::vault::win32;
+        use std::ffi::c_void;
+        use std::fs;
+
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("sg_anchor_test_{}", pid));
+        let ancestor_dir = base.join("locked_parent");
+        let sub_file = ancestor_dir.join("subfile.txt");
+        let renamed_dir = base.join("locked_parent_renamed");
+
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&ancestor_dir).unwrap();
+        fs::write(&sub_file, b"test content").unwrap();
+
+        // 1. Open ancestor directory handle WITHOUT FILE_SHARE_DELETE (matching SecretGuard directory anchoring)
+        let wide = win32::to_wide_null(&ancestor_dir);
+        let h_dir = unsafe {
+            win32::CreateFileW(
+                wide.as_ptr(),
+                win32::GENERIC_READ | win32::READ_CONTROL,
+                win32::FILE_SHARE_READ | win32::FILE_SHARE_WRITE, // Strictly omit FILE_SHARE_DELETE
+                std::ptr::null_mut(),
+                win32::OPEN_EXISTING,
+                win32::FILE_FLAG_BACKUP_SEMANTICS | win32::FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(h_dir != (-1isize as *mut c_void) && !h_dir.is_null(), "Failed to open ancestor handle");
+
+        // 2. Attempt to rename ancestor directory while handle is actively held
+        let rename_res = fs::rename(&ancestor_dir, &renamed_dir);
+        assert!(
+            rename_res.is_err(),
+            "Renaming an ancestor directory locked without FILE_SHARE_DELETE must be rejected by Windows kernel"
+        );
+        let err = rename_res.unwrap_err();
+        assert_eq!(
+            err.raw_os_error(),
+            Some(32), // ERROR_SHARING_VIOLATION (32)
+            "Kernel must return ERROR_SHARING_VIOLATION (32) when trying to rename an anchored directory"
+        );
+
+        // 3. Attempt to delete ancestor directory while handle is held
+        let remove_res = fs::remove_dir_all(&ancestor_dir);
+        assert!(
+            remove_res.is_err(),
+            "Deleting an ancestor directory locked without FILE_SHARE_DELETE must be rejected by Windows kernel"
+        );
+
+        // 4. Close the anchor handle
+        unsafe { win32::CloseHandle(h_dir); }
+
+        // 5. After releasing anchor handle, rename and delete must succeed
+        let rename_after = fs::rename(&ancestor_dir, &renamed_dir);
+        assert!(rename_after.is_ok(), "Renaming must succeed after releasing anchor handle");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+}
+
+#[test]
+fn test_stream_sanitizer_multi_chunk_random_partition_fuzz() {
+    use secretguard::vault::StreamSanitizer;
+    use secretguard::SecretGuardEngine;
+    use rand_core::{OsRng, RngCore};
+
+    let engine = SecretGuardEngine::new();
+
+    let full_stream = concat!(
+        "=== SYSTEM BOOT SEQUENCE START ===\n",
+        "INFO: Initializing cryptographic subsystem...\n",
+        "-----BEGIN RSA PRIVATE KEY-----\n",
+        "MIIEowIBAAKCAQEA0Y5k1vRSA_ArbitrarySecretDataBlock1_SecretGuardVaultEngine9876543210=\n",
+        "-----END RSA PRIVATE KEY-----\n",
+        "INFO: RSA Keypair imported successfully. Checking secondary interfaces...\n",
+        "-----BEGIN EC PRIVATE KEY-----\n",
+        "MHQCAQEEI_ArbitrarySecretDataBlock2_ECKey1234567890SecretGuardTestingFixture=\n",
+        "-----END EC PRIVATE KEY-----\n",
+        "INFO: Authenticating cloud agent orchestrator...\n",
+        "export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+        "=== SYSTEM BOOT SEQUENCE COMPLETE: LISTENING ON PORT 8443 ===\n"
+    );
+
+    let forbidden_secrets = [
+        "ArbitrarySecretDataBlock1_SecretGuardVaultEngine9876543210",
+        "ArbitrarySecretDataBlock2_ECKey1234567890SecretGuardTestingFixture",
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    ];
+
+    let full_bytes = full_stream.as_bytes();
+    let stream_len = full_bytes.len();
+
+    // Run 100 randomized multi-chunk partition fuzz iterations
+    for iteration in 0..100 {
+        let mut sanitizer = StreamSanitizer::new();
+
+        // Random number of chunks between 3 and 10
+        let mut rand_buf = [0u8; 16];
+        OsRng.fill_bytes(&mut rand_buf);
+        let num_splits = (rand_buf[0] as usize % 8) + 2; // 2 to 9 split points => 3 to 10 chunks
+
+        let mut split_points = Vec::new();
+        for _ in 0..num_splits {
+            let offset = (rand_core::RngCore::next_u32(&mut OsRng) as usize % (stream_len - 2)) + 1;
+            split_points.push(offset);
+        }
+        split_points.sort_unstable();
+        split_points.dedup();
+
+        // Construct chunks
+        let mut chunks = Vec::new();
+        let mut prev = 0;
+        for &pt in &split_points {
+            if pt > prev && pt < stream_len {
+                chunks.push(&full_bytes[prev..pt]);
+                prev = pt;
+            }
+        }
+        if prev < stream_len {
+            chunks.push(&full_bytes[prev..]);
+        }
+
+        let mut total_output = Vec::new();
+
+        for (chunk_idx, chunk) in chunks.iter().enumerate() {
+            let mut chunk_out = Vec::new();
+            sanitizer.sanitize_chunk(chunk, &engine, &mut chunk_out).unwrap();
+
+            let chunk_str = String::from_utf8_lossy(&chunk_out);
+            for secret in &forbidden_secrets {
+                assert!(
+                    !chunk_str.contains(secret),
+                    "Iteration {}, chunk {} leaked secret '{}' in output: '{}'",
+                    iteration,
+                    chunk_idx,
+                    secret,
+                    chunk_str
+                );
+            }
+            total_output.extend_from_slice(&chunk_out);
+        }
+
+        let mut flush_out = Vec::new();
+        sanitizer.flush_final(&engine, &mut flush_out).unwrap();
+        let flush_str = String::from_utf8_lossy(&flush_out);
+        for secret in &forbidden_secrets {
+            assert!(
+                !flush_str.contains(secret),
+                "Iteration {} leaked secret '{}' during flush_final: '{}'",
+                iteration,
+                secret,
+                flush_str
+            );
+        }
+        total_output.extend_from_slice(&flush_out);
+
+        let total_str = String::from_utf8_lossy(&total_output);
+        for secret in &forbidden_secrets {
+            assert!(
+                !total_str.contains(secret),
+                "Iteration {} leaked secret '{}' in combined output: '{}'",
+                iteration,
+                secret,
+                total_str
+            );
+        }
+
+        // Verify non-secret markers are preserved and redaction markers are present
+        assert!(total_str.contains("=== SYSTEM BOOT SEQUENCE START ==="), "Prefix must be preserved in iteration {}", iteration);
+        assert!(total_str.contains("=== SYSTEM BOOT SEQUENCE COMPLETE: LISTENING ON PORT 8443 ==="), "Suffix must be preserved in iteration {}", iteration);
+        assert!(total_str.contains("[REDACTED]"), "Must contain [REDACTED] markers in iteration {}", iteration);
+    }
+}
