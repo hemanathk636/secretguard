@@ -370,7 +370,7 @@ impl MeshManager {
         if let Ok(env_val) = std::env::var(env_var) {
             if !env_val.is_empty() {
                 eprintln!(
-                    "ℹ️  Notice: Using passphrase from environment variable '{}'.",
+                    "ℹ️  Security Notice: Using passphrase from environment variable '{}'. Note: environment variables are visible to child processes. For interactive sessions, omit the environment variable to use hidden interactive entry.",
                     env_var
                 );
                 return Ok(env_val);

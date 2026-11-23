@@ -28,7 +28,7 @@ body:
     attributes:
       label: Redacted / Mock Example Token
       description: DO NOT paste real production credentials! Provide an artificial mock key that matches the format.
-      placeholder: e.g., re_1234567890abcdef1234567890abcdef
+      placeholder: e.g., re_mock_example_sample_token_format
     validations:
       required: true
   - type: input

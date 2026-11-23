@@ -30,6 +30,7 @@ $TempZip = Join-Path $env:TEMP "secretguard-$Tag.zip"
 $TempExtract = Join-Path $env:TEMP "secretguard_extract_$((Get-Random))"
 
 Write-Host "📦 Downloading SecretGuard ($Tag)..." -ForegroundColor Gray
+$IntegrityFailure = $false
 try {
     Invoke-WebRequest -Uri $ZipUrl -OutFile $TempZip -UseBasicParsing
 
@@ -42,11 +43,13 @@ try {
         $ExpectedHash = ((Get-Content -Path $TempSha).Trim() -split '\s+')[0].ToLower()
         $ActualHash = (Get-FileHash -Path $TempZip -Algorithm SHA256).Hash.ToLower()
         if ($ExpectedHash -ne $ActualHash) {
-            throw "Integrity error: SHA-256 checksum mismatch! Expected: $ExpectedHash, Computed: $ActualHash"
+            $IntegrityFailure = $true
+            throw "SECURITY INTEGRITY ERROR: SHA-256 checksum mismatch! Expected: $ExpectedHash, Computed: $ActualHash"
         }
         Write-Host "✅ Checksum verified: $ActualHash" -ForegroundColor DarkGray
     } catch {
-        throw "Checksum verification failed: $($_.Exception.Message)"
+        $IntegrityFailure = $true
+        throw
     } finally {
         if (Test-Path $TempSha) { Remove-Item -Path $TempSha -Force -ErrorAction SilentlyContinue }
     }
@@ -61,6 +64,10 @@ try {
         throw "Binary secretguard.exe not found in archive"
     }
 } catch {
+    if ($IntegrityFailure) {
+        Write-Error "CRITICAL SECURITY ERROR: Checksum or integrity verification failed! $($_.Exception.Message). Aborting installation to protect workstation."
+        return
+    }
     Write-Host "⚠️  Direct binary download failed ($($_.Exception.Message)). Falling back to Cargo install..." -ForegroundColor Yellow
     if (Get-Command cargo -ErrorAction SilentlyContinue) {
         cargo install secretguard

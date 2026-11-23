@@ -625,6 +625,8 @@ struct ScanStats {
     leaks_found: usize,
     errors_encountered: usize,
     symlinks_skipped: usize,
+    files_ignored: usize,
+    binary_files_skipped: usize,
 }
 
 fn scan_file(
@@ -719,6 +721,7 @@ fn scan_dir_recursive(
     stats: &mut ScanStats,
     json_mode: bool,
     ignores: &[String],
+    comprehensive_mode: bool,
 ) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -749,9 +752,13 @@ fn scan_dir_recursive(
 
         let p = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') && name != ".env" && !name.starts_with(".env.") {
+
+        // Always skip internal .git metadata directory to prevent false alerts on git object packs
+        if name == ".git" {
+            stats.files_ignored += 1;
             continue;
         }
+
         let p_str = p.to_string_lossy().replace('\\', "/");
         if ignores.iter().any(|ig| {
             let ig_norm = ig.replace('\\', "/");
@@ -760,6 +767,7 @@ fn scan_dir_recursive(
                 || p_str.contains(&format!("/{}/", ig_norm))
                 || p_str.starts_with(&format!("{}/", ig_norm))
         }) {
+            stats.files_ignored += 1;
             continue;
         }
 
@@ -781,47 +789,50 @@ fn scan_dir_recursive(
         }
 
         if meta.is_dir() {
-            scan_dir_recursive(&p, engine, stats, json_mode, ignores);
+            scan_dir_recursive(&p, engine, stats, json_mode, ignores, comprehensive_mode);
         } else if meta.is_file() {
-            if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
-                let ext_lower = ext.to_ascii_lowercase();
-                if matches!(
-                    ext_lower.as_str(),
-                    "png"
-                        | "jpg"
-                        | "jpeg"
-                        | "gif"
-                        | "ico"
-                        | "svg"
-                        | "webp"
-                        | "bmp"
-                        | "tiff"
-                        | "pdf"
-                        | "zip"
-                        | "tar"
-                        | "gz"
-                        | "bz2"
-                        | "xz"
-                        | "7z"
-                        | "woff"
-                        | "woff2"
-                        | "ttf"
-                        | "eot"
-                        | "otf"
-                        | "mp4"
-                        | "webm"
-                        | "mp3"
-                        | "wav"
-                        | "ogg"
-                        | "exe"
-                        | "dll"
-                        | "so"
-                        | "dylib"
-                        | "bin"
-                        | "vsix"
-                        | "lock"
-                ) {
-                    continue;
+            if !comprehensive_mode {
+                if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+                    let ext_lower = ext.to_ascii_lowercase();
+                    if matches!(
+                        ext_lower.as_str(),
+                        "png"
+                            | "jpg"
+                            | "jpeg"
+                            | "gif"
+                            | "ico"
+                            | "svg"
+                            | "webp"
+                            | "bmp"
+                            | "tiff"
+                            | "pdf"
+                            | "zip"
+                            | "tar"
+                            | "gz"
+                            | "bz2"
+                            | "xz"
+                            | "7z"
+                            | "woff"
+                            | "woff2"
+                            | "ttf"
+                            | "eot"
+                            | "otf"
+                            | "mp4"
+                            | "webm"
+                            | "mp3"
+                            | "wav"
+                            | "ogg"
+                            | "exe"
+                            | "dll"
+                            | "so"
+                            | "dylib"
+                            | "bin"
+                            | "vsix"
+                            | "lock"
+                    ) {
+                        stats.binary_files_skipped += 1;
+                        continue;
+                    }
                 }
             }
 
@@ -842,12 +853,22 @@ fn scan_dir_recursive(
     }
 }
 
-fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bool) {
+fn run_scan(
+    target_path: Option<&str>,
+    engine: &SecretGuardEngine,
+    json_mode: bool,
+    comprehensive_mode: bool,
+) {
     let path = PathBuf::from(target_path.unwrap_or("."));
     if !json_mode {
         println!(
-            "🔍 SecretGuard Advanced Scanner: Inspecting '{}'...\n",
-            path.display()
+            "🔍 SecretGuard Advanced Scanner: Inspecting '{}'{}...\n",
+            path.display(),
+            if comprehensive_mode {
+                " [Comprehensive Mode: inspecting all documents/archives]"
+            } else {
+                ""
+            }
         );
     }
 
@@ -868,24 +889,42 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
             }
         }
     } else if path.is_dir() {
-        scan_dir_recursive(&path, engine, &mut stats, json_mode, &ignores);
+        scan_dir_recursive(
+            &path,
+            engine,
+            &mut stats,
+            json_mode,
+            &ignores,
+            comprehensive_mode,
+        );
     } else {
         eprintln!("❌ Target path '{}' does not exist.", path.display());
         process::exit(1);
     }
 
     let elapsed = start_scan.elapsed();
+    let status_str = if stats.errors_encountered > 0 {
+        "incomplete"
+    } else if stats.leaks_found > 0 {
+        "findings"
+    } else {
+        "clean"
+    };
 
     if json_mode {
         let json_output = serde_json::json!({
             "target": path.display().to_string(),
+            "status": status_str,
+            "clean": stats.leaks_found == 0 && stats.errors_encountered == 0,
             "files_scanned": stats.files_scanned,
+            "files_ignored": stats.files_ignored,
+            "binary_files_skipped": stats.binary_files_skipped,
+            "symlinks_skipped": stats.symlinks_skipped,
             "lines_scanned": stats.lines_scanned,
             "leaks_found": stats.leaks_found,
             "errors_encountered": stats.errors_encountered,
-            "symlinks_skipped": stats.symlinks_skipped,
             "scan_duration_ms": elapsed.as_millis(),
-            "clean": stats.leaks_found == 0 && stats.errors_encountered == 0
+            "comprehensive_mode": comprehensive_mode
         });
         println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
         if stats.errors_encountered > 0 {
@@ -900,6 +939,18 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
     println!("────────────────────────────────────────────");
     println!("Files Scanned:       {}", stats.files_scanned);
     println!("Lines Scanned:       {}", stats.lines_scanned);
+    if stats.files_ignored > 0 {
+        println!(
+            "Files Ignored:       {} (via .secretguardignore / .git)",
+            stats.files_ignored
+        );
+    }
+    if stats.binary_files_skipped > 0 {
+        println!(
+            "Binary Files Skipped:{} (media/binary formats)",
+            stats.binary_files_skipped
+        );
+    }
     if stats.symlinks_skipped > 0 {
         println!(
             "Symlinks Skipped:    {} (unfollowed)",
@@ -912,6 +963,14 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
             stats.errors_encountered
         );
     }
+    println!(
+        "Scan Status:         {}",
+        match status_str {
+            "clean" => "✅ Clean (Zero unmasked credentials detected)",
+            "findings" => "🚨 Findings (Exposed credentials detected)",
+            _ => "⚠️ Incomplete (Encountered read or permission errors)",
+        }
+    );
     println!(
         "Execution Time:      {:.2} ms ({:.0} lines/sec)",
         elapsed.as_secs_f64() * 1000.0,
@@ -1251,14 +1310,16 @@ fn main() {
             match sub {
                 "scan" => {
                     let json_mode = args.iter().any(|a| a == "--json");
+                    let comprehensive_mode =
+                        args.iter().any(|a| a == "--all" || a == "--comprehensive");
                     let mut target = None;
                     for arg in &args[3..] {
-                        if arg != "--json" {
+                        if arg != "--json" && arg != "--all" && arg != "--comprehensive" {
                             target = Some(arg.as_str());
                             break;
                         }
                     }
-                    run_scan(target, &engine, json_mode);
+                    run_scan(target, &engine, json_mode, comprehensive_mode);
                 }
                 "git" | "time-machine" | "timemachine" => {
                     let target_args = if args.len() >= 4 {
@@ -1515,14 +1576,15 @@ fn main() {
         }
         "scan" => {
             let json_mode = args.iter().any(|a| a == "--json");
+            let comprehensive_mode = args.iter().any(|a| a == "--all" || a == "--comprehensive");
             let mut target = None;
             for arg in &args[2..] {
-                if arg != "--json" {
+                if arg != "--json" && arg != "--all" && arg != "--comprehensive" {
                     target = Some(arg.as_str());
                     break;
                 }
             }
-            run_scan(target, &engine, json_mode);
+            run_scan(target, &engine, json_mode, comprehensive_mode);
         }
         "install-pre-commit" | "pre-commit" => {
             let target = if args.len() >= 3 {

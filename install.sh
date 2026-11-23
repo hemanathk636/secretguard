@@ -52,11 +52,12 @@ echo "🔒 Verifying SHA-256 checksum..."
 (
   cd "$TMP_DIR"
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum -c "${ARCHIVE}.sha256"
+    sha256sum -c "${ARCHIVE}.sha256" || { echo "❌ Security Error: SHA-256 checksum verification failed! Aborting." >&2; exit 1; }
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 -c "${ARCHIVE}.sha256"
+    shasum -a 256 -c "${ARCHIVE}.sha256" || { echo "❌ Security Error: SHA-256 checksum verification failed! Aborting." >&2; exit 1; }
   else
-    echo "⚠️ Warning: Neither sha256sum nor shasum available to verify checksum."
+    echo "❌ Security Error: Neither sha256sum nor shasum is available. Cannot securely verify archive integrity!" >&2
+    exit 1
   fi
 )
 
@@ -65,13 +66,21 @@ if command -v minisign >/dev/null 2>&1; then
   if curl -fsSL "${URL}.minisig" -o "${TMP_DIR}/${ARCHIVE}.minisig" 2>/dev/null; then
     echo "🔏 Verifying Minisign cryptographic signature..."
     MINISIGN_PUBKEY="RWQG4Q8WzK8aI1F3iX9Ea4p6h5j3k2l1m0n9o8p7q6r5s4t3u2v1"
-    minisign -Vm "${TMP_DIR}/${ARCHIVE}" -P "$MINISIGN_PUBKEY" || echo "⚠️ Minisign check skipped (unsigned development build)"
+    minisign -Vm "${TMP_DIR}/${ARCHIVE}" -P "$MINISIGN_PUBKEY" || {
+      echo "❌ Security Error: Minisign signature verification failed! Untrusted binary. Aborting." >&2
+      exit 1
+    }
+    echo "✅ Minisign signature verified."
   fi
 fi
 
 if command -v gh >/dev/null 2>&1; then
   echo "🔍 Verifying GitHub build provenance attestation..."
-  gh attestation verify "${TMP_DIR}/${ARCHIVE}" --repo "$REPO" 2>/dev/null || true
+  gh attestation verify "${TMP_DIR}/${ARCHIVE}" --repo "$REPO" || {
+    echo "❌ Security Error: GitHub build provenance attestation verification failed! Aborting." >&2
+    exit 1
+  }
+  echo "✅ GitHub build provenance verified."
 fi
 
 tar -xzf "${TMP_DIR}/${ARCHIVE}" -C "$TMP_DIR"
