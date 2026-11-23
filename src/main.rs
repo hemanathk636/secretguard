@@ -44,6 +44,10 @@ POPULAR SHORTCUTS (Fast Direct Access):
     doctor                    Runs instant diagnostics, latency benchmarks & health checks
     dashboard [--port 3737]   Launch live in-memory web security dashboard & sandbox
     config [init|show|path]   Manage secretguard.toml, custom regexes & whitelists
+    broker [status|test-auth]  Zero-Trust Local Security Broker & Process Identity Plane
+    policy [list|check|eval]   Operation-Aware Authorization Policy Engine (Domain & Method Scopes)
+    audit-ledger [verify|tail] Tamper-Evident SHA-256 Hash-Chained Audit Ledger
+    security-test [--json]     Run adversarial attack simulations verifying zero-trust perimeter
 "#
     );
 }
@@ -1708,6 +1712,38 @@ fn main() {
                 Vec::new()
             };
             secretguard::pii::PiiScrubber::run_cli(&target_args, &engine);
+        }
+        "broker" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::broker::SecurityBroker::run_cli(&target_args);
+        }
+        "policy" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::policy::PolicyEngine::run_cli(&target_args);
+        }
+        "audit-ledger" | "ledger" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::audit::AuditLedger::run_cli(&target_args);
+        }
+        "security-test" | "test-security" => {
+            let target_args = if args.len() >= 3 {
+                args[2..].to_vec()
+            } else {
+                Vec::new()
+            };
+            secretguard::self_test::run_cli(&target_args);
         }
         _ => {
             print_usage();
