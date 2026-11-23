@@ -57,9 +57,8 @@ fn test_immune_engine_containment() {
         report.revocation_status.contains("OpenAI")
             || report.revocation_status.contains("CIRCUIT-BREAKER")
     );
-    assert!(report
-        .auto_rotated_new_key
-        .starts_with("quarantined_openai_api_"));
+    assert!(report.quarantine_id.starts_with("quarantine_openai_api_"));
+    assert!(!report.lifecycle_state.is_empty());
     assert!(report.containment_latency_ms < 2000); // SLA verification
 }
 

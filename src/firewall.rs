@@ -1,3 +1,6 @@
+use crate::audit::AuditLedger;
+use crate::identity::IdentityContext;
+use crate::policy::{AuthorizationDecision, OperationRequest, OperationType, PolicyEngine};
 use crate::SecretGuardEngine;
 use regex::Regex;
 use std::io::{self, BufRead, Write};
@@ -98,6 +101,19 @@ pub fn evaluate_firewall_command(cmd: &str) -> FirewallVerdict {
         risk_level = RiskLevel::Critical;
     }
 
+    // 4. Egress Policy Evaluation (if command attempts network calls)
+    if cmd.starts_with("curl ") || cmd.starts_with("wget ") {
+        let policy_engine = PolicyEngine::default();
+        let caller = IdentityContext::current();
+        let req = OperationRequest::new(caller, "NETWORK_EGRESS", OperationType::HttpGet, cmd);
+        if let AuthorizationDecision::Deny { reason } = policy_engine.evaluate(&req) {
+            if risk_level == RiskLevel::Safe && (cmd.contains(".env") || cmd.contains("id_rsa")) {
+                risk_level = RiskLevel::Suspicious;
+                reasons.push(format!("Zero-Trust Policy Violation: {}", reason));
+            }
+        }
+    }
+
     let allowed = risk_level == RiskLevel::Safe;
 
     FirewallVerdict {
@@ -110,7 +126,8 @@ pub fn evaluate_firewall_command(cmd: &str) -> FirewallVerdict {
 pub fn run_agent_firewall(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard AI Agent Firewall (v0.1.5)
+            r#"SecretGuard AI Agent Firewall (v1.0.0)
+Continuous Runtime Egress Interception & Zero-Trust Command Enforcement
 
 USAGE:
     secretguard agent-firewall <COMMAND> [ARGS...]
@@ -134,6 +151,26 @@ EXAMPLES:
         }
         let target_cmd = &args[1];
         let verdict = evaluate_firewall_command(target_cmd);
+
+        // Record verdict in tamper-evident audit ledger
+        if let Ok(mut ledger) = AuditLedger::load(None) {
+            let ident = IdentityContext::current();
+            let req = OperationRequest::new(
+                ident,
+                "AGENT_FIREWALL",
+                OperationType::McpToolCall("command_check".to_string()),
+                target_cmd,
+            );
+            let decision = if verdict.allowed {
+                AuthorizationDecision::AllowRaw
+            } else {
+                AuthorizationDecision::Deny {
+                    reason: format!("Firewall Interception: {:?}", verdict.reasons),
+                }
+            };
+            ledger.record_decision(&req, &decision);
+            let _ = ledger.save(None);
+        }
 
         if verdict.allowed {
             println!("✅ SAFE: Command passed AI Agent Firewall policies.");
@@ -160,23 +197,44 @@ EXAMPLES:
 
     let verdict = evaluate_firewall_command(&full_cmd_line);
     if !verdict.allowed && verdict.risk_level == RiskLevel::Critical {
-        eprintln!(
-            "\n🚨 [SecretGuard Firewall] Critical threat detected in agent command!\nCommand: {}\nViolations:\n{}\n",
-            full_cmd_line,
-            verdict
-                .reasons
-                .iter()
-                .map(|r| format!("   • {}", r))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        eprint!("⚠️  Do you want to override and execute this command anyway? (y/N): ");
-        let _ = io::stdout().flush();
-        let mut answer = String::new();
-        let _ = io::stdin().read_line(&mut answer);
-        if !answer.trim().eq_ignore_ascii_case("y") {
-            eprintln!("🛑 Command execution blocked by SecretGuard Firewall.");
+        // Exfiltration attacks have zero override capability
+        let is_exfiltration = verdict
+            .reasons
+            .iter()
+            .any(|r| r.contains("Exfiltration") || r.contains("Prompt Injection"));
+
+        if is_exfiltration {
+            eprintln!(
+                "\n🚨 [SecretGuard Firewall] Critical security violation detected in agent command!\nCommand: {}\nViolations:\n{}\n",
+                full_cmd_line,
+                verdict
+                    .reasons
+                    .iter()
+                    .map(|r| format!("   • {}", r))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            eprintln!("🛑 Execution permanently blocked. Data exfiltration and prompt injection cannot be overridden.");
             process::exit(1);
+        } else {
+            eprintln!(
+                "\n⚠️  [SecretGuard Firewall] Destructive operation requested by agent!\nCommand: {}\nViolations:\n{}\n",
+                full_cmd_line,
+                verdict
+                    .reasons
+                    .iter()
+                    .map(|r| format!("   • {}", r))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            eprint!("Authorize destructive command with human gate? (y/N): ");
+            let _ = io::stdout().flush();
+            let mut answer = String::new();
+            let _ = io::stdin().read_line(&mut answer);
+            if !answer.trim().eq_ignore_ascii_case("y") {
+                eprintln!("🛑 Execution suspended by user authorization gate.");
+                process::exit(1);
+            }
         }
     }
 

@@ -1,6 +1,10 @@
+use crate::broker::SecurityBroker;
+use crate::identity::{IdentityContext, RequesterType};
+use crate::policy::{AuthorizationDecision, OperationRequest, OperationType};
 use crate::SecretGuardEngine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -25,11 +29,27 @@ struct JsonRpcResponse {
     error: Option<Value>,
 }
 
+/// State for the MCP AI Security Gateway
+struct McpGatewayState {
+    pub broker: SecurityBroker,
+    pub authenticated_clients: HashMap<String, IdentityContext>,
+}
+
+impl McpGatewayState {
+    pub fn new() -> Self {
+        Self {
+            broker: SecurityBroker::new(),
+            authenticated_clients: HashMap::new(),
+        }
+    }
+}
+
 pub fn run_mcp_server(engine: &SecretGuardEngine) {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let reader = io::BufReader::new(stdin);
     let mut writer = io::BufWriter::new(stdout);
+    let mut state = McpGatewayState::new();
 
     for line in reader.lines() {
         let line: String = match line {
@@ -80,7 +100,7 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                             "tools": {}
                         },
                         "serverInfo": {
-                            "name": "secretguard",
+                            "name": "secretguard-security-gateway",
                             "version": env!("CARGO_PKG_VERSION")
                         }
                     })),
@@ -103,44 +123,85 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                 let tools = json!({
                     "tools": [
                         {
-                            "name": "scan_secrets",
-                            "description": "Scans input text or code for exposed API keys, tokens, private keys, or passwords. Returns detection status and matched pattern names in <15 microseconds.",
+                            "name": "authenticate_client",
+                            "description": "Authenticates the AI agent or client process with the SecretGuard Local Security Broker.",
                             "inputSchema": {
                                 "type": "object",
                                 "properties": {
-                                    "text": {
-                                        "type": "string",
-                                        "description": "The text, code snippet, or command line to scan for secrets"
-                                    }
+                                    "client_name": { "type": "string", "description": "Client name (e.g. claude-code, aider, cursor)" },
+                                    "token": { "type": "string", "description": "IPC authentication token or session handshake key" }
                                 },
+                                "required": ["client_name"]
+                            }
+                        },
+                        {
+                            "name": "authorize_operation",
+                            "description": "Mediates and authorizes an operation or API access request before executing it.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "credential_name": { "type": "string", "description": "Target credential (e.g. GITHUB_TOKEN, OPENAI_API_KEY)" },
+                                    "operation": { "type": "string", "description": "HTTP method (GET, POST, DELETE) or action name" },
+                                    "target_resource": { "type": "string", "description": "Target endpoint or URL" }
+                                },
+                                "required": ["credential_name", "operation", "target_resource"]
+                            }
+                        },
+                        {
+                            "name": "execute_delegated_call",
+                            "description": "Executes an authorized HTTP API call on behalf of the agent without returning or leaking raw secrets across IPC.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "credential_name": { "type": "string", "description": "Credential to bind in-memory" },
+                                    "operation": { "type": "string", "description": "HTTP method (GET, POST)" },
+                                    "target_resource": { "type": "string", "description": "Target URL" }
+                                },
+                                "required": ["credential_name", "operation", "target_resource"]
+                            }
+                        },
+                        {
+                            "name": "inspect_call_safety",
+                            "description": "Inspects third-party tool call arguments and responses for prompt injections, credential leaks, and data exfiltration.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "tool_name": { "type": "string", "description": "Name of proposed tool" },
+                                    "arguments": { "type": "string", "description": "Serialized input arguments" },
+                                    "response": { "type": "string", "description": "Optional output response to sanitize" }
+                                },
+                                "required": ["tool_name", "arguments"]
+                            }
+                        },
+                        {
+                            "name": "get_security_posture",
+                            "description": "Returns active runtime zero-trust policies, trust tier assessment, and audit ledger integrity.",
+                            "inputSchema": { "type": "object", "properties": {} }
+                        },
+                        {
+                            "name": "scan_secrets",
+                            "description": "Scans input text or code for exposed API keys, tokens, private keys, or passwords in <15 microseconds.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": { "text": { "type": "string", "description": "Text to scan" } },
                                 "required": ["text"]
                             }
                         },
                         {
                             "name": "redact_secrets",
-                            "description": "Scans input text and redacts detected secrets and credentials with safe placeholders, preventing leaks into AI context windows or logs.",
+                            "description": "Scans input text and redacts detected secrets and credentials with safe placeholders.",
                             "inputSchema": {
                                 "type": "object",
-                                "properties": {
-                                    "text": {
-                                        "type": "string",
-                                        "description": "The raw text or log content to sanitize"
-                                    }
-                                },
+                                "properties": { "text": { "type": "string", "description": "Raw text to sanitize" } },
                                 "required": ["text"]
                             }
                         },
                         {
                             "name": "mock_secrets",
-                            "description": "Replaces detected secrets with format-preserving synthetic dummy tokens matching the exact length and prefix, preventing crashes in AI agent test suites.",
+                            "description": "Replaces detected secrets with format-preserving synthetic dummy tokens matching exact length and prefix.",
                             "inputSchema": {
                                 "type": "object",
-                                "properties": {
-                                    "text": {
-                                        "type": "string",
-                                        "description": "The code, script, or configuration text to mock"
-                                    }
-                                },
+                                "properties": { "text": { "type": "string", "description": "Text to mock" } },
                                 "required": ["text"]
                             }
                         },
@@ -149,26 +210,16 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                             "description": "Scans a local file or directory path for leaked secrets, tokens, and exposed environment variables.",
                             "inputSchema": {
                                 "type": "object",
-                                "properties": {
-                                    "path": {
-                                        "type": "string",
-                                        "description": "Relative or absolute file or directory path to inspect"
-                                    }
-                                },
+                                "properties": { "path": { "type": "string", "description": "Path to inspect" } },
                                 "required": ["path"]
                             }
                         },
                         {
                             "name": "eval_firewall_policy",
-                            "description": "Evaluates proposed agent commands against security firewall policies (blocks destructive operations like rm -rf, unauthorized credential egress of .env/ssh keys, and prompt injections).",
+                            "description": "Evaluates proposed agent commands against security firewall policies (blocks destructive operations and prompt injections).",
                             "inputSchema": {
                                 "type": "object",
-                                "properties": {
-                                    "command": {
-                                        "type": "string",
-                                        "description": "The command line string the AI agent intends to execute"
-                                    }
-                                },
+                                "properties": { "command": { "type": "string", "description": "Command line to evaluate" } },
                                 "required": ["command"]
                             }
                         }
@@ -190,20 +241,210 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
                 let tool_result = match tool_name {
+                    "authenticate_client" => {
+                        let client_name = arguments
+                            .get("client_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("agent");
+                        let req_type = match client_name.to_lowercase().as_str() {
+                            "claude-code" | "aider" | "copilot" | "cline" => {
+                                RequesterType::AutonomousAgent
+                            }
+                            "vscode" | "cursor" | "windsurf" => RequesterType::ApprovedIde,
+                            _ => RequesterType::AutonomousAgent,
+                        };
+                        let ident = IdentityContext::mock(client_name, req_type, None, None);
+                        state
+                            .authenticated_clients
+                            .insert("current".to_string(), ident.clone());
+
+                        json!({
+                            "content": [{
+                                "type": "text",
+                                "text": format!("Authenticated client '{}' with Trust Tier '{:?}' (Score: {})", client_name, ident.trust_tier, ident.trust_score)
+                            }],
+                            "isError": false
+                        })
+                    }
+                    "authorize_operation" => {
+                        let cred = arguments
+                            .get("credential_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let op_str = arguments
+                            .get("operation")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("GET");
+                        let res_url = arguments
+                            .get("target_resource")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        let caller = state
+                            .authenticated_clients
+                            .get("current")
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                IdentityContext::mock(
+                                    "mcp-agent",
+                                    RequesterType::AutonomousAgent,
+                                    None,
+                                    None,
+                                )
+                            });
+
+                        let op_type = match op_str.to_uppercase().as_str() {
+                            "GET" => OperationType::HttpGet,
+                            "POST" => OperationType::HttpPost,
+                            "PUT" => OperationType::HttpPut,
+                            "DELETE" => OperationType::HttpDelete,
+                            "RAW" => OperationType::RawCredentialAccess,
+                            _ => OperationType::HttpGet,
+                        };
+
+                        let req = OperationRequest::new(caller, cred, op_type, res_url);
+                        let decision = state.broker.authorize(&req);
+                        let allowed = matches!(
+                            decision,
+                            AuthorizationDecision::AllowDelegated | AuthorizationDecision::AllowRaw
+                        );
+
+                        json!({
+                            "content": [{
+                                "type": "text",
+                                "text": serde_json::to_string_pretty(&json!({
+                                    "allowed": allowed,
+                                    "decision": format!("{:?}", decision),
+                                    "credential": cred,
+                                    "operation": op_str,
+                                    "target": res_url
+                                })).unwrap()
+                            }],
+                            "isError": !allowed
+                        })
+                    }
+                    "execute_delegated_call" => {
+                        let cred = arguments
+                            .get("credential_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let op_str = arguments
+                            .get("operation")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("GET");
+                        let res_url = arguments
+                            .get("target_resource")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        let caller = state
+                            .authenticated_clients
+                            .get("current")
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                IdentityContext::mock(
+                                    "mcp-agent",
+                                    RequesterType::AutonomousAgent,
+                                    None,
+                                    None,
+                                )
+                            });
+
+                        let op_type = match op_str.to_uppercase().as_str() {
+                            "GET" => OperationType::HttpGet,
+                            "POST" => OperationType::HttpPost,
+                            _ => OperationType::HttpGet,
+                        };
+
+                        let req = OperationRequest::new(caller, cred, op_type, res_url);
+                        match state.broker.execute_delegated_call(&req, None) {
+                            Ok(res) => json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": serde_json::to_string_pretty(&json!({
+                                        "status_code": res.status_code,
+                                        "body": String::from_utf8_lossy(&res.body),
+                                        "scrubbed_tokens_count": res.scrubbed_tokens_count,
+                                        "audit_sequence": res.audit_sequence
+                                    })).unwrap()
+                                }],
+                                "isError": false
+                            }),
+                            Err(e) => json!({
+                                "content": [{ "type": "text", "text": format!("Delegated execution denied: {}", e) }],
+                                "isError": true
+                            }),
+                        }
+                    }
+                    "inspect_call_safety" => {
+                        let tool = arguments
+                            .get("tool_name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let raw_args = arguments
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let raw_resp = arguments
+                            .get("response")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        let scan_in = engine.scan_and_sanitize(raw_args);
+                        let scan_out = engine.scan_and_sanitize(raw_resp);
+
+                        let prompt_injection = raw_args
+                            .to_lowercase()
+                            .contains("ignore all previous instructions")
+                            || raw_args.to_lowercase().contains("system prompt override");
+
+                        let is_safe =
+                            !scan_in.has_secret && !scan_out.has_secret && !prompt_injection;
+
+                        json!({
+                            "content": [{
+                                "type": "text",
+                                "text": serde_json::to_string_pretty(&json!({
+                                    "tool": tool,
+                                    "safe": is_safe,
+                                    "arguments_leaked_secrets": scan_in.has_secret,
+                                    "response_leaked_secrets": scan_out.has_secret,
+                                    "prompt_injection_detected": prompt_injection,
+                                    "sanitized_arguments": scan_in.sanitized_text,
+                                    "sanitized_response": scan_out.sanitized_text
+                                })).unwrap()
+                            }],
+                            "isError": !is_safe
+                        })
+                    }
+                    "get_security_posture" => {
+                        let policies = state.broker.policy_engine.read().unwrap();
+                        let ledger = state.broker.audit_ledger.lock().unwrap();
+
+                        json!({
+                            "content": [{
+                                "type": "text",
+                                "text": serde_json::to_string_pretty(&json!({
+                                    "active_policy_rules": policies.rules.len(),
+                                    "audit_records_count": ledger.records.len(),
+                                    "ledger_integrity": if ledger.verify_integrity().is_ok() { "Verified" } else { "Uninitialized/Error" }
+                                })).unwrap()
+                            }],
+                            "isError": false
+                        })
+                    }
                     "scan_secrets" => {
                         let text = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
                         let res = engine.scan_and_sanitize(text);
                         json!({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": serde_json::to_string_pretty(&json!({
-                                        "has_secret": res.has_secret,
-                                        "matched_rules": res.matched_rules,
-                                        "rule_count": res.matched_rules.len()
-                                    })).unwrap()
-                                }
-                            ],
+                            "content": [{
+                                "type": "text",
+                                "text": serde_json::to_string_pretty(&json!({
+                                    "has_secret": res.has_secret,
+                                    "matched_rules": res.matched_rules,
+                                    "rule_count": res.matched_rules.len()
+                                })).unwrap()
+                            }],
                             "isError": false
                         })
                     }
@@ -211,12 +452,7 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         let text = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
                         let res = engine.scan_and_sanitize(text);
                         json!({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": res.sanitized_text
-                                }
-                            ],
+                            "content": [{ "type": "text", "text": res.sanitized_text }],
                             "isError": false
                         })
                     }
@@ -224,12 +460,7 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         let text = arguments.get("text").and_then(|v| v.as_str()).unwrap_or("");
                         let res = engine.scan_and_sanitize(text);
                         json!({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": res.synthetic_text
-                                }
-                            ],
+                            "content": [{ "type": "text", "text": res.synthetic_text }],
                             "isError": false
                         })
                     }
@@ -264,16 +495,14 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         }
 
                         json!({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": serde_json::to_string_pretty(&json!({
-                                        "target": target_path_str,
-                                        "leaks_found": findings.len(),
-                                        "findings": findings
-                                    })).unwrap()
-                                }
-                            ],
+                            "content": [{
+                                "type": "text",
+                                "text": serde_json::to_string_pretty(&json!({
+                                    "target": target_path_str,
+                                    "leaks_found": findings.len(),
+                                    "findings": findings
+                                })).unwrap()
+                            }],
                             "isError": false
                         })
                     }
@@ -283,32 +512,44 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
                         let verdict = crate::firewall::evaluate_firewall_command(cmd);
-                        json!({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": serde_json::to_string_pretty(&json!({
-                                        "command": cmd,
-                                        "allowed": verdict.allowed,
-                                        "risk_level": format!("{:?}", verdict.risk_level),
-                                        "reasons": verdict.reasons
-                                    })).unwrap()
+
+                        // Also audit this evaluation
+                        if let Ok(mut ledger) = crate::audit::AuditLedger::load(None) {
+                            let ident = IdentityContext::current();
+                            let req = OperationRequest::new(
+                                ident,
+                                "TERMINAL_COMMAND",
+                                OperationType::McpToolCall("eval_firewall_policy".to_string()),
+                                cmd,
+                            );
+                            let decision = if verdict.allowed {
+                                AuthorizationDecision::AllowRaw
+                            } else {
+                                AuthorizationDecision::Deny {
+                                    reason: format!("Firewall Block: {:?}", verdict.reasons),
                                 }
-                            ],
+                            };
+                            ledger.record_decision(&req, &decision);
+                            let _ = ledger.save(None);
+                        }
+
+                        json!({
+                            "content": [{
+                                "type": "text",
+                                "text": serde_json::to_string_pretty(&json!({
+                                    "command": cmd,
+                                    "allowed": verdict.allowed,
+                                    "risk_level": format!("{:?}", verdict.risk_level),
+                                    "reasons": verdict.reasons
+                                })).unwrap()
+                            }],
                             "isError": !verdict.allowed
                         })
                     }
-                    _ => {
-                        json!({
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": format!("Unknown tool: {}", tool_name)
-                                }
-                            ],
-                            "isError": true
-                        })
-                    }
+                    _ => json!({
+                        "content": [{ "type": "text", "text": format!("Unknown tool: {}", tool_name) }],
+                        "isError": true
+                    }),
                 };
 
                 let resp = JsonRpcResponse {

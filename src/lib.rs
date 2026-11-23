@@ -15,6 +15,8 @@ pub mod ghost;
 pub mod identity;
 pub mod immune;
 pub mod init;
+pub mod ipc;
+pub mod lifecycle;
 pub mod mcp;
 pub mod mesh;
 pub mod panic;
