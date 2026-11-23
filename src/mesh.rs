@@ -59,32 +59,30 @@ impl MeshManager {
         out
     }
 
-    /// Atomically writes the mesh vault file with restricted permissions (0600 on Unix)
+    /// Atomically writes the mesh vault file with restricted permissions (0600 on Unix),
+    /// exclusive creation semantics, parent directory fsync, and Windows ReplaceFileW.
     fn save_mesh_vault(vault_path: &Path, json: &str) -> Result<(), String> {
-        let tmp_path = vault_path.with_extension(format!("tmp.{}", std::process::id()));
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut f = fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp_path)
-                .map_err(|e| format!("Failed to create temporary mesh vault: {}", e))?;
-            f.write_all(json.as_bytes())
-                .map_err(|e| format!("Failed to write mesh vault: {}", e))?;
-            f.sync_all()
-                .map_err(|e| format!("Failed to sync mesh vault: {}", e))?;
+        let parent = vault_path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directory for mesh vault: {}", e))?;
+
+        let pid = std::process::id();
+        let mut nonce = [0u8; 8];
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut nonce);
+        let tmp_filename = format!(".mesh.{}.{:x}.tmp", pid, u64::from_le_bytes(nonce));
+        let tmp_path = parent.join(tmp_filename);
+
+        use std::io::Write;
+        let mut f = crate::vault::create_secure_file_exclusive(&tmp_path, 0o600)?;
+        let write_res = f.write_all(json.as_bytes()).and_then(|_| f.sync_all());
+        if let Err(e) = write_res {
+            drop(f);
+            let _ = fs::remove_file(&tmp_path);
+            return Err(format!("Failed to write and sync mesh vault: {}", e));
         }
-        #[cfg(not(unix))]
-        {
-            fs::write(&tmp_path, json.as_bytes())
-                .map_err(|e| format!("Failed to write mesh vault: {}", e))?;
-        }
-        fs::rename(&tmp_path, vault_path)
-            .map_err(|e| format!("Failed to atomically replace mesh vault: {}", e))?;
+        drop(f);
+
+        crate::vault::atomic_replace_file(&tmp_path, vault_path)?;
         Ok(())
     }
 
@@ -365,27 +363,16 @@ impl MeshManager {
         Ok(out)
     }
 
-    /// Helper to retrieve a passphrase from CLI arguments (with security warning),
-    /// environment variable, or hidden interactive prompt.
-    fn get_passphrase(
-        explicit_arg: Option<&str>,
-        env_var: &str,
-        prompt: &str,
-    ) -> Result<String, String> {
-        if let Some(pass) = explicit_arg {
-            if !pass.is_empty() && pass != "-" {
-                eprintln!(
-                    "⚠️  Warning: Passing passwords via CLI arguments is insecure and visible in process listings."
-                );
-                eprintln!(
-                    "   Consider using an interactive prompt or setting the {} environment variable.",
-                    env_var
-                );
-                return Ok(pass.to_string());
-            }
-        }
+    /// Helper to retrieve a passphrase securely from hidden interactive terminal prompt,
+    /// or from an environment variable for headless CI automation.
+    /// Positional CLI password arguments are strictly forbidden across all subcommands.
+    fn get_passphrase(env_var: &str, prompt: &str) -> Result<String, String> {
         if let Ok(env_val) = std::env::var(env_var) {
             if !env_val.is_empty() {
+                eprintln!(
+                    "ℹ️  Notice: Using passphrase from environment variable '{}'.",
+                    env_var
+                );
                 return Ok(env_val);
             }
         }
@@ -403,17 +390,18 @@ USAGE:
     secretguard mesh <SUBCOMMAND> [OPTIONS]
 
 SUBCOMMANDS:
-    init <PROJECT> [USER] [PASSWORD]      Initializes a team mesh vault (.secretguard/mesh.vault)
-    add <ADMIN> [ADMIN_PASS] <USER> [PWD] Authorizes a new team member to access the vault
-    members                               Lists all authorized team members & key fingerprints
-    set <USER> [PASSWORD] <KEY> [VALUE]   Encrypts and stores a shared secret in the mesh vault
-    get <USER> [PASSWORD] <KEY>           Decrypts and prints a specific shared secret
-    list <USER> [PASSWORD]                Lists all secret keys currently stored in the mesh
-    export-env <USER> [PASSWORD]          Exports decrypted secrets as a format-ready .env string
+    init <PROJECT> [USER]         Initializes a team mesh vault (.secretguard/mesh.vault)
+    add <ADMIN> <NEW_USER>        Authorizes a new team member to access the vault
+    members                       Lists all authorized team members & key fingerprints
+    set <USER> <KEY> [VALUE]      Encrypts and stores a shared secret in the mesh vault
+    get <USER> <KEY>              Decrypts and prints a specific shared secret
+    list <USER>                   Lists all secret keys currently stored in the mesh
+    export-env <USER>             Exports decrypted secrets as a format-ready .env string
 
-SECURITY NOTE:
-    Passwords can be provided via interactive hidden prompt (default), environment variable
-    (SECRETGUARD_MESH_PASSWORD), or CLI argument (strongly discouraged).
+SECURITY POLICY:
+    Passing passwords as command-line arguments is strictly prohibited.
+    Passphrases are prompted interactively without echo, or read from the
+    SECRETGUARD_MESH_PASSWORD / SECRETGUARD_NEW_MEMBER_PASSWORD environment variables.
 "#
             );
             return;
@@ -422,9 +410,12 @@ SECURITY NOTE:
         match args[0].as_str() {
             "init" => {
                 if args.len() < 2 {
-                    eprintln!(
-                        "Usage: secretguard mesh init <PROJECT_NAME> [CREATOR_NAME] [CREATOR_PASS]"
-                    );
+                    eprintln!("Usage: secretguard mesh init <PROJECT_NAME> [CREATOR_NAME]");
+                    std::process::exit(2);
+                }
+                if args.len() > 3 {
+                    eprintln!("❌ Security Error: Passing passwords via CLI arguments is strictly forbidden to prevent exposure in process tables (ps).");
+                    eprintln!("   Please enter your passphrase interactively when prompted or set the SECRETGUARD_MESH_PASSWORD environment variable.");
                     std::process::exit(2);
                 }
                 let project_name = &args[1];
@@ -437,7 +428,6 @@ SECURITY NOTE:
                 };
 
                 let pass = match Self::get_passphrase(
-                    args.get(3).map(|s| s.as_str()),
                     "SECRETGUARD_MESH_PASSWORD",
                     &format!("Enter master passphrase for creator '{}': ", creator_name),
                 ) {
@@ -467,26 +457,19 @@ SECURITY NOTE:
                 }
             }
             "add" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: secretguard mesh add <ADMIN_NAME> [ADMIN_PASS] <NEW_USER> [NEW_USER_PASS]");
+                if args.len() != 3 {
+                    if args.len() > 3 {
+                        eprintln!("❌ Security Error: Passing passwords via CLI arguments is strictly forbidden to prevent exposure in process tables (ps).");
+                        eprintln!("   Usage: secretguard mesh add <ADMIN_NAME> <NEW_USER_NAME>");
+                    } else {
+                        eprintln!("Usage: secretguard mesh add <ADMIN_NAME> <NEW_USER_NAME>");
+                    }
                     std::process::exit(2);
                 }
-                let (admin_name, admin_pass_arg, new_user_name, new_user_pass_arg) =
-                    if args.len() >= 5 {
-                        (
-                            &args[1],
-                            Some(args[2].as_str()),
-                            &args[3],
-                            Some(args[4].as_str()),
-                        )
-                    } else if args.len() == 4 {
-                        (&args[1], Some(args[2].as_str()), &args[3], None)
-                    } else {
-                        (&args[1], None, &args[2], None)
-                    };
+                let admin_name = &args[1];
+                let new_user_name = &args[2];
 
                 let admin_pass = match Self::get_passphrase(
-                    admin_pass_arg,
                     "SECRETGUARD_MESH_PASSWORD",
                     &format!("Enter passphrase for admin '{}': ", admin_name),
                 ) {
@@ -498,7 +481,6 @@ SECURITY NOTE:
                 };
 
                 let new_user_pass = match Self::get_passphrase(
-                    new_user_pass_arg,
                     "SECRETGUARD_NEW_MEMBER_PASSWORD",
                     &format!("Enter passphrase for new member '{}': ", new_user_name),
                 ) {
@@ -543,25 +525,20 @@ SECURITY NOTE:
                 }
             },
             "set" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: secretguard mesh set <USER> [PASSWORD] <KEY> [VALUE]");
+                if args.len() < 3 || args.len() > 4 {
+                    if args.len() > 4 {
+                        eprintln!("❌ Security Error: Passing passwords via CLI arguments is strictly forbidden to prevent exposure in process tables (ps).");
+                        eprintln!("   Usage: secretguard mesh set <USER> <KEY> [VALUE]");
+                    } else {
+                        eprintln!("Usage: secretguard mesh set <USER> <KEY> [VALUE]");
+                    }
                     std::process::exit(2);
                 }
-                let (user, pass_arg, key, val_arg) = if args.len() >= 5 {
-                    (
-                        &args[1],
-                        Some(args[2].as_str()),
-                        &args[3],
-                        Some(args[4].as_str()),
-                    )
-                } else if args.len() == 4 {
-                    (&args[1], None, &args[2], Some(args[3].as_str()))
-                } else {
-                    (&args[1], None, &args[2], None)
-                };
+                let user = &args[1];
+                let key = &args[2];
+                let val_arg = args.get(3).map(|s| s.as_str());
 
                 let pass = match Self::get_passphrase(
-                    pass_arg,
                     "SECRETGUARD_MESH_PASSWORD",
                     &format!("Enter passphrase for '{}': ", user),
                 ) {
@@ -601,18 +578,19 @@ SECURITY NOTE:
                 }
             }
             "get" => {
-                if args.len() < 3 {
-                    eprintln!("Usage: secretguard mesh get <USER> [PASSWORD] <KEY>");
+                if args.len() != 3 {
+                    if args.len() > 3 {
+                        eprintln!("❌ Security Error: Passing passwords via CLI arguments is strictly forbidden to prevent exposure in process tables (ps).");
+                        eprintln!("   Usage: secretguard mesh get <USER> <KEY>");
+                    } else {
+                        eprintln!("Usage: secretguard mesh get <USER> <KEY>");
+                    }
                     std::process::exit(2);
                 }
-                let (user, pass_arg, key) = if args.len() >= 4 {
-                    (&args[1], Some(args[2].as_str()), &args[3])
-                } else {
-                    (&args[1], None, &args[2])
-                };
+                let user = &args[1];
+                let key = &args[2];
 
                 let pass = match Self::get_passphrase(
-                    pass_arg,
                     "SECRETGUARD_MESH_PASSWORD",
                     &format!("Enter passphrase for '{}': ", user),
                 ) {
@@ -645,14 +623,17 @@ SECURITY NOTE:
                 }
             }
             "list" => {
-                if args.len() < 2 {
-                    eprintln!("Usage: secretguard mesh list <USER> [PASSWORD]");
+                if args.len() != 2 {
+                    if args.len() > 2 {
+                        eprintln!("❌ Security Error: Passing passwords via CLI arguments is strictly forbidden to prevent exposure in process tables (ps).");
+                        eprintln!("   Usage: secretguard mesh list <USER>");
+                    } else {
+                        eprintln!("Usage: secretguard mesh list <USER>");
+                    }
                     std::process::exit(2);
                 }
                 let user = &args[1];
-                let pass_arg = args.get(2).map(|s| s.as_str());
                 let pass = match Self::get_passphrase(
-                    pass_arg,
                     "SECRETGUARD_MESH_PASSWORD",
                     &format!("Enter passphrase for '{}': ", user),
                 ) {
@@ -683,14 +664,17 @@ SECURITY NOTE:
                 }
             }
             "export-env" => {
-                if args.len() < 2 {
-                    eprintln!("Usage: secretguard mesh export-env <USER> [PASSWORD]");
+                if args.len() != 2 {
+                    if args.len() > 2 {
+                        eprintln!("❌ Security Error: Passing passwords via CLI arguments is strictly forbidden to prevent exposure in process tables (ps).");
+                        eprintln!("   Usage: secretguard mesh export-env <USER>");
+                    } else {
+                        eprintln!("Usage: secretguard mesh export-env <USER>");
+                    }
                     std::process::exit(2);
                 }
                 let user = &args[1];
-                let pass_arg = args.get(2).map(|s| s.as_str());
                 let pass = match Self::get_passphrase(
-                    pass_arg,
                     "SECRETGUARD_MESH_PASSWORD",
                     &format!("Enter passphrase for '{}': ", user),
                 ) {

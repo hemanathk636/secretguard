@@ -77,7 +77,7 @@ secretguard init
 ```
 
 ```text
-🛡️  SecretGuard 10-Second Setup Wizard (v0.3.13)
+🛡️  SecretGuard 10-Second Setup Wizard (v1.0.0)
 Activating All 3 Security Pillars for Your Workstation & AI Agents
 
 ─────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ If your team uses [pre-commit](https://pre-commit.com), add SecretGuard to your 
 ```yaml
 repos:
   - repo: https://github.com/hemanathk636/secretguard
-    rev: v0.3.13
+    rev: v1.0.0
     hooks:
       - id: secretguard
       - id: secretguard-radar
@@ -421,14 +421,14 @@ SecretGuard generates **format-preserving synthetic mock tokens** that preserve 
 
 ```bash
 # Generate format-preserving synthetic mock
-secretguard mock "export OPENAI_API_KEY=sk-proj-98a7df8a7sdf8a7sdf..."
+secretguard mock "export SERVICE_TOKEN=<input-credential>"
 ```
 
 ```
-export OPENAI_API_KEY=sk-proj-TESTDUMMYMOCK00000000000000000000000000000000
+export OPENAI_API_KEY=sk-proj-[SYNTHETIC_MOCK_TOKEN]
 ```
 
-* **AWS Access Key:** `AKIAIOSFODNN7EXAMPLE` ➔ `AKIAFAKE000000000000` *(exactly 20 characters)*
+* **AWS Access Key:** `AKIA...` ➔ `AKIA[SYNTHETIC_MOCK]` *(exactly 20 characters)*
 * **GitHub Token:** `ghp_1234567890abcdef...` ➔ `ghp_TESTDUMMYMOCK00...` *(exactly 40 characters)*
 * **OpenAI Project Key:** `sk-proj-1234...` ➔ `sk-proj-TESTDUMMY...` *(exact length preserved)*
 
@@ -498,6 +498,17 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **macOS Intel:** `secretguard-x86_64-apple-darwin.tar.gz`
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
+
+---
+
+## 📦 What's New in v1.0.0 (Production General Availability & Cryptographic Attestation)
+
+SecretGuard v1.0.0 marks the official production General Availability release, completing comprehensive adversarial security auditing:
+* **Strict Mesh Password Security:** Strictly eliminates positional CLI passphrase arguments across all `secretguard mesh` subcommands (`init`, `add`, `set`, `get`, `list`, `export-env`) to prevent credential leakage in OS process tables (`ps`). Enforces interactive prompting without echo (`read_password_hidden`) or non-interactive environment variables (`SECRETGUARD_MESH_PASSWORD`). CLI argument attempts are terminated immediately with exit code 2.
+* **Hermetic Ghost & Mesh Persistence:** Unifies atomic storage across `ghost` and `mesh` modules with `create_secure_file_exclusive(0o600)` and `atomic_replace_file()`, guaranteeing `O_EXCL` creation, symlink rejection, ancestor directory traversal defense, Unix parent directory `fsync`, and Windows `ReplaceFileW`.
+* **Hardened Simulation Swapper:** Features 5-second socket timeouts, clean EOF handling, reverse response payload scrubbing (`swap_response_payload`), and safe HTTP 400 responses on malformed/non-HTTP requests without leaking mapped tokens.
+* **Binary Media & Noise Filtering in Codebase Scanner:** Fast-paths binary media assets (`.png`, `.svg`, `.vsix`, etc.) and honors `.secretguardignore` rules, guaranteeing fail-closed scans (exit code 2 on read errors) with zero false-positives across full production codebases.
+* **Cryptographic Attestation & Minisign Provenance:** Integrates Sigstore SLSA build provenance attestations (`actions/attest-build-provenance`) and Minisign verification into official release workflows and universal installers (`install.sh`, `install.ps1`).
 
 ---
 

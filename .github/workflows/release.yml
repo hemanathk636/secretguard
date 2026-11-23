@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   verify:
@@ -93,6 +95,11 @@ jobs:
           Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.bin }}" -DestinationPath "${{ matrix.archive }}"
           $hash = (Get-FileHash "${{ matrix.archive }}" -Algorithm SHA256).Hash.ToLower()
           "$hash  ${{ matrix.archive }}" | Set-Content -Path "${{ matrix.archive }}.sha256"
+
+      - name: Generate build provenance attestation (Sigstore / SLSA)
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebfbca1a335a31df # v2.2.3
+        with:
+          subject-path: ${{ matrix.archive }}
 
       - name: Upload release assets
         uses: softprops/action-gh-release@c062e496a77d2426618797b5e408544c77ea1a6a # v2.0.8

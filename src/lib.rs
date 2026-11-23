@@ -187,10 +187,26 @@ impl SecretGuardEngine {
             if detected_rule.is_none() {
                 let hits = scan_contextual_entropy(&decoded_str);
                 let lower = decoded_str.to_lowercase();
+                let is_basic_auth = if let Some((user, pass)) = decoded_str.split_once(':') {
+                    !user.is_empty()
+                        && !pass.is_empty()
+                        && !user.contains(char::is_whitespace)
+                        && !pass.contains(char::is_whitespace)
+                        && !user.contains('/')
+                        && !user.contains('<')
+                        && (pass.len() >= 6 || !scan_contextual_entropy(pass).is_empty())
+                        && (lower.contains("pass")
+                            || lower.contains("secret")
+                            || input.to_lowercase().contains("basic")
+                            || input.to_lowercase().contains("auth"))
+                } else {
+                    false
+                };
+
                 if !hits.is_empty()
-                    || lower.contains("password")
-                    || lower.contains("secret")
-                    || (decoded_str.contains(':') && decoded_str.len() >= 10)
+                    || lower.contains("password=")
+                    || lower.contains("secret=")
+                    || is_basic_auth
                 {
                     detected_rule = Some("Encoded (Credential/Token)".to_string());
                 }

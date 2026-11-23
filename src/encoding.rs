@@ -54,6 +54,7 @@ pub fn decode_url_percent(input: &str) -> Option<String> {
     let bytes = input.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut i = 0;
+    let mut did_decode = false;
 
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
@@ -62,6 +63,7 @@ pub fn decode_url_percent(input: &str) -> Option<String> {
             if let (Some(d1), Some(d2)) = (from_hex_digit(h1), from_hex_digit(h2)) {
                 decoded.push((d1 << 4) | d2);
                 i += 3;
+                did_decode = true;
                 continue;
             }
         }
@@ -69,7 +71,11 @@ pub fn decode_url_percent(input: &str) -> Option<String> {
         i += 1;
     }
 
-    String::from_utf8(decoded).ok()
+    if did_decode {
+        String::from_utf8(decoded).ok()
+    } else {
+        None
+    }
 }
 
 /// Fast hex digit parser
@@ -102,10 +108,17 @@ pub fn find_encoded_candidates(input: &str) -> Vec<(String, String)> {
         }
     }
 
-    // Check full string for URL encoding if % exists
+    // Check tokens for URL encoding if % exists
     if input.contains('%') {
-        if let Some(decoded_url) = decode_url_percent(input) {
-            candidates.push((input.to_string(), decoded_url));
+        for part in input.split(|c: char| {
+            c.is_whitespace() || c == '=' || c == '"' || c == '\'' || c == ',' || c == ';'
+        }) {
+            if part.contains('%') {
+                let clean = part.trim_matches(|c: char| c == '"' || c == '\'' || c == '`');
+                if let Some(decoded_url) = decode_url_percent(clean) {
+                    candidates.push((clean.to_string(), decoded_url));
+                }
+            }
         }
     }
 

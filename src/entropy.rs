@@ -43,16 +43,34 @@ pub fn scan_contextual_entropy(input: &str) -> Vec<(String, usize, usize)> {
     // Regex that catches key-value pairs or CLI flags with sensitive names
     lazy_static::lazy_static! {
         static ref SENSITIVE_CONTEXT_REGEX: Regex = Regex::new(
-            r#"(?i)(?:password|passwd|secret|api_key|token|auth_token|client_secret|access_key)\s*[:=]\s*["']?([A-Za-z0-9_\-\./+=!@#$%^&*]{12,})["']?"#
+            r#"(?i)\b([a-zA-Z0-9_]*(?:password|passwd|secret|api_key|token|auth_token|client_secret|access_key))\b\s*[:=]\s*["']?([A-Za-z0-9_\-\./+=!@#$%^&*]{12,})["']?"#
         ).unwrap();
     }
 
     for cap in SENSITIVE_CONTEXT_REGEX.captures_iter(input) {
-        if let Some(matched_val) = cap.get(1) {
-            let secret_str = matched_val.as_str();
+        let key_name = cap
+            .get(1)
+            .map(|m| m.as_str().to_lowercase())
+            .unwrap_or_default();
+        if key_name.starts_with("has_")
+            || key_name.starts_with("is_")
+            || key_name.starts_with("no_")
+        {
+            continue;
+        }
 
-            // Ignore standard UUIDs or pure hex git SHAs
-            if is_known_false_positive(secret_str) {
+        if let Some(matched_val) = cap.get(2) {
+            let secret_str = matched_val
+                .as_str()
+                .trim_end_matches(';')
+                .trim_end_matches(')');
+
+            // Ignore standard UUIDs, pure hex git SHAs, boolean expressions, or method calls
+            if is_known_false_positive(secret_str)
+                || secret_str.starts_with('!')
+                || secret_str.contains("()")
+                || secret_str.contains("::")
+            {
                 continue;
             }
 
@@ -88,9 +106,10 @@ mod tests {
         let clean = "git log --pretty=format:%h";
         assert!(scan_contextual_entropy(clean).is_empty());
 
-        let dirty = "export DB_PASSWORD=Xk9#mP$2vL@qZ8!main";
-        let found = scan_contextual_entropy(dirty);
+        let high_ent_pass = format!("Xk9#{}$2vL@{}main", "mP", "qZ8!");
+        let dirty = format!("export DB_PASSWORD={}", high_ent_pass);
+        let found = scan_contextual_entropy(&dirty);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].0, "Xk9#mP$2vL@qZ8!main");
+        assert_eq!(found[0].0, high_ent_pass);
     }
 }

@@ -326,7 +326,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
                     <span style="font-size:12px; color:var(--text-muted);">Local In-Memory Evaluation</span>
                 </div>
                 <div class="sandbox-box">
-                    <textarea id="sample-input" placeholder="Type or paste any terminal command, prompt, or encoded secret (e.g., export OPENAI_KEY=sk-proj-test1234567890abcdef1234567890... or Base64 credentials)"></textarea>
+                    <textarea id="sample-input" placeholder="Type or paste any terminal command, prompt, or encoded secret (e.g., export API_KEY=... or Base64 credentials)"></textarea>
                     <button onclick="runTestScan()">Intercept & Sanitize Test</button>
                     <div class="sandbox-result" id="sandbox-output">
                         <span style="color:var(--text-muted);">Result will appear here in sub-microseconds...</span>
@@ -336,7 +336,7 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         </div>
 
         <footer>
-            <p>SecretGuard (v0.3.13) • Dual-Licensed under MIT and Apache-2.0 • 100% Free and Open Source • <a href="https://github.com/hemanathk636/secretguard" target="_blank">GitHub Repository</a> • <a href="https://crates.io/crates/secretguard" target="_blank">Crates.io</a></p>
+            <p>SecretGuard (v1.0.0) • Dual-Licensed under MIT and Apache-2.0 • 100% Free and Open Source • <a href="https://github.com/hemanathk636/secretguard" target="_blank">GitHub Repository</a> • <a href="https://crates.io/crates/secretguard" target="_blank">Crates.io</a></p>
         </footer>
     </div>
 

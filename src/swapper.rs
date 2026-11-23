@@ -97,13 +97,27 @@ impl SecretSwapper {
     }
 
     fn handle_client(&self, mut client_stream: TcpStream) -> std::io::Result<()> {
-        let mut buffer = [0u8; 8192];
-        let bytes_read = client_stream.read(&mut buffer)?;
-        if bytes_read == 0 {
-            return Ok(());
-        }
+        let _ = client_stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        let _ = client_stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
 
-        let cfg = self.config.lock().unwrap().clone();
+        let mut buffer = [0u8; 8192];
+        let bytes_read = match client_stream.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(n) => n,
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        let cfg = match self.config.lock() {
+            Ok(c) => c.clone(),
+            Err(e) => e.into_inner().clone(),
+        };
+
         let (rewritten_req, swapped_count) =
             Self::swap_request_payload(&buffer[..bytes_read], &cfg);
 
@@ -113,17 +127,31 @@ impl SecretSwapper {
             // HTTPS Tunnel establish simulation response
             let response = "HTTP/1.1 200 Connection Established\r\n\r\n";
             client_stream.write_all(response.as_bytes())?;
-        } else {
-            // Standard HTTP intercepted relay
-            let response_body = format!(
+        } else if req_str.starts_with("GET ")
+            || req_str.starts_with("POST ")
+            || req_str.starts_with("PUT ")
+            || req_str.starts_with("DELETE ")
+            || req_str.starts_with("HEAD ")
+            || req_str.starts_with("OPTIONS ")
+            || req_str.starts_with("PATCH ")
+        {
+            // Standard HTTP intercepted relay simulation
+            let raw_response_body = format!(
                 r#"{{"status":"swapped","swapped_tokens":{},"simulation":true,"message":"SecretGuard Local Swapper [Simulation]: Mock tokens substituted for local testing."}}"#,
                 swapped_count
             );
+            // Scrub response payload to prevent accidental leakage of real secrets
+            let (scrubbed_body, _) =
+                Self::swap_response_payload(raw_response_body.as_bytes(), &cfg);
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                response_body.len(),
-                response_body
+                scrubbed_body.len(),
+                String::from_utf8_lossy(&scrubbed_body)
             );
+            client_stream.write_all(response.as_bytes())?;
+        } else {
+            // Malformed or non-HTTP request: respond with safe 400 Bad Request without leaking any internal state
+            let response = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 15\r\nConnection: close\r\n\r\n400 Bad Request";
             client_stream.write_all(response.as_bytes())?;
         }
 

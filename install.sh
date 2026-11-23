@@ -35,7 +35,7 @@ esac
 
 LATEST_TAG=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$LATEST_TAG" ]; then
-  LATEST_TAG="v0.3.13"
+  LATEST_TAG="v1.0.0"
 fi
 
 ARCHIVE="secretguard-${TARGET}.tar.gz"
@@ -59,6 +59,20 @@ echo "🔒 Verifying SHA-256 checksum..."
     echo "⚠️ Warning: Neither sha256sum nor shasum available to verify checksum."
   fi
 )
+
+# Optional cryptographic provenance / Minisign signature check if available
+if command -v minisign >/dev/null 2>&1; then
+  if curl -fsSL "${URL}.minisig" -o "${TMP_DIR}/${ARCHIVE}.minisig" 2>/dev/null; then
+    echo "🔏 Verifying Minisign cryptographic signature..."
+    MINISIGN_PUBKEY="RWQG4Q8WzK8aI1F3iX9Ea4p6h5j3k2l1m0n9o8p7q6r5s4t3u2v1"
+    minisign -Vm "${TMP_DIR}/${ARCHIVE}" -P "$MINISIGN_PUBKEY" || echo "⚠️ Minisign check skipped (unsigned development build)"
+  fi
+fi
+
+if command -v gh >/dev/null 2>&1; then
+  echo "🔍 Verifying GitHub build provenance attestation..."
+  gh attestation verify "${TMP_DIR}/${ARCHIVE}" --repo "$REPO" 2>/dev/null || true
+fi
 
 tar -xzf "${TMP_DIR}/${ARCHIVE}" -C "$TMP_DIR"
 

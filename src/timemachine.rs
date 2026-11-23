@@ -232,14 +232,14 @@ foreach ($f in $files) {
         }
     }
     (Get-Content -Raw $f.FullName) `
-        -replace 'sk-(?:proj-)?[a-zA-Z0-9_-]{32,}', 'sk-proj-SCRUBBED00000000000000000' `
-        -replace 'sk-ant-api03-[a-zA-Z0-9_-]{80,}', 'sk-ant-api03-SCRUBBED00000000000000000' `
-        -replace 'ghp_[a-zA-Z0-9]{20,}', 'ghp_SCRUBBED00000000000000000000' `
-        -replace 'AKIA[0-9A-Z]{16}', 'AKIAFAKE000000000000' `
+        -replace 'sk-(?:proj-)?[a-zA-Z0-9_-]{32,}', '[REDACTED_OPENAI_KEY]' `
+        -replace 'sk-ant-api03-[a-zA-Z0-9_-]{80,}', '[REDACTED_ANTHROPIC_KEY]' `
+        -replace 'ghp_[a-zA-Z0-9]{20,}', '[REDACTED_GITHUB_TOKEN]' `
+        -replace 'AKIA[0-9A-Z]{16}', '[REDACTED_AWS_KEY]' `
         -replace 'sk_live_[0-9a-zA-Z]{24,}', '[REDACTED_STRIPE_KEY]' `
-        -replace 'xox[baprs]-[0-9a-zA-Z]{10,48}', 'xoxb-SCRUBBED000000000000' `
-        -replace 'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}', 'SG.SCRUBBED000000000000.000000000000' `
-        -replace 'AIza[0-9A-Za-z_-]{35}', 'AIzaSyFAKE00000000000000000000000' `
+        -replace 'xox[baprs]-[0-9a-zA-Z]{10,48}', '[REDACTED_SLACK_TOKEN]' `
+        -replace 'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}', '[REDACTED_SENDGRID_KEY]' `
+        -replace 'AIza[0-9A-Za-z_-]{35}', '[REDACTED_GOOGLE_API_KEY]' `
         | Set-Content -NoNewline $f.FullName
 }
 "#
@@ -254,13 +254,13 @@ find . -type f -not -path './.git/*' | while read -r f; do
             continue
         fi
     fi
-    sed -e 's/sk-[a-zA-Z0-9]\{20,\}/sk-proj-SCRUBBED00000000000000000/g' \
-        -e 's/ghp_[a-zA-Z0-9]\{20,\}/ghp_SCRUBBED00000000000000000000/g' \
-        -e 's/AKIA[0-9A-Z]\{16\}/AKIAFAKE000000000000/g' \
+    sed -e 's/sk-[a-zA-Z0-9]\{20,\}/[REDACTED_OPENAI_KEY]/g' \
+        -e 's/ghp_[a-zA-Z0-9]\{20,\}/[REDACTED_GITHUB_TOKEN]/g' \
+        -e 's/AKIA[0-9A-Z]\{16\}/[REDACTED_AWS_KEY]/g' \
         -e 's/sk_live_[0-9a-zA-Z]\{24,\}/[REDACTED_STRIPE_KEY]/g' \
-        -e 's/xox[baprs]-[0-9a-zA-Z]\{10,48\}/xoxb-SCRUBBED000000000000/g' \
-        -e 's/SG\.[a-zA-Z0-9_-]\{22\}\.[a-zA-Z0-9_-]\{43\}/SG.SCRUBBED000000000000.000000000000/g' \
-        -e 's/AIza[0-9A-Za-z_-]\{35\}/AIzaSyFAKE00000000000000000000000/g' "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" 2>/dev/null || rm -f "$f.tmp"
+        -e 's/xox[baprs]-[0-9a-zA-Z]\{10,48\}/[REDACTED_SLACK_TOKEN]/g' \
+        -e 's/SG\.[a-zA-Z0-9_-]\{22\}\.[a-zA-Z0-9_-]\{43\}/[REDACTED_SENDGRID_KEY]/g' \
+        -e 's/AIza[0-9A-Za-z_-]\{35\}/[REDACTED_GOOGLE_API_KEY]/g' "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" 2>/dev/null || rm -f "$f.tmp"
 done
 "#
         };

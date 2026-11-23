@@ -8,7 +8,7 @@ use std::thread;
 
 fn print_usage() {
     eprintln!(
-        r#"SecretGuard (v0.3.13) — Sub-millisecond Terminal Secret & Privacy Guard
+        r#"SecretGuard (v1.0.0) — Sub-millisecond Terminal Secret & Privacy Guard
 The Autonomous Developer Security & AI Agent Firewall Platform
 
 USAGE:
@@ -688,11 +688,37 @@ fn scan_file(
     Ok((lines_count, leaks_count))
 }
 
+fn load_ignore_patterns() -> Vec<String> {
+    let mut ignores = vec![
+        "target".to_string(),
+        "node_modules".to_string(),
+        "vendor".to_string(),
+        "dist".to_string(),
+        "build".to_string(),
+        ".git".to_string(),
+    ];
+    if let Ok(content) = std::fs::read_to_string(".secretguardignore") {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                ignores.push(
+                    trimmed
+                        .trim_end_matches('/')
+                        .trim_end_matches('\\')
+                        .to_string(),
+                );
+            }
+        }
+    }
+    ignores
+}
+
 fn scan_dir_recursive(
     dir: &Path,
     engine: &SecretGuardEngine,
     stats: &mut ScanStats,
     json_mode: bool,
+    ignores: &[String],
 ) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -726,13 +752,14 @@ fn scan_dir_recursive(
         if name.starts_with('.') && name != ".env" && !name.starts_with(".env.") {
             continue;
         }
-        if name == "target"
-            || name == "node_modules"
-            || name == "vendor"
-            || name == "dist"
-            || name == "build"
-            || name == ".git"
-        {
+        let p_str = p.to_string_lossy().replace('\\', "/");
+        if ignores.iter().any(|ig| {
+            let ig_norm = ig.replace('\\', "/");
+            name == *ig
+                || p_str.ends_with(&ig_norm)
+                || p_str.contains(&format!("/{}/", ig_norm))
+                || p_str.starts_with(&format!("{}/", ig_norm))
+        }) {
             continue;
         }
 
@@ -754,8 +781,50 @@ fn scan_dir_recursive(
         }
 
         if meta.is_dir() {
-            scan_dir_recursive(&p, engine, stats, json_mode);
+            scan_dir_recursive(&p, engine, stats, json_mode, ignores);
         } else if meta.is_file() {
+            if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
+                let ext_lower = ext.to_ascii_lowercase();
+                if matches!(
+                    ext_lower.as_str(),
+                    "png"
+                        | "jpg"
+                        | "jpeg"
+                        | "gif"
+                        | "ico"
+                        | "svg"
+                        | "webp"
+                        | "bmp"
+                        | "tiff"
+                        | "pdf"
+                        | "zip"
+                        | "tar"
+                        | "gz"
+                        | "bz2"
+                        | "xz"
+                        | "7z"
+                        | "woff"
+                        | "woff2"
+                        | "ttf"
+                        | "eot"
+                        | "otf"
+                        | "mp4"
+                        | "webm"
+                        | "mp3"
+                        | "wav"
+                        | "ogg"
+                        | "exe"
+                        | "dll"
+                        | "so"
+                        | "dylib"
+                        | "bin"
+                        | "vsix"
+                        | "lock"
+                ) {
+                    continue;
+                }
+            }
+
             stats.files_scanned += 1;
             match scan_file(&p, engine, json_mode) {
                 Ok((lines, leaks)) => {
@@ -784,6 +853,7 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
 
     let mut stats = ScanStats::default();
     let start_scan = std::time::Instant::now();
+    let ignores = load_ignore_patterns();
 
     if path.is_file() {
         stats.files_scanned = 1;
@@ -798,7 +868,7 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
             }
         }
     } else if path.is_dir() {
-        scan_dir_recursive(&path, engine, &mut stats, json_mode);
+        scan_dir_recursive(&path, engine, &mut stats, json_mode, &ignores);
     } else {
         eprintln!("❌ Target path '{}' does not exist.", path.display());
         process::exit(1);
@@ -818,7 +888,9 @@ fn run_scan(target_path: Option<&str>, engine: &SecretGuardEngine, json_mode: bo
             "clean": stats.leaks_found == 0 && stats.errors_encountered == 0
         });
         println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
-        if stats.leaks_found > 0 || stats.errors_encountered > 0 {
+        if stats.errors_encountered > 0 {
+            process::exit(2);
+        } else if stats.leaks_found > 0 {
             process::exit(1);
         } else {
             process::exit(0);
@@ -1031,7 +1103,7 @@ fn main() {
         process::exit(0);
     }
     if subcommand == "--version" || subcommand == "-V" || subcommand == "version" {
-        println!("SecretGuard v0.3.13 (sub-millisecond terminal secret interceptor & AI firewall)");
+        println!("SecretGuard v1.0.0 (sub-millisecond terminal secret interceptor & AI firewall)");
         process::exit(0);
     }
 

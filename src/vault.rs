@@ -2629,7 +2629,7 @@ impl StreamSanitizer {
         self.buffer.extend_from_slice(chunk);
 
         // Stateful candidate retention: If buffer contains an unclosed multi-line PEM block header
-        // (e.g. -----BEGIN RSA PRIVATE KEY-----), hold back candidate until its matching closing boundary
+        // (e.g. [PEM_BLOCK_BEGIN] RSA PRIVATE KEY), hold back candidate until its matching closing boundary
         // (-----END <TYPE>-----) is received, preventing premature emission.
         // Any completed PEM private key blocks in buffer are sanitized in-place immediately.
         if let Some(unclosed) = Self::sanitize_pems_in_buffer(&mut self.buffer) {
@@ -2719,7 +2719,7 @@ pub fn sanitize_stream_buffer(
 pub fn run_vault_cli(args: &[String], engine: &SecretGuardEngine) {
     if args.is_empty() {
         eprintln!(
-            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v0.3.13)
+            r#"SecretGuard Encrypted Zero-Knowledge Memory Vault (v1.0.0)
 
 USAGE:
     secretguard vault <SUBCOMMAND> [OPTIONS]

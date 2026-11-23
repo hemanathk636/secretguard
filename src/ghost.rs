@@ -67,13 +67,13 @@ impl GhostVirtualizer {
         GhostSessionTable::default()
     }
 
-    /// Encrypts and securely persists Ghost token mapping atomically with restricted permissions (0600)
+    /// Encrypts and securely persists Ghost token mapping atomically with restricted permissions (0600),
+    /// exclusive file creation semantics (O_EXCL), symlink rejection, parent fsync, and Windows ReplaceFileW.
     pub fn save_session(table: &GhostSessionTable) -> Result<(), std::io::Error> {
         let path = Self::try_get_session_path()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let _ = fs::create_dir_all(parent);
 
         // Clean up legacy plaintext session file if it exists
         let legacy_json = path.with_extension("json");
@@ -85,49 +85,27 @@ impl GhostVirtualizer {
         let key = Self::get_encryption_key().map_err(std::io::Error::other)?;
         let encrypted = encrypt_vault_payload(&serialized, &key).map_err(std::io::Error::other)?;
 
-        // Write atomically via a temporary file with restricted 0600 permissions
-        let nonce_suffix = format!(
-            "{}.{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-        let temp_path = path.with_extension(format!("tmp.{}", nonce_suffix));
+        // Unpredictable unique temporary file to eliminate race conditions and symlink replacement vulnerabilities
+        let pid = std::process::id();
+        let mut nonce = [0u8; 8];
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut nonce);
+        let tmp_filename = format!(".ghost_session.{}.{:x}.tmp", pid, u64::from_le_bytes(nonce));
+        let temp_path = parent.join(tmp_filename);
 
-        let write_res = (|| -> Result<(), std::io::Error> {
-            #[cfg(unix)]
-            {
-                use std::io::Write;
-                use std::os::unix::fs::OpenOptionsExt;
-                let mut file = fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .mode(0o600)
-                    .open(&temp_path)?;
-                file.write_all(&encrypted)?;
-                file.sync_all()?;
-            }
-            #[cfg(not(unix))]
-            {
-                use std::io::Write;
-                let mut file = fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&temp_path)?;
-                file.write_all(&encrypted)?;
-                file.sync_all()?;
-            }
-            fs::rename(&temp_path, &path)?;
-            Ok(())
-        })();
-
-        if write_res.is_err() && temp_path.exists() {
+        use std::io::Write;
+        let mut file = crate::vault::create_secure_file_exclusive(&temp_path, 0o600)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
+        let write_res = file.write_all(&encrypted).and_then(|_| file.sync_all());
+        if let Err(e) = write_res {
+            drop(file);
             let _ = fs::remove_file(&temp_path);
+            return Err(e);
         }
+        drop(file);
 
-        write_res
+        crate::vault::atomic_replace_file(&temp_path, &path).map_err(std::io::Error::other)?;
+
+        Ok(())
     }
 
     /// Generates a format-preserving polymorphic Ghost Token from a real key
