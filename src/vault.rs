@@ -713,8 +713,9 @@ pub mod win32 {
 /// 6. Private permissions are strictly enforced (0o700 for directories, 0o600 for files) and re-verified.
 ///
 /// Fails closed upon any filesystem metadata inspection error (except NotFound for target).
-pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
-    // 0. Reject dangerous parent directory traversal components ("..") across all platforms
+/// Resolves and canonicalizes security storage paths, eliminating traversal components
+/// and transparently mapping Apple macOS root system aliases (/var -> /private/var, /tmp -> /private/tmp)
+pub fn resolve_canonical_security_path(path: &Path) -> Result<PathBuf, String> {
     for comp in path.components() {
         if comp == std::path::Component::ParentDir {
             return Err(format!(
@@ -724,8 +725,7 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
         }
     }
 
-    // Resolve relative paths against validated current working directory across all platforms
-    let resolved_path = if path.is_relative() {
+    let resolved = if path.is_relative() {
         let cwd = std::env::current_dir().map_err(|e| {
             format!(
                 "Security Error: Cannot determine current working directory: {}. Aborting.",
@@ -736,6 +736,25 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
     } else {
         path.to_path_buf()
     };
+
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS (Darwin BSD), Apple aliases /var -> /private/var, /tmp -> /private/tmp, and /etc -> /private/etc.
+        // Resolving these canonical system mount prefixes avoids encountering Apple's root symlinks under O_NOFOLLOW.
+        if let Ok(rel) = resolved.strip_prefix("/var") {
+            return Ok(PathBuf::from("/private/var").join(rel));
+        } else if let Ok(rel) = resolved.strip_prefix("/tmp") {
+            return Ok(PathBuf::from("/private/tmp").join(rel));
+        } else if let Ok(rel) = resolved.strip_prefix("/etc") {
+            return Ok(PathBuf::from("/private/etc").join(rel));
+        }
+    }
+
+    Ok(resolved)
+}
+
+pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
+    let resolved_path = resolve_canonical_security_path(path)?;
 
     #[cfg(unix)]
     {
@@ -1181,26 +1200,7 @@ pub fn anchor_ancestor_directories(resolved_path: &Path) -> Result<AncestorGuard
 ///   and regular file attributes, validates the Security Descriptor directly on the handle (enforcing the strict target allow-list),
 ///   and returns the open handle.
 pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String> {
-    for comp in path.components() {
-        if comp == std::path::Component::ParentDir {
-            return Err(format!(
-                "Security Error: Path '{}' contains parent directory ('..') traversal. Aborting.",
-                path.display()
-            ));
-        }
-    }
-
-    let resolved_path = if path.is_relative() {
-        let cwd = std::env::current_dir().map_err(|e| {
-            format!(
-                "Security Error: Cannot determine current working directory: {}. Aborting.",
-                e
-            )
-        })?;
-        cwd.join(path)
-    } else {
-        path.to_path_buf()
-    };
+    let resolved_path = resolve_canonical_security_path(path)?;
 
     #[cfg(unix)]
     {
@@ -1501,26 +1501,7 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
 ///   creates the target file handle exclusively with `CREATE_NEW | FILE_FLAG_OPEN_REPARSE_POINT` while ancestor handles are held,
 ///   verifies attributes and Security Descriptor directly on the handle, and returns the open handle.
 pub fn create_secure_file_exclusive(path: &Path, mode: u32) -> Result<fs::File, String> {
-    for comp in path.components() {
-        if comp == std::path::Component::ParentDir {
-            return Err(format!(
-                "Security Error: Path '{}' contains parent directory ('..') traversal. Aborting.",
-                path.display()
-            ));
-        }
-    }
-
-    let resolved_path = if path.is_relative() {
-        let cwd = std::env::current_dir().map_err(|e| {
-            format!(
-                "Security Error: Cannot determine current working directory: {}. Aborting.",
-                e
-            )
-        })?;
-        cwd.join(path)
-    } else {
-        path.to_path_buf()
-    };
+    let resolved_path = resolve_canonical_security_path(path)?;
 
     #[cfg(unix)]
     {
