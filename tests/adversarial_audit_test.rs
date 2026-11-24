@@ -4,9 +4,7 @@ use secretguard::timemachine::TimeMachine;
 use secretguard::SecretGuardEngine;
 use std::fs;
 use std::process::Command;
-use std::sync::Mutex;
-
-static ADV_TEST_MUTEX: Mutex<()> = Mutex::new(());
+use secretguard::vault::TERMINAL_INPUT_LOCK as ADV_TEST_MUTEX;
 
 #[test]
 fn test_ghost_session_aes_256_gcm_encryption() {
@@ -71,6 +69,7 @@ fn test_genuine_provider_revocation_classification() {
             .unwrap()
             .as_nanos()
     ));
+    let temp_dir = secretguard::vault::resolve_canonical_security_path(&temp_dir).unwrap_or(temp_dir);
     fs::create_dir_all(&temp_dir).unwrap();
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
 

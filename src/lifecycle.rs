@@ -191,6 +191,7 @@ impl LifecycleManager {
             .unwrap_or_else(|_| {
                 crate::vault::get_vault_dir().unwrap_or_else(|_| PathBuf::from(".secretguard"))
             });
+        let base = crate::vault::resolve_canonical_security_path(&base).unwrap_or(base);
         base.join("lifecycle.json")
     }
 
