@@ -1728,7 +1728,8 @@ pub fn get_vault_dir() -> Result<PathBuf, String> {
         })?;
         // Post-validate created directory to enforce 0700 mode
         validate_secure_path(&p, false)?;
-        return Ok(p);
+        let canon = resolve_canonical_security_path(&p)?;
+        return Ok(canon);
     }
 
     let base_dir = env::var("USERPROFILE")

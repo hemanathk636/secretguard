@@ -259,7 +259,20 @@ fn test_audit_hash_chain_tamper_detection() -> TestCaseResult {
 }
 
 fn test_delegated_execution_secret_scrubbing() -> TestCaseResult {
-    let broker = SecurityBroker::new();
+    let broker = match SecurityBroker::try_new() {
+        Ok(b) => b,
+        Err(e) => {
+            return TestCaseResult {
+                id: "SIM-05".to_string(),
+                name: "Delegated Execution Secret Scrubbing".to_string(),
+                description:
+                    "Verify that delegated operations never reflect protected secrets to callers"
+                        .to_string(),
+                passed: false,
+                details: format!("Broker initialization failed: {}", e),
+            };
+        }
+    };
     let agent = IdentityContext::mock(
         "claude-worker",
         RequesterType::AutonomousAgent,
@@ -390,7 +403,25 @@ mod tests {
 
     #[test]
     fn test_all_self_tests_pass() {
+        let _lock = crate::vault::TERMINAL_INPUT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let temp_dir = std::env::temp_dir().join(format!(
+            "sg_selftest_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
         let report = run_security_self_test();
+
+        std::env::remove_var("SECRETGUARD_DIR");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
         assert!(
             report.is_all_passed(),
             "Self-test report had failures: {:?}",
