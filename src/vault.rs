@@ -2388,6 +2388,11 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         }
 
         // Explicitly restore echo in normal userspace context (guaranteed async-signal-safe architecture)
+        if has_termios {
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &orig_termios);
+            }
+        }
         let _ = Command::new("stty").arg("echo").status();
 
         if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
