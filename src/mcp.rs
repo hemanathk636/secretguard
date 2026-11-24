@@ -248,11 +248,13 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                             .get("token")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
+                        let parent_pid = crate::identity::get_parent_pid(std::process::id()).ok();
+                        let default_pid = parent_pid.unwrap_or_else(std::process::id);
                         let pid = arguments
                             .get("pid")
                             .and_then(|v| v.as_u64())
                             .map(|p| p as u32)
-                            .unwrap_or_else(std::process::id);
+                            .unwrap_or(default_pid);
 
                         let auth_msg = crate::ipc::IpcMessage::Authenticate {
                             token: auth_tok_str.to_string(),
@@ -260,7 +262,10 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                             pid,
                         };
 
-                        match state.ipc_server.handle_message(&auth_msg) {
+                        match state
+                            .ipc_server
+                            .handle_message_with_peer(&auth_msg, parent_pid)
+                        {
                             crate::ipc::IpcMessage::AuthenticateResponse {
                                 authenticated,
                                 session_id,

@@ -180,6 +180,11 @@ impl IpcServer {
 
     /// Processes an incoming IPC message and returns the response
     pub fn handle_message(&self, msg: &IpcMessage) -> IpcMessage {
+        self.handle_message_with_peer(msg, None)
+    }
+
+    /// Processes an incoming IPC message with kernel-verified peer PID validation
+    pub fn handle_message_with_peer(&self, msg: &IpcMessage, peer_pid: Option<u32>) -> IpcMessage {
         match msg {
             IpcMessage::Authenticate {
                 token,
@@ -194,8 +199,26 @@ impl IpcServer {
                     };
                 }
 
+                // If OS peer_pid is provided from kernel peer identification,
+                // verify that client-claimed PID matches OS kernel peer PID to block spoofing
+                let effective_pid = if let Some(os_pid) = peer_pid {
+                    if *pid != 0 && *pid != os_pid {
+                        return IpcMessage::AuthenticateResponse {
+                            authenticated: false,
+                            session_id: String::new(),
+                            message: format!(
+                                "Security Violation: PID spoofing detected! Claimed PID {} does not match kernel peer PID {}.",
+                                pid, os_pid
+                            ),
+                        };
+                    }
+                    os_pid
+                } else {
+                    *pid
+                };
+
                 // Verify client PID through the OS kernel to prevent identity spoofing
-                let verified_ident = match IdentityContext::from_pid(*pid) {
+                let verified_ident = match IdentityContext::from_pid(effective_pid) {
                     Ok(ident) => ident,
                     Err(e) => {
                         return IpcMessage::AuthenticateResponse {
@@ -203,7 +226,7 @@ impl IpcServer {
                             session_id: String::new(),
                             message: format!(
                                 "Security Violation: Kernel process verification failed for PID {} ({}).",
-                                pid, e
+                                effective_pid, e
                             ),
                         };
                     }
@@ -222,7 +245,7 @@ impl IpcServer {
                 let session = AuthenticatedSession {
                     session_id: session_id.clone(),
                     client_name: verified_ident.executable_name.clone(),
-                    pid: *pid,
+                    pid: effective_pid,
                     requester_type: verified_ident.requester_type,
                     executable_path: verified_ident.executable_path.clone(),
                     binary_hash: verified_ident.binary_hash.clone(),
@@ -240,7 +263,7 @@ impl IpcServer {
                     session_id,
                     message: format!(
                         "Authenticated as '{}' (PID {}, Trust Tier: {:?})",
-                        verified_ident.executable_name, pid, verified_ident.trust_tier
+                        verified_ident.executable_name, effective_pid, verified_ident.trust_tier
                     ),
                 }
             }
@@ -339,7 +362,7 @@ impl IpcServer {
         }
     }
 
-    /// Runs local loopback TCP IPC transport listener
+    /// Runs local loopback TCP IPC transport listener with genuine OS peer verification
     pub fn run_listener(&self, port: u16) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port))?;
         println!(
@@ -348,11 +371,22 @@ impl IpcServer {
         );
 
         for mut stream in listener.incoming().flatten() {
+            let peer_pid = stream.peer_addr().ok().and_then(|addr| {
+                #[cfg(windows)]
+                {
+                    get_tcp_peer_pid(addr.port())
+                }
+                #[cfg(unix)]
+                {
+                    None
+                }
+            });
+
             let mut reader = BufReader::new(stream.try_clone()?);
             let mut line = String::new();
             if reader.read_line(&mut line)? > 0 {
                 if let Ok(req_msg) = serde_json::from_str::<IpcMessage>(line.trim()) {
-                    let resp_msg = self.handle_message(&req_msg);
+                    let resp_msg = self.handle_message_with_peer(&req_msg, peer_pid);
                     let resp_json = serde_json::to_string(&resp_msg).unwrap_or_default();
                     let _ = writeln!(stream, "{}", resp_json);
                     let _ = stream.flush();
@@ -361,6 +395,84 @@ impl IpcServer {
         }
         Ok(())
     }
+}
+
+#[cfg(windows)]
+fn get_tcp_peer_pid(client_port: u16) -> Option<u32> {
+    #[repr(C)]
+    struct MIB_TCPROW_OWNER_PID {
+        _state: u32,
+        _local_addr: u32,
+        local_port: u32,
+        _remote_addr: u32,
+        _remote_port: u32,
+        owning_pid: u32,
+    }
+
+    #[repr(C)]
+    struct MIB_TCPTABLE_OWNER_PID {
+        num_entries: u32,
+        table: [MIB_TCPROW_OWNER_PID; 1],
+    }
+
+    #[link(name = "iphlpapi")]
+    extern "system" {
+        fn GetExtendedTcpTable(
+            pTcpTable: *mut std::ffi::c_void,
+            pdwSize: *mut u32,
+            bOrder: i32,
+            ulAf: u32,
+            tableClass: u32,
+            reserved: u32,
+        ) -> u32;
+    }
+
+    const AF_INET: u32 = 2;
+    const TCP_TABLE_OWNER_PID_ALL: u32 = 5;
+
+    let mut size: u32 = 0;
+    unsafe {
+        GetExtendedTcpTable(
+            std::ptr::null_mut(),
+            &mut size,
+            0,
+            AF_INET,
+            TCP_TABLE_OWNER_PID_ALL,
+            0,
+        );
+    }
+    if size == 0 {
+        return None;
+    }
+
+    let mut buf: Vec<u8> = vec![0; size as usize];
+    let ret = unsafe {
+        GetExtendedTcpTable(
+            buf.as_mut_ptr() as *mut std::ffi::c_void,
+            &mut size,
+            0,
+            AF_INET,
+            TCP_TABLE_OWNER_PID_ALL,
+            0,
+        )
+    };
+
+    if ret != 0 {
+        return None;
+    }
+
+    let table = unsafe { &*(buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
+    let entries = table.num_entries as usize;
+    let ptr = buf.as_ptr() as usize + std::mem::size_of::<u32>();
+    let rows = unsafe { std::slice::from_raw_parts(ptr as *const MIB_TCPROW_OWNER_PID, entries) };
+
+    for row in rows {
+        let port_be = u16::from_be(row.local_port as u16);
+        if port_be == client_port || (row.local_port >> 16) == (client_port as u32) {
+            return Some(row.owning_pid);
+        }
+    }
+    None
 }
 
 /// Client helper: sends an authenticated IPC message across loopback socket

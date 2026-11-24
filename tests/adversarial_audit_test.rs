@@ -10,7 +10,7 @@ static ADV_TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_ghost_session_aes_256_gcm_encryption() {
-    let _lock = ADV_TEST_MUTEX.lock().unwrap();
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let _engine = SecretGuardEngine::new();
     let temp_dir = std::env::temp_dir().join(format!(
         "sg_adv_ghost_{}_{}",
@@ -65,14 +65,16 @@ fn test_genuine_provider_revocation_classification() {
     let engine = SecretGuardEngine::new();
 
     let github_token = "ghp_1234567890abcdef1234567890abcdef1234";
-    let report_gh = ImmuneEngine::trigger_containment(github_token, &engine);
+    let report_gh = ImmuneEngine::trigger_containment(github_token, &engine)
+        .expect("GitHub token containment should succeed");
     assert_eq!(report_gh.provider, "GitHub Personal Access Token");
     assert!(report_gh
         .direct_rotation_url
         .contains("github.com/settings/tokens"));
 
     let aws_key = "AKIAIOSFODNN7EXAMPLE";
-    let report_aws = ImmuneEngine::trigger_containment(aws_key, &engine);
+    let report_aws = ImmuneEngine::trigger_containment(aws_key, &engine)
+        .expect("AWS key containment should succeed");
     assert_eq!(report_aws.provider, "AWS IAM Access Key");
     assert!(report_aws
         .direct_rotation_url
@@ -142,7 +144,7 @@ fn test_deep_git_history_scrubbing_across_all_commits() {
 
 #[test]
 fn test_csprng_master_key_generation() {
-    let _lock = ADV_TEST_MUTEX.lock().unwrap();
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!(
         "sg_adv_master_{}_{}",
         std::process::id(),
@@ -223,7 +225,7 @@ fn test_encoded_secret_base64_detection() {
 
 #[test]
 fn test_adversarial_spoofed_pid_rejection() {
-    let _lock = ADV_TEST_MUTEX.lock().unwrap();
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!("sg_adv_pid_{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
@@ -262,7 +264,7 @@ fn test_adversarial_spoofed_pid_rejection() {
 
 #[test]
 fn test_adversarial_ssrf_and_dns_rebinding_defense() {
-    let _lock = ADV_TEST_MUTEX.lock().unwrap();
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
         "adversary-agent",
@@ -327,4 +329,143 @@ fn test_adversarial_ssrf_and_dns_rebinding_defense() {
             err
         );
     }
+}
+
+#[test]
+fn test_adversarial_peer_pid_mismatch_rejection() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!("sg_adv_peer_{}", std::process::id()));
+    let _ = fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
+    let server = secretguard::ipc::IpcServer::new();
+    let token = server.expected_token.clone();
+
+    // Adversary attempts to authenticate claiming PID 1000, but kernel reports peer PID 2000
+    let msg = secretguard::ipc::IpcMessage::Authenticate {
+        token,
+        client_name: "claude-code".to_string(),
+        pid: 1000,
+    };
+
+    let resp = server.handle_message_with_peer(&msg, Some(2000));
+    match resp {
+        secretguard::ipc::IpcMessage::AuthenticateResponse {
+            authenticated,
+            message,
+            ..
+        } => {
+            assert!(
+                !authenticated,
+                "Server must reject when claimed PID mismatches kernel peer PID"
+            );
+            assert!(
+                message.contains("PID spoofing detected"),
+                "Expected PID spoofing message, got: {}",
+                message
+            );
+        }
+        _ => panic!("Expected AuthenticateResponse"),
+    }
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_adversarial_header_injection_rejection() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let broker = secretguard::broker::SecurityBroker::new();
+    let agent = secretguard::identity::IdentityContext::mock(
+        "claude",
+        secretguard::identity::RequesterType::AutonomousAgent,
+        Some("org/repo"),
+        None,
+    );
+    let req = secretguard::policy::OperationRequest::new(
+        agent,
+        "GITHUB_TOKEN",
+        secretguard::policy::OperationType::HttpGet,
+        "test://api.github.com/repos/org/repo/pulls",
+    );
+
+    // Injection payload containing CR/LF to attempt header splitting or curl config injection
+    let malicious_secret = "ghp_validTokenPrefix\r\nheader = \"X-Injected-Header: pwned\"";
+    let res = broker.execute_delegated_call(&req, Some(malicious_secret));
+    assert!(
+        res.is_err(),
+        "Broker must reject secrets containing CR/LF header injection attempts"
+    );
+    let err = res.err().unwrap();
+    assert!(
+        err.contains("Header Injection Prevention") || err.contains("newline"),
+        "Expected header injection error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_adversarial_ambiguous_ip_rejection() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let broker = secretguard::broker::SecurityBroker::new();
+    let agent = secretguard::identity::IdentityContext::mock(
+        "agent",
+        secretguard::identity::RequesterType::AutonomousAgent,
+        Some("org/repo"),
+        None,
+    );
+
+    let ambiguous_ips = [
+        "https://0x7f000001/admin",
+        "https://0177.0.0.1/admin",
+        "https://2130706433/admin",
+    ];
+
+    for url in ambiguous_ips {
+        let req = secretguard::policy::OperationRequest::new(
+            agent.clone(),
+            "TEST_KEY",
+            secretguard::policy::OperationType::HttpGet,
+            url,
+        );
+        let err = broker
+            .execute_delegated_call(&req, Some("mock-secret"))
+            .expect_err(&format!("URL '{}' with ambiguous IP format must fail", url));
+        assert!(
+            err.contains("Ambiguous non-canonical IP") || err.contains("SSRF"),
+            "Expected ambiguous IP error for '{}', got: {}",
+            url,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_adversarial_fake_secretguard_hash_verification() {
+    use std::collections::HashMap;
+    let hints = HashMap::new();
+
+    // Adversary launches a process named secretguard.exe with wrong hash and no TTY
+    let (req_type, tier, score) = secretguard::identity::classify_requester_with_hash(
+        "secretguard.exe",
+        Some("untrusted_fake_sha256_hash_value"),
+        &[],
+        false,
+        &hints,
+    );
+
+    assert_eq!(
+        req_type,
+        secretguard::identity::RequesterType::UnknownProcess,
+        "Fake secretguard binary must not receive privileged human identity"
+    );
+    assert_eq!(
+        tier,
+        secretguard::identity::TrustTier::Tier0Blocked,
+        "Fake secretguard binary must be assigned Tier0Blocked"
+    );
+    assert_eq!(
+        score, 0,
+        "Fake secretguard binary must receive zero trust score"
+    );
 }

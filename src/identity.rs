@@ -105,12 +105,18 @@ impl IdentityContext {
         let is_interactive_tty = false;
 
         let lineage = collect_process_lineage(pid);
-        let (requester_type, trust_tier, trust_score) =
-            classify_requester(&exe_name, &lineage, is_interactive_tty, &env_hints);
+        let ppid = get_parent_pid(pid).ok();
+        let (requester_type, trust_tier, trust_score) = classify_requester_with_hash(
+            &exe_name,
+            binary_hash.as_deref(),
+            &lineage,
+            is_interactive_tty,
+            &env_hints,
+        );
 
         Ok(Self {
             pid,
-            ppid: lineage.first().and_then(|s| s.parse::<u32>().ok()),
+            ppid,
             executable_name: exe_name,
             executable_path: Some(current_exe),
             binary_hash,
@@ -206,6 +212,73 @@ fn query_process_info_by_pid(pid: u32) -> Result<(PathBuf, String), String> {
     Ok((path, exe_name))
 }
 
+#[cfg(windows)]
+/// Queries the parent process ID from the OS kernel using Toolhelp32 snapshot
+pub fn get_parent_pid(pid: u32) -> Result<u32, String> {
+    use std::os::windows::raw::HANDLE;
+
+    #[repr(C)]
+    struct PROCESSENTRY32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) -> HANDLE;
+        fn Process32FirstW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> i32;
+        fn Process32NextW(hSnapshot: HANDLE, lppe: *mut PROCESSENTRY32W) -> i32;
+        fn CloseHandle(hObject: HANDLE) -> i32;
+    }
+
+    const TH32CS_SNAPPROCESS: u32 = 0x00000002;
+    let invalid_handle = -1isize as HANDLE;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot.is_null() || snapshot == invalid_handle {
+        return Err("Failed to create toolhelp process snapshot".to_string());
+    }
+
+    let mut entry = PROCESSENTRY32W {
+        dw_size: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        cnt_usage: 0,
+        th32_process_id: 0,
+        th32_default_heap_id: 0,
+        th32_module_id: 0,
+        cnt_threads: 0,
+        th32_parent_process_id: 0,
+        pc_pri_class_base: 0,
+        dw_flags: 0,
+        sz_exe_file: [0u16; 260],
+    };
+
+    let mut found = None;
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                if entry.th32_process_id == pid {
+                    found = Some(entry.th32_parent_process_id);
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+    }
+
+    found.ok_or_else(|| format!("Parent PID not found for PID {}", pid))
+}
+
 #[cfg(unix)]
 fn query_process_info_by_pid(pid: u32) -> Result<(PathBuf, String), String> {
     let proc_exe = PathBuf::from(format!("/proc/{}/exe", pid));
@@ -225,6 +298,28 @@ fn query_process_info_by_pid(pid: u32) -> Result<(PathBuf, String), String> {
     }
     let exe_name = format!("proc_{}", pid);
     Ok((path, exe_name))
+}
+
+#[cfg(unix)]
+/// Queries the parent process ID from /proc/<pid>/stat or libc::getppid
+pub fn get_parent_pid(pid: u32) -> Result<u32, String> {
+    if pid == std::process::id() {
+        return Ok(unsafe { libc::getppid() as u32 });
+    }
+    let stat_file = PathBuf::from(format!("/proc/{}/stat", pid));
+    if let Ok(content) = std::fs::read_to_string(&stat_file) {
+        if let Some(idx) = content.rfind(')') {
+            let after = content[idx + 1..].trim_start();
+            let mut parts = after.split_whitespace();
+            let _state = parts.next();
+            if let Some(ppid_str) = parts.next() {
+                if let Ok(ppid) = ppid_str.parse::<u32>() {
+                    return Ok(ppid);
+                }
+            }
+        }
+    }
+    Err(format!("Parent PID not found for PID {}", pid))
 }
 
 /// Computes SHA-256 hash of an executable binary
@@ -333,9 +428,10 @@ fn collect_environment_hints() -> HashMap<String, String> {
     hints
 }
 
-/// Deterministic heuristic classifier for process identity and trust assignment
-pub fn classify_requester(
+/// Deterministic heuristic classifier for process identity and trust assignment with cryptographic binary verification
+pub fn classify_requester_with_hash(
     exe_name: &str,
+    binary_hash: Option<&str>,
     lineage: &[String],
     is_tty: bool,
     env_hints: &HashMap<String, String>,
@@ -383,13 +479,41 @@ pub fn classify_requester(
     }
 
     // 4. Check for interactive human developer session or native SecretGuard executable
-    if lower_exe.contains("secretguard")
-        || (is_tty
-            && (lower_exe.contains("bash")
-                || lower_exe.contains("zsh")
-                || lower_exe.contains("sh")
-                || lower_exe.contains("pwsh")
-                || lower_exe.contains("powershell")))
+    // SECURITY: Never grant HumanInteractive / Tier3Privileged to an arbitrary binary simply named
+    // '*secretguard*' without interactive TTY or matching cryptographic hash against running current_exe!
+    if lower_exe.contains("secretguard") {
+        let is_verified_secretguard = if let Some(claimed_hash) = binary_hash {
+            if let Ok(curr_exe) = std::env::current_exe() {
+                if let Some(curr_hash) = compute_file_sha256(&curr_exe) {
+                    claimed_hash == curr_hash
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if is_verified_secretguard || is_tty {
+            return (
+                RequesterType::HumanInteractive,
+                TrustTier::Tier3Privileged,
+                90,
+            );
+        } else {
+            // Unverified fake secretguard executable without TTY or matching hash
+            return (RequesterType::UnknownProcess, TrustTier::Tier0Blocked, 0);
+        }
+    }
+
+    if is_tty
+        && (lower_exe.contains("bash")
+            || lower_exe.contains("zsh")
+            || lower_exe.contains("sh")
+            || lower_exe.contains("pwsh")
+            || lower_exe.contains("powershell"))
     {
         return (
             RequesterType::HumanInteractive,
@@ -411,6 +535,16 @@ pub fn classify_requester(
 
     // 6. Unknown process
     (RequesterType::UnknownProcess, TrustTier::Tier0Blocked, 15)
+}
+
+/// Deterministic heuristic classifier for process identity and trust assignment (backward-compatible)
+pub fn classify_requester(
+    exe_name: &str,
+    lineage: &[String],
+    is_tty: bool,
+    env_hints: &HashMap<String, String>,
+) -> (RequesterType, TrustTier, u8) {
+    classify_requester_with_hash(exe_name, None, lineage, is_tty, env_hints)
 }
 
 #[cfg(test)]
@@ -454,5 +588,39 @@ mod tests {
         let (req_type, tier, _) = classify_requester("random_binary_123", &[], false, &hints);
         assert_eq!(req_type, RequesterType::UnknownProcess);
         assert_eq!(tier, TrustTier::Tier0Blocked);
+    }
+
+    #[test]
+    fn test_classify_fake_secretguard_spoof_rejection() {
+        let hints = HashMap::new();
+        // Attacker creates a non-TTY process named "secretguard.exe" with a random or missing hash
+        let (req_type, tier, score) = classify_requester_with_hash(
+            "secretguard.exe",
+            Some("fake_attacker_hash_123456"),
+            &[],
+            false,
+            &hints,
+        );
+        assert_eq!(req_type, RequesterType::UnknownProcess);
+        assert_eq!(tier, TrustTier::Tier0Blocked);
+        assert_eq!(score, 0);
+
+        let (req_type_none, tier_none, score_none) =
+            classify_requester("secretguard.exe", &[], false, &hints);
+        assert_eq!(req_type_none, RequesterType::UnknownProcess);
+        assert_eq!(tier_none, TrustTier::Tier0Blocked);
+        assert_eq!(score_none, 0);
+    }
+
+    #[test]
+    fn test_get_parent_pid_current_process() {
+        let my_pid = std::process::id();
+        let ppid_res = get_parent_pid(my_pid);
+        assert!(
+            ppid_res.is_ok(),
+            "get_parent_pid for current process must succeed: {:?}",
+            ppid_res
+        );
+        assert!(ppid_res.unwrap() > 0);
     }
 }

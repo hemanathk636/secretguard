@@ -71,12 +71,53 @@ pub fn is_private_or_restricted_ip(ip: &IpAddr) -> bool {
     }
 }
 
-/// Comprehensive SSRF and URL validation preventing attacks against cloud metadata and internal subnets
-pub fn validate_url_and_destination(url_str: &str) -> Result<(), String> {
+/// Result of SSRF and destination validation, including DNS pinning information
+#[derive(Debug, Clone)]
+pub struct ValidatedDestination {
+    pub host: String,
+    pub port: u16,
+    pub pinned_ip: Option<IpAddr>,
+    pub is_mock: bool,
+}
+
+fn has_ambiguous_ip_format(host: &str) -> bool {
+    if host.starts_with("0x") || host.starts_with("0X") {
+        return true;
+    }
+    // Pure integer format e.g. 2130706433
+    if host.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    {
+        for p in parts {
+            if p.len() > 1 && p.starts_with('0') {
+                return true; // Octal notation or leading zero ambiguity
+            }
+        }
+    }
+    false
+}
+
+/// Comprehensive SSRF and URL validation preventing attacks against cloud metadata, internal subnets, and DNS rebinding
+pub fn validate_url_and_destination(url_str: &str) -> Result<ValidatedDestination, String> {
+    validate_destination_internal(url_str, false)
+}
+
+/// Internal destination validator with offline mock tolerance for network-isolated unit testing
+pub fn validate_destination_internal(
+    url_str: &str,
+    is_offline_mock: bool,
+) -> Result<ValidatedDestination, String> {
     if url_str.contains("169.254.169.254")
         || url_str.contains("metadata.google.internal")
         || url_str.contains("169.254.170.2")
         || url_str.contains("fd00:ec2::254")
+        || url_str.contains("metadata.azure.com")
     {
         return Err(
             "Security Violation: Target resource attempts Cloud Metadata SSRF (SSRF Protection)."
@@ -85,7 +126,12 @@ pub fn validate_url_and_destination(url_str: &str) -> Result<(), String> {
     }
 
     if url_str.starts_with("mock://") || url_str.starts_with("test://") {
-        return Ok(());
+        return Ok(ValidatedDestination {
+            host: "mock".to_string(),
+            port: 0,
+            pinned_ip: None,
+            is_mock: true,
+        });
     }
 
     let is_https = url_str.starts_with("https://");
@@ -141,10 +187,23 @@ pub fn validate_url_and_destination(url_str: &str) -> Result<(), String> {
         return Err("Security Violation: Missing hostname in URL (SSRF Protection).".to_string());
     }
 
+    // Check for ambiguous / non-canonical IP representations (octal, hex, dword)
+    if has_ambiguous_ip_format(host) {
+        return Err(format!(
+            "Security Violation: Ambiguous non-canonical IP address format '{}' rejected (SSRF Protection).",
+            host
+        ));
+    }
+
     // Direct IP address check
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_local_http && ip.is_loopback() {
-            return Ok(());
+            return Ok(ValidatedDestination {
+                host: host.to_string(),
+                port,
+                pinned_ip: Some(ip),
+                is_mock: false,
+            });
         }
         if is_private_or_restricted_ip(&ip) {
             return Err(format!(
@@ -152,14 +211,39 @@ pub fn validate_url_and_destination(url_str: &str) -> Result<(), String> {
                 ip
             ));
         }
-    } else {
-        // Hostname: resolve via DNS to detect SSRF / DNS rebinding to private IPs
-        if is_local_http && (host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1") {
-            return Ok(());
-        }
+        return Ok(ValidatedDestination {
+            host: host.to_string(),
+            port,
+            pinned_ip: Some(ip),
+            is_mock: false,
+        });
+    }
 
-        let socket_addr_str = format!("{}:{}", host, port);
-        if let Ok(addrs) = socket_addr_str.to_socket_addrs() {
+    // Hostname: resolve via DNS with strict fail-closed handling
+    if is_local_http && (host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1") {
+        return Ok(ValidatedDestination {
+            host: host.to_string(),
+            port,
+            pinned_ip: Some(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+            is_mock: false,
+        });
+    }
+
+    if host.contains("localhost")
+        || host.ends_with(".internal")
+        || host.ends_with(".local")
+        || host.contains("169.254")
+    {
+        return Err(format!(
+            "Security Violation: Target host '{}' is an internal or metadata domain (SSRF Protection).",
+            host
+        ));
+    }
+
+    let socket_addr_str = format!("{}:{}", host, port);
+    match socket_addr_str.to_socket_addrs() {
+        Ok(addrs) => {
+            let mut resolved_ips = Vec::new();
             for addr in addrs {
                 let ip = addr.ip();
                 if is_private_or_restricted_ip(&ip) {
@@ -168,20 +252,40 @@ pub fn validate_url_and_destination(url_str: &str) -> Result<(), String> {
                         host, ip
                     ));
                 }
+                resolved_ips.push(ip);
             }
-        } else if host.contains("localhost")
-            || host.ends_with(".internal")
-            || host.ends_with(".local")
-            || host.contains("169.254")
-        {
-            return Err(format!(
-                "Security Violation: Target host '{}' is an internal or metadata domain (SSRF Protection).",
-                host
-            ));
+
+            let pinned_ip = resolved_ips.into_iter().next().ok_or_else(|| {
+                format!(
+                    "Security Violation: No IP addresses resolved for host '{}' (Fail-Closed SSRF Protection).",
+                    host
+                )
+            })?;
+
+            Ok(ValidatedDestination {
+                host: host.to_string(),
+                port,
+                pinned_ip: Some(pinned_ip),
+                is_mock: false,
+            })
+        }
+        Err(e) => {
+            if is_offline_mock {
+                // In offline unit test simulations without internet, permit public domain mock execution
+                Ok(ValidatedDestination {
+                    host: host.to_string(),
+                    port,
+                    pinned_ip: None,
+                    is_mock: true,
+                })
+            } else {
+                Err(format!(
+                    "Security Violation: DNS resolution failed for destination '{}': {} (Fail-Closed SSRF Protection).",
+                    host, e
+                ))
+            }
         }
     }
-
-    Ok(())
 }
 
 /// Result of an approved delegated operation executed by the broker
@@ -271,14 +375,17 @@ impl SecurityBroker {
         req: &OperationRequest,
         mock_secret_provider: Option<&str>,
     ) -> Result<DelegatedResponse, String> {
-        // 1. Strict URL and SSRF validation
+        // 1. Strict URL and SSRF validation with DNS pinning info
         let url = &req.target_resource;
-        validate_url_and_destination(url)?;
+        let is_mock_call = mock_secret_provider.is_some()
+            || url.starts_with("mock://")
+            || url.starts_with("test://");
+        let dest = validate_destination_internal(url, is_mock_call)?;
 
         let is_http = url.starts_with("https://")
             || url.starts_with("http://127.0.0.1")
             || url.starts_with("http://localhost");
-        let is_mock_test = url.starts_with("mock://") || url.starts_with("test://");
+        let is_mock_test = dest.is_mock;
 
         // 2. Authorize via policy engine and audit ledger
         let decision = self.authorize(req);
@@ -312,6 +419,17 @@ impl SecurityBroker {
                     ));
                 }
 
+                // Security: Reject control characters that could facilitate HTTP header injection or config corruption
+                if secret_value.contains('\r')
+                    || secret_value.contains('\n')
+                    || secret_value.contains('\0')
+                {
+                    return Err(
+                        "Security Violation: Secret credential contains invalid newline or null characters (Header Injection Prevention)."
+                            .to_string(),
+                    );
+                }
+
                 // 3. Dispatch genuine delegated HTTP call (or mock test harness if mock URL)
                 let (raw_status, raw_body) = if is_http && mock_secret_provider.is_none() {
                     let auth_header = if req.credential_name.to_uppercase().contains("GITHUB") {
@@ -324,25 +442,34 @@ impl SecurityBroker {
 
                     // Security: Pass sensitive headers over child stdin pipe using curl's --config -
                     // This ensures secrets NEVER appear in command line arguments or /proc/<pid>/cmdline.
-                    let mut child = std::process::Command::new("curl")
-                        .args([
-                            "-s",
-                            "-w",
-                            "\n%{http_code}",
-                            "--proto",
-                            "=https",
-                            "--proto-redir",
-                            "=https",
-                            "--max-redirs",
-                            "0",
-                            "--max-time",
-                            "15",
-                            "-X",
-                            method,
-                            "--config",
-                            "-",
-                            url,
-                        ])
+                    // Pre-populate curl's DNS cache using --resolve to eliminate DNS rebinding TOCTOU window.
+                    let mut curl_cmd = std::process::Command::new("curl");
+                    curl_cmd.args([
+                        "-s",
+                        "-w",
+                        "\n%{http_code}",
+                        "--proto",
+                        "=https",
+                        "--proto-redir",
+                        "=https",
+                        "--max-redirs",
+                        "0",
+                        "--max-time",
+                        "15",
+                        "-X",
+                        method,
+                    ]);
+
+                    let resolve_arg = dest
+                        .pinned_ip
+                        .map(|ip| format!("{}:{}:{}", dest.host, dest.port, ip));
+                    if let Some(ref res_arg) = resolve_arg {
+                        curl_cmd.arg("--resolve").arg(res_arg);
+                    }
+
+                    curl_cmd.args(["--config", "-", url]);
+
+                    let mut child = curl_cmd
                         .stdin(std::process::Stdio::piped())
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped())
@@ -351,13 +478,29 @@ impl SecurityBroker {
                             format!("Delegated HTTP dispatch error (spawning curl): {}", e)
                         })?;
 
+                    let sanitized_header = auth_header.replace('\\', "\\\\").replace('"', "\\\"");
+
                     if let Some(mut stdin) = child.stdin.take() {
                         use std::io::Write;
-                        let _ = writeln!(stdin, "header = \"{}\"", auth_header.replace('"', "\\\""));
-                        let _ = writeln!(
-                            stdin,
-                            "header = \"User-Agent: SecretGuard-Security-Broker/1.0\""
-                        );
+                        stdin
+                            .write_all(format!("header = \"{}\"\n", sanitized_header).as_bytes())
+                            .map_err(|e| {
+                                format!(
+                                    "Security Error: Failed writing header to curl stdin: {}",
+                                    e
+                                )
+                            })?;
+                        stdin
+                            .write_all(b"header = \"User-Agent: SecretGuard-Security-Broker/1.0\"\n")
+                            .map_err(|e| {
+                                format!(
+                                    "Security Error: Failed writing User-Agent to curl stdin: {}",
+                                    e
+                                )
+                            })?;
+                        stdin.flush().map_err(|e| {
+                            format!("Security Error: Failed flushing curl stdin stream: {}", e)
+                        })?;
                         // Drop stdin to signal EOF so curl can execute
                         drop(stdin);
                     }

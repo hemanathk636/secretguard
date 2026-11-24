@@ -46,23 +46,89 @@ impl ImmuneEngine {
         }
     }
 
+    /// Executes curl safely by piping headers and config over child stdin pipe via `--config -`
+    /// Eliminates process table exposure (/proc/<pid>/cmdline) and hardens against header injection.
+    fn execute_secure_curl_verification(
+        url: &str,
+        method: &str,
+        auth_header: Option<&str>,
+    ) -> Result<(u16, String), String> {
+        let mut curl_cmd = Command::new("curl");
+        curl_cmd.args([
+            "-s",
+            "-w",
+            "\n%{http_code}",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--max-redirs",
+            "0",
+            "--max-time",
+            "10",
+            "-X",
+            method,
+            "--config",
+            "-",
+            url,
+        ]);
+
+        let mut child = curl_cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn curl for upstream verification: {}", e))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            if let Some(header) = auth_header {
+                if header.contains('\r') || header.contains('\n') || header.contains('\0') {
+                    return Err(
+                        "Security Violation: Auth header contains forbidden newline/null characters"
+                            .to_string(),
+                    );
+                }
+                let sanitized = header.replace('\\', "\\\\").replace('"', "\\\"");
+                stdin
+                    .write_all(format!("header = \"{}\"\n", sanitized).as_bytes())
+                    .map_err(|e| format!("Failed to write header to curl stdin: {}", e))?;
+            }
+            stdin
+                .write_all(b"header = \"User-Agent: SecretGuard-Immune-Engine/1.0\"\n")
+                .map_err(|e| format!("Failed to write User-Agent to curl stdin: {}", e))?;
+            stdin
+                .flush()
+                .map_err(|e| format!("Failed to flush curl stdin config: {}", e))?;
+            drop(stdin);
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("Failed waiting for curl output: {}", e))?;
+
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+        if let Some(last_newline) = text.rfind('\n') {
+            let body = text[..last_newline].to_string();
+            let code_str = text[last_newline + 1..].trim();
+            let code = code_str.parse::<u16>().unwrap_or(0);
+            Ok((code, body))
+        } else {
+            Ok((0, text))
+        }
+    }
+
     /// Dispatches genuine provider-specific revocation or upstream status verification
+    /// Secrets are streamed exclusively via private stdin pipe, NEVER command-line arguments.
     pub fn dispatch_provider_revocation(token: &str, provider: &str) -> (String, String) {
         // 1. Providers supporting direct self-revocation API (Slack)
         if provider == "Slack Bot Token" {
-            let output = Command::new("curl")
-                .args([
-                    "-s",
-                    "-X",
-                    "POST",
-                    "-H",
-                    &format!("Authorization: Bearer {}", token),
-                    "https://slack.com/api/auth.revoke",
-                ])
-                .output();
-
-            if let Ok(out) = output {
-                let body = String::from_utf8_lossy(&out.stdout);
+            let auth = format!("Authorization: Bearer {}", token);
+            if let Ok((_code, body)) = Self::execute_secure_curl_verification(
+                "https://slack.com/api/auth.revoke",
+                "POST",
+                Some(&auth),
+            ) {
                 if body.contains("\"ok\":true") || body.contains("\"revoked\":true") {
                     return (
                         "CONFIRMED REVOKED: Upstream Slack API auth.revoke executed successfully!"
@@ -79,30 +145,22 @@ impl ImmuneEngine {
             }
         }
 
-        // 2. Stripe API Verification
+        // 2. Stripe API Verification (HTTP Basic Auth Authorization: Basic <base64>)
         if provider == "Stripe Secret Key" {
-            let output = Command::new("curl")
-                .args([
-                    "-s",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code}",
-                    "-u",
-                    &format!("{}:", token),
-                    "https://api.stripe.com/v1/account",
-                ])
-                .output();
-
-            if let Ok(out) = output {
-                let code = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if code == "401" {
+            let basic_b64 = crate::mesh::MeshManager::encode_b64(format!("{}:", token).as_bytes());
+            let auth = format!("Authorization: Basic {}", basic_b64);
+            if let Ok((code, _body)) = Self::execute_secure_curl_verification(
+                "https://api.stripe.com/v1/account",
+                "GET",
+                Some(&auth),
+            ) {
+                if code == 401 {
                     return (
                         "VERIFIED INACTIVE: Stripe gateway rejected token (HTTP 401). Key is already revoked."
                             .to_string(),
                         "Revoked".to_string(),
                     );
-                } else if code == "200" {
+                } else if code == 200 {
                     return (
                         "ACTIVE CREDENTIAL DETECTED: Upstream key is active. Provider requires dashboard action to invalidate restricted keys."
                             .to_string(),
@@ -114,28 +172,19 @@ impl ImmuneEngine {
 
         // 3. GitHub API Verification
         if provider == "GitHub Personal Access Token" {
-            let output = Command::new("curl")
-                .args([
-                    "-s",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code}",
-                    "-H",
-                    &format!("Authorization: token {}", token),
-                    "https://api.github.com/user",
-                ])
-                .output();
-
-            if let Ok(out) = output {
-                let code = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if code == "401" {
+            let auth = format!("Authorization: token {}", token);
+            if let Ok((code, _body)) = Self::execute_secure_curl_verification(
+                "https://api.github.com/user",
+                "GET",
+                Some(&auth),
+            ) {
+                if code == 401 {
                     return (
                         "VERIFIED INACTIVE: Key confirmed already revoked or expired upstream by GitHub (HTTP 401)."
                             .to_string(),
                         "Revoked".to_string(),
                     );
-                } else if code == "200" {
+                } else if code == 200 {
                     return (
                         "ACTIVE CREDENTIAL DETECTED: GitHub PAT is active. Personal tokens require dashboard deletion; local circuit-breaker engaged."
                             .to_string(),
@@ -147,28 +196,19 @@ impl ImmuneEngine {
 
         // 4. OpenAI API Verification
         if provider == "OpenAI API" {
-            let output = Command::new("curl")
-                .args([
-                    "-s",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code}",
-                    "-H",
-                    &format!("Authorization: Bearer {}", token),
-                    "https://api.openai.com/v1/models",
-                ])
-                .output();
-
-            if let Ok(out) = output {
-                let code = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if code == "401" {
+            let auth = format!("Authorization: Bearer {}", token);
+            if let Ok((code, _body)) = Self::execute_secure_curl_verification(
+                "https://api.openai.com/v1/models",
+                "GET",
+                Some(&auth),
+            ) {
+                if code == 401 {
                     return (
                         "VERIFIED INACTIVE: Key confirmed inactive or revoked upstream by OpenAI (HTTP 401)."
                             .to_string(),
                         "Revoked".to_string(),
                     );
-                } else if code == "200" {
+                } else if code == 200 {
                     return (
                         "ACTIVE CREDENTIAL DETECTED: OpenAI API Key is active. Workspace admin session required to delete keys; local circuit-breaker engaged."
                             .to_string(),
@@ -187,12 +227,15 @@ impl ImmuneEngine {
         )
     }
 
-    /// Executes the autonomous containment circuit-breaker:
+    /// Executes the autonomous containment circuit-breaker with fail-closed persistence guarantees:
     /// - Quarantines the token locally so no terminal or AI agent can read it
-    /// - Dispatches genuine upstream revocation/verification
-    /// - Records verifiable incident in audit ledger
+    /// - Dispatches genuine upstream revocation/verification over secure stdin
+    /// - Enforces fail-closed persistence to encrypted vault, lifecycle manager, and audit ledger
     /// - Returns truthful remediation instructions (NEVER claiming automatic rotation unless confirmed by provider)
-    pub fn trigger_containment(token: &str, _engine: &SecretGuardEngine) -> ImmuneIncidentReport {
+    pub fn trigger_containment(
+        token: &str,
+        _engine: &SecretGuardEngine,
+    ) -> Result<ImmuneIncidentReport, String> {
         let start = std::time::Instant::now();
         let provider = Self::identify_provider(token);
         let rotation_url = Self::get_rotation_url(provider);
@@ -213,39 +256,57 @@ impl ImmuneEngine {
             epoch_nano
         );
 
-        let _ = crate::vault::load_vault(None).map(|mut store| {
-            let mut matching_keys = Vec::new();
-            for (k, v) in &store.secrets {
-                if v == token || k.eq_ignore_ascii_case(provider) {
-                    matching_keys.push(k.clone());
-                }
+        let mut store = crate::vault::load_vault(None).map_err(|e| {
+            format!(
+                "Security Fail-Closed: Cannot load vault for quarantine: {}",
+                e
+            )
+        })?;
+        let mut matching_keys = Vec::new();
+        for (k, v) in &store.secrets {
+            if v == token || k.eq_ignore_ascii_case(provider) {
+                matching_keys.push(k.clone());
             }
-            for k in matching_keys {
-                store
-                    .secrets
-                    .insert(k, format!("[QUARANTINED_BLOCKED:{}]", token_fingerprint));
-            }
-            store.secrets.insert(
-                format!("QUARANTINED_{}", provider.replace(' ', "_")),
-                format!("[QUARANTINED_BLOCKED:{}]", token_fingerprint),
-            );
-            let _ = crate::vault::save_vault(&store, None);
-        });
+        }
+        for k in matching_keys {
+            store
+                .secrets
+                .insert(k, format!("[QUARANTINED_BLOCKED:{}]", token_fingerprint));
+        }
+        store.secrets.insert(
+            format!("QUARANTINED_{}", provider.replace(' ', "_")),
+            format!("[QUARANTINED_BLOCKED:{}]", token_fingerprint),
+        );
+        crate::vault::save_vault(&store, None).map_err(|e| {
+            format!(
+                "Security Fail-Closed: Cannot persist quarantined secret to vault: {}",
+                e
+            )
+        })?;
 
         // 3. Update persistent LifecycleManager state
-        if let Ok(mut lm) = crate::lifecycle::LifecycleManager::load(None) {
-            lm.quarantine_by_name_or_token(
-                provider,
-                token,
-                &format!(
-                    "Compromised token quarantined by Autonomous Immune Engine ({})",
-                    token_fingerprint
-                ),
-            );
-            let _ = lm.save(None);
-        }
+        let mut lm = crate::lifecycle::LifecycleManager::load(None).map_err(|e| {
+            format!(
+                "Security Fail-Closed: Cannot load lifecycle manager for quarantine: {}",
+                e
+            )
+        })?;
+        lm.quarantine_by_name_or_token(
+            provider,
+            token,
+            &format!(
+                "Compromised token quarantined by Autonomous Immune Engine ({})",
+                token_fingerprint
+            ),
+        );
+        lm.save(None).map_err(|e| {
+            format!(
+                "Security Fail-Closed: Cannot persist lifecycle quarantine state: {}",
+                e
+            )
+        })?;
 
-        // 3. Inspect actual git status if inside a git repository
+        // 4. Inspect actual git status if inside a git repository
         let git_status = if std::path::Path::new(".git").exists() {
             let output = Command::new("git").args(["status", "--porcelain"]).output();
             match output {
@@ -272,16 +333,22 @@ impl ImmuneEngine {
 
         let latency = start.elapsed().as_millis();
 
-        // 4. Log containment incident to Audit Ledger
-        if let Ok(mut ledger) = crate::audit::AuditLedger::load(None) {
-            let ident = crate::identity::IdentityContext::current();
-            let req = crate::policy::OperationRequest::new(
-                ident,
-                provider,
-                crate::policy::OperationType::RawCredentialAccess,
-                "containment:quarantine",
-            );
-            let _ = ledger.record_decision(
+        // 5. Log containment incident to Audit Ledger with fail-closed HMAC signing check
+        let mut ledger = crate::audit::AuditLedger::load(None).map_err(|e| {
+            format!(
+                "Security Fail-Closed: Cannot load audit ledger for quarantine: {}",
+                e
+            )
+        })?;
+        let ident = crate::identity::IdentityContext::current();
+        let req = crate::policy::OperationRequest::new(
+            ident,
+            provider,
+            crate::policy::OperationType::RawCredentialAccess,
+            "containment:quarantine",
+        );
+        ledger
+            .record_decision(
                 &req,
                 &crate::policy::AuthorizationDecision::Deny {
                     reason: format!(
@@ -289,11 +356,21 @@ impl ImmuneEngine {
                         token_fingerprint
                     ),
                 },
-            );
-            let _ = ledger.save(None);
-        }
+            )
+            .map_err(|e| {
+                format!(
+                    "Security Fail-Closed: HMAC audit signing failed during quarantine: {}",
+                    e
+                )
+            })?;
+        ledger.save(None).map_err(|e| {
+            format!(
+                "Security Fail-Closed: Cannot persist audit ledger during quarantine: {}",
+                e
+            )
+        })?;
 
-        ImmuneIncidentReport {
+        Ok(ImmuneIncidentReport {
             provider: provider.to_string(),
             token_fingerprint,
             revocation_status,
@@ -303,7 +380,7 @@ impl ImmuneEngine {
             direct_rotation_url: rotation_url.to_string(),
             git_scrub_status: git_status,
             containment_latency_ms: latency,
-        }
+        })
     }
 
     pub fn run_cli(args: &[String], engine: &SecretGuardEngine) {
@@ -319,7 +396,6 @@ USAGE:
 
 CONTAIN OPTIONS:
     --vault-key <NAME>      Quarantine an existing key stored in the encrypted vault
-    --token <TOKEN>         Quarantine a token passed directly (warns on CLI exposure)
 "#
             );
             return;
@@ -341,20 +417,28 @@ CONTAIN OPTIONS:
                         eprintln!("Error: --vault-key requires a key name.");
                         std::process::exit(2);
                     }
-                } else if let Some(pos) = args.iter().position(|a| a == "--token") {
-                    eprintln!("⚠️  Notice: Passing raw credentials on the CLI can leak into shell history/process tables.");
-                    if pos + 1 < args.len() {
-                        args[pos + 1].clone()
-                    } else {
-                        eprintln!("Error: --token requires a token argument.");
-                        std::process::exit(2);
-                    }
+                } else if args.iter().any(|a| a == "--token") {
+                    eprintln!("Security Error: Passing raw credentials on the CLI via '--token' is blocked to prevent process table and shell history exposure.");
+                    eprintln!("Recommendation: Store the credential in the encrypted vault using 'secretguard vault set <NAME>' and invoke with '--vault-key <NAME>'.");
+                    std::process::exit(1);
                 } else if args.len() >= 2 && !args[1].starts_with('-') {
-                    eprintln!("⚠️  Notice: Passing raw credentials as positional arguments is discouraged. Use '--vault-key <NAME>'.");
-                    args[1].clone()
+                    eprintln!("Security Error: Passing raw credentials as positional command-line arguments is blocked to prevent process table exposure.");
+                    eprintln!(
+                        "Recommendation: Use 'secretguard immune contain --vault-key <NAME>'."
+                    );
+                    std::process::exit(1);
                 } else {
-                    eprintln!("Usage: secretguard immune contain --vault-key <NAME> or secretguard immune contain --token <TOKEN>");
-                    std::process::exit(2);
+                    // Secure hidden prompt if no CLI argument provided
+                    eprint!("Enter token to contain (hidden): ");
+                    use std::io::BufRead;
+                    let mut line = String::new();
+                    let stdin = std::io::stdin();
+                    if stdin.lock().read_line(&mut line).is_ok() {
+                        line.trim().to_string()
+                    } else {
+                        eprintln!("Error: Failed to read token from input.");
+                        std::process::exit(1);
+                    }
                 };
 
                 if target_token.is_empty() {
@@ -365,7 +449,13 @@ CONTAIN OPTIONS:
                 println!("🧬 SecretGuard Autonomous Immune Engine Engaged...");
                 println!("🚨 Incident Detected: High-Severity Credential Exposure\n");
 
-                let report = Self::trigger_containment(&target_token, engine);
+                let report = match Self::trigger_containment(&target_token, engine) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("❌ CRITICAL SECURITY ERROR: Fail-closed containment persistence failed: {}", e);
+                        std::process::exit(1);
+                    }
+                };
 
                 println!("─────────────────────────────────────────────────────────────────");
                 println!("  • Provider Detected:      {}", report.provider);
@@ -422,7 +512,8 @@ mod tests {
     fn test_containment_truthful_reporting() {
         let engine = SecretGuardEngine::new();
         let report =
-            ImmuneEngine::trigger_containment("ghp_testleaktoken1234567890abcdef", &engine);
+            ImmuneEngine::trigger_containment("ghp_testleaktoken1234567890abcdef", &engine)
+                .expect("Containment must succeed when storage is available");
 
         assert_eq!(report.provider, "GitHub Personal Access Token");
         assert!(report.quarantine_id.starts_with("quarantine_"));

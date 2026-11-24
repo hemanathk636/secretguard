@@ -234,7 +234,7 @@ fn test_audit_ledger_tamper_detection() {
 
 #[test]
 fn test_broker_delegated_execution_scrubs_secret() {
-    let _guard = TEST_ENV_MUTEX.lock().unwrap();
+    let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let broker = SecurityBroker::new();
     let agent = IdentityContext::mock(
         "claude-worker",
@@ -267,7 +267,7 @@ fn test_broker_delegated_execution_scrubs_secret() {
 
 #[test]
 fn test_security_self_test_all_simulations_pass() {
-    let _guard = TEST_ENV_MUTEX.lock().unwrap();
+    let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let report = run_security_self_test();
     assert_eq!(report.total, 6);
     assert_eq!(
@@ -280,7 +280,7 @@ fn test_security_self_test_all_simulations_pass() {
 
 #[test]
 fn test_broker_quarantined_credential_blocked() {
-    let _guard = TEST_ENV_MUTEX.lock().unwrap();
+    let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let broker = SecurityBroker::new();
     let agent = IdentityContext::mock(
         "claude-worker",
@@ -319,7 +319,7 @@ fn test_broker_quarantined_credential_blocked() {
 
 #[test]
 fn test_broker_ssrf_cloud_metadata_blocked() {
-    let _guard = TEST_ENV_MUTEX.lock().unwrap();
+    let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let broker = SecurityBroker::new();
     let agent = IdentityContext::mock(
         "claude-worker",
@@ -363,7 +363,7 @@ fn test_broker_ssrf_cloud_metadata_blocked() {
 
 #[test]
 fn test_broker_fails_closed_on_corrupt_audit_ledger() {
-    let _guard = TEST_ENV_MUTEX.lock().unwrap();
+    let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir =
         std::env::temp_dir().join(format!("sg_corrupt_ledger_test_{}", std::process::id()));
     let _ = fs::create_dir_all(&temp_dir);

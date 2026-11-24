@@ -50,7 +50,8 @@ fn test_immune_engine_containment() {
 
     // Test simulated containment on exposed OpenAI key
     let exposed_token = "sk-proj-leakedTokenEmergencyTest1234567890";
-    let report = ImmuneEngine::trigger_containment(exposed_token, &engine);
+    let report = ImmuneEngine::trigger_containment(exposed_token, &engine)
+        .expect("Containment should succeed");
 
     assert_eq!(report.provider, "OpenAI API");
     assert!(
