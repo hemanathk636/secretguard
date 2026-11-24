@@ -92,7 +92,7 @@ fn test_authenticated_ipc_and_lifecycle_integration() {
         pid: std::process::id(),
     };
 
-    let auth_resp = server.handle_message(&auth_msg);
+    let auth_resp = server.handle_message_with_peer(&auth_msg, Some(std::process::id()));
     let session_id = match auth_resp {
         IpcMessage::AuthenticateResponse {
             authenticated,

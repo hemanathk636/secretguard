@@ -138,6 +138,12 @@ impl LifecycleManager {
         }
     }
 
+    pub fn find_by_name(&self, name: &str) -> Option<&CredentialRecord> {
+        self.credentials
+            .values()
+            .find(|r| r.name.eq_ignore_ascii_case(name) || r.provider.eq_ignore_ascii_case(name))
+    }
+
     pub fn register(&mut self, name: &str, provider: &str, raw_token: &str) {
         let fingerprint = CredentialRecord::compute_fingerprint(raw_token);
         let record = CredentialRecord::new(name, provider, &fingerprint);

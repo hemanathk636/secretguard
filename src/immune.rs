@@ -55,9 +55,12 @@ impl ImmuneEngine {
     ) -> Result<(u16, String), String> {
         let mut curl_cmd = Command::new("curl");
         curl_cmd.args([
+            "-q",
             "-s",
             "-w",
             "\n%{http_code}",
+            "--noproxy",
+            "*",
             "--proto",
             "=https",
             "--proto-redir",
@@ -72,6 +75,15 @@ impl ImmuneEngine {
             "-",
             url,
         ]);
+
+        curl_cmd
+            .env_remove("HTTP_PROXY")
+            .env_remove("http_proxy")
+            .env_remove("HTTPS_PROXY")
+            .env_remove("https_proxy")
+            .env_remove("ALL_PROXY")
+            .env_remove("all_proxy")
+            .env_remove("CURL_HOME");
 
         let mut child = curl_cmd
             .stdin(std::process::Stdio::piped())
@@ -241,11 +253,7 @@ impl ImmuneEngine {
         let rotation_url = Self::get_rotation_url(provider);
         let token_fingerprint = CredentialRecord::compute_fingerprint(token);
 
-        // 1. Dispatch genuine provider revocation / verification
-        let (revocation_status, lifecycle_state) =
-            Self::dispatch_provider_revocation(token, provider);
-
-        // 2. Quarantine in local encrypted vault store & update LifecycleManager
+        // 1. Immediately quarantine in local encrypted vault store with fail-closed guarantee
         let epoch_nano = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -284,7 +292,7 @@ impl ImmuneEngine {
             )
         })?;
 
-        // 3. Update persistent LifecycleManager state
+        // 2. Update persistent LifecycleManager state
         let mut lm = crate::lifecycle::LifecycleManager::load(None).map_err(|e| {
             format!(
                 "Security Fail-Closed: Cannot load lifecycle manager for quarantine: {}",
@@ -306,34 +314,7 @@ impl ImmuneEngine {
             )
         })?;
 
-        // 4. Inspect actual git status if inside a git repository
-        let git_status = if std::path::Path::new(".git").exists() {
-            let output = Command::new("git").args(["status", "--porcelain"]).output();
-            match output {
-                Ok(out) => {
-                    let porcelain = String::from_utf8_lossy(&out.stdout);
-                    if porcelain.trim().is_empty() {
-                        "CLEAN: Working tree is clean. Run 'secretguard audit git scan' to inspect past commits."
-                            .to_string()
-                    } else {
-                        "DIRTY: Uncommitted modifications detected. Ensure secrets are not staged before committing."
-                            .to_string()
-                    }
-                }
-                Err(_) => "DETECTED: Git repository found; pre-commit barrier active.".to_string(),
-            }
-        } else {
-            "STANDBY: Not inside a Git repository.".to_string()
-        };
-
-        let remediation_action = format!(
-            "1. Visit {} to revoke/replace key.\n2. Store new key via 'secretguard vault set <KEY>'.\n3. Run 'secretguard scan .' to ensure no remaining leaks.",
-            rotation_url
-        );
-
-        let latency = start.elapsed().as_millis();
-
-        // 5. Log containment incident to Audit Ledger with fail-closed HMAC signing check
+        // 3. Log containment incident to Audit Ledger with fail-closed HMAC signing check
         let mut ledger = crate::audit::AuditLedger::load(None).map_err(|e| {
             format!(
                 "Security Fail-Closed: Cannot load audit ledger for quarantine: {}",
@@ -369,6 +350,37 @@ impl ImmuneEngine {
                 e
             )
         })?;
+
+        // 4. Now that local barriers are strictly active, dispatch provider revocation / verification
+        let (revocation_status, lifecycle_state) =
+            Self::dispatch_provider_revocation(token, provider);
+
+        // 5. Inspect actual git status if inside a git repository
+        let git_status = if std::path::Path::new(".git").exists() {
+            let output = Command::new("git").args(["status", "--porcelain"]).output();
+            match output {
+                Ok(out) => {
+                    let porcelain = String::from_utf8_lossy(&out.stdout);
+                    if porcelain.trim().is_empty() {
+                        "CLEAN: Working tree is clean. Run 'secretguard audit git scan' to inspect past commits."
+                            .to_string()
+                    } else {
+                        "DIRTY: Uncommitted modifications detected. Ensure secrets are not staged before committing."
+                            .to_string()
+                    }
+                }
+                Err(_) => "DETECTED: Git repository found; pre-commit barrier active.".to_string(),
+            }
+        } else {
+            "STANDBY: Not inside a Git repository.".to_string()
+        };
+
+        let remediation_action = format!(
+            "1. Visit {} to revoke/replace key.\n2. Store new key via 'secretguard vault set <KEY>'.\n3. Run 'secretguard scan .' to ensure no remaining leaks.",
+            rotation_url
+        );
+
+        let latency = start.elapsed().as_millis();
 
         Ok(ImmuneIncidentReport {
             provider: provider.to_string(),
@@ -429,15 +441,12 @@ CONTAIN OPTIONS:
                     std::process::exit(1);
                 } else {
                     // Secure hidden prompt if no CLI argument provided
-                    eprint!("Enter token to contain (hidden): ");
-                    use std::io::BufRead;
-                    let mut line = String::new();
-                    let stdin = std::io::stdin();
-                    if stdin.lock().read_line(&mut line).is_ok() {
-                        line.trim().to_string()
-                    } else {
-                        eprintln!("Error: Failed to read token from input.");
-                        std::process::exit(1);
+                    match crate::vault::read_password_hidden("Enter token to contain (hidden): ") {
+                        Ok(val) => val.trim().to_string(),
+                        Err(e) => {
+                            eprintln!("Error: Failed to read token securely: {}", e);
+                            std::process::exit(1);
+                        }
                     }
                 };
 
@@ -466,7 +475,7 @@ CONTAIN OPTIONS:
                 println!("  • Provider Console URL:   {}", report.direct_rotation_url);
                 println!("  • Git Tree Status:        {}", report.git_scrub_status);
                 println!(
-                    "  • Incident Latency:       {} ms (Sub-second guaranteed)",
+                    "  • Incident Latency:       {} ms (Measured)",
                     report.containment_latency_ms
                 );
                 println!("─────────────────────────────────────────────────────────────────");
@@ -510,6 +519,9 @@ mod tests {
 
     #[test]
     fn test_containment_truthful_reporting() {
+        let _lock = crate::vault::TERMINAL_INPUT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let engine = SecretGuardEngine::new();
         let report =
             ImmuneEngine::trigger_containment("ghp_testleaktoken1234567890abcdef", &engine)

@@ -93,6 +93,13 @@ impl IdentityContext {
         }
     }
 
+    /// Returns the SHA-256 binary hash of the currently running executable
+    pub fn get_current_binary_hash() -> Option<String> {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| compute_file_sha256(&p))
+    }
+
     /// Derives IdentityContext directly from the operating system kernel for a given process ID (PID)
     /// Performs non-forgeable process image query and binary hash verification.
     pub fn from_pid(pid: u32) -> Result<Self, String> {
@@ -366,6 +373,38 @@ pub fn detect_current_git_repo(start_dir: &Path) -> Option<String> {
     None
 }
 
+/// Extracts GitHub or Git repository identifier (owner/repo) from a target API URL or clone URL
+pub fn extract_repository_from_url(url: &str) -> Option<String> {
+    if let Some(pos) = url.find("github.com/repos/") {
+        let rest = &url[pos + "github.com/repos/".len()..];
+        let mut parts = rest.split('/');
+        let owner = parts.next()?;
+        let repo = parts.next()?;
+        if !owner.is_empty() && !repo.is_empty() {
+            let clean_repo = repo.trim_end_matches(".git");
+            return Some(format!(
+                "{}/{}",
+                owner.to_lowercase(),
+                clean_repo.to_lowercase()
+            ));
+        }
+    } else if let Some(pos) = url.find("github.com/") {
+        let rest = &url[pos + "github.com/".len()..];
+        let mut parts = rest.split('/');
+        let owner = parts.next()?;
+        let repo = parts.next()?;
+        if !owner.is_empty() && !repo.is_empty() && !["api", "settings", "login"].contains(&owner) {
+            let clean_repo = repo.trim_end_matches(".git");
+            return Some(format!(
+                "{}/{}",
+                owner.to_lowercase(),
+                clean_repo.to_lowercase()
+            ));
+        }
+    }
+    None
+}
+
 /// Normalizes git repo URLs into clean "owner/repo" format
 pub fn clean_git_repo_identifier(raw_url: &str) -> String {
     let stripped = raw_url.trim_end_matches('/').trim_end_matches(".git");
@@ -479,8 +518,9 @@ pub fn classify_requester_with_hash(
     }
 
     // 4. Check for interactive human developer session or native SecretGuard executable
-    // SECURITY: Never grant HumanInteractive / Tier3Privileged to an arbitrary binary simply named
-    // '*secretguard*' without interactive TTY or matching cryptographic hash against running current_exe!
+    // SECURITY: Separate executable trust from human interactive privilege!
+    // A matching cryptographic binary hash establishes executable integrity, but NEVER automatically
+    // grants HumanInteractive / Tier3Privileged without an actual verified interactive terminal TTY.
     if lower_exe.contains("secretguard") {
         let is_verified_secretguard = if let Some(claimed_hash) = binary_hash {
             if let Ok(curr_exe) = std::env::current_exe() {
@@ -496,15 +536,21 @@ pub fn classify_requester_with_hash(
             false
         };
 
-        if is_verified_secretguard || is_tty {
+        if !is_verified_secretguard {
+            // Unverified binary claiming to be secretguard - untrusted/spoofing attempt!
+            return (RequesterType::UnknownProcess, TrustTier::Tier0Blocked, 0);
+        }
+
+        // Verified SecretGuard binary: human interactive privilege requires an actual interactive terminal TTY
+        if is_tty {
             return (
                 RequesterType::HumanInteractive,
                 TrustTier::Tier3Privileged,
                 90,
             );
         } else {
-            // Unverified fake secretguard executable without TTY or matching hash
-            return (RequesterType::UnknownProcess, TrustTier::Tier0Blocked, 0);
+            // Verified binary running in background or automated script
+            return (RequesterType::BuildOrScript, TrustTier::Tier1Restricted, 50);
         }
     }
 

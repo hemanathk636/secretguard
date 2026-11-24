@@ -53,7 +53,8 @@ impl OperationRequest {
         target_resource: &str,
     ) -> Self {
         let domain = extract_domain(target_resource);
-        let repo = requester.git_repo.clone();
+        let repo = crate::identity::extract_repository_from_url(target_resource)
+            .or_else(|| requester.git_repo.clone());
         Self {
             requester,
             credential_name: credential_name.to_string(),
@@ -153,6 +154,7 @@ impl PolicyEngine {
                     RequesterType::AutonomousAgent,
                     RequesterType::ApprovedIde,
                     RequesterType::McpServer,
+                    RequesterType::BuildOrScript,
                 ],
                 min_trust_tier: TrustTier::Tier1Restricted,
                 allowed_credentials: vec!["GITHUB_TOKEN".to_string(), "GH_TOKEN".to_string()],
@@ -161,10 +163,16 @@ impl PolicyEngine {
                 allowed_operations: vec![
                     "GET".to_string(),
                     "POST".to_string(),
+                    "PUT".to_string(),
+                    "PATCH".to_string(),
                     "git:fetch".to_string(),
                 ],
                 denied_operations: vec!["DELETE".to_string(), "raw:read".to_string()],
-                approval_required_for: vec!["POST".to_string()],
+                approval_required_for: vec![
+                    "POST".to_string(),
+                    "PUT".to_string(),
+                    "PATCH".to_string(),
+                ],
                 delegate_only: true, // Never give raw token to AI agent
             },
             // 3. AI Coding Agent LLM Provider API Delegated Access
@@ -175,6 +183,7 @@ impl PolicyEngine {
                     RequesterType::AutonomousAgent,
                     RequesterType::ApprovedIde,
                     RequesterType::McpServer,
+                    RequesterType::BuildOrScript,
                 ],
                 min_trust_tier: TrustTier::Tier1Restricted,
                 allowed_credentials: vec![

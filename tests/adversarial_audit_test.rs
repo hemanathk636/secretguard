@@ -62,6 +62,18 @@ fn test_ghost_session_aes_256_gcm_encryption() {
 
 #[test]
 fn test_genuine_provider_revocation_classification() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_adv_prov_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).unwrap();
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let engine = SecretGuardEngine::new();
 
     let github_token = "ghp_1234567890abcdef1234567890abcdef1234";
@@ -79,6 +91,9 @@ fn test_genuine_provider_revocation_classification() {
     assert!(report_aws
         .direct_rotation_url
         .contains("console.aws.amazon.com"));
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -240,7 +255,7 @@ fn test_adversarial_spoofed_pid_rejection() {
         pid: 9_999_999, // Non-existent process
     };
 
-    let resp = server.handle_message(&spoofed_msg);
+    let resp = server.handle_message_with_peer(&spoofed_msg, Some(9_999_999));
     match resp {
         secretguard::ipc::IpcMessage::AuthenticateResponse {
             authenticated,
@@ -468,4 +483,235 @@ fn test_adversarial_fake_secretguard_hash_verification() {
         score, 0,
         "Fake secretguard binary must receive zero trust score"
     );
+}
+
+#[test]
+fn test_adversarial_non_tty_secretguard_restricted_tier() {
+    use std::collections::HashMap;
+    let hints = HashMap::new();
+    let current_hash = secretguard::identity::IdentityContext::get_current_binary_hash();
+
+    // 1. Non-TTY execution (e.g. background script, CI, daemon, pipe)
+    let (req_type, tier, score) = secretguard::identity::classify_requester_with_hash(
+        "secretguard",
+        current_hash.as_deref(),
+        &[],
+        false, // NO TTY
+        &hints,
+    );
+
+    assert_eq!(
+        req_type,
+        secretguard::identity::RequesterType::BuildOrScript,
+        "Non-TTY secretguard execution must not be granted HumanInteractive status"
+    );
+    assert_eq!(
+        tier,
+        secretguard::identity::TrustTier::Tier1Restricted,
+        "Non-TTY secretguard execution must be restricted to Tier1Restricted"
+    );
+    assert_eq!(score, 50);
+
+    // 2. Interactive TTY execution
+    let (req_type_tty, tier_tty, score_tty) = secretguard::identity::classify_requester_with_hash(
+        "secretguard",
+        current_hash.as_deref(),
+        &[],
+        true, // WITH interactive TTY
+        &hints,
+    );
+
+    assert_eq!(
+        req_type_tty,
+        secretguard::identity::RequesterType::HumanInteractive,
+        "Interactive TTY secretguard must be recognized as HumanInteractive"
+    );
+    assert_eq!(
+        tier_tty,
+        secretguard::identity::TrustTier::Tier3Privileged,
+        "Interactive TTY secretguard receives Tier3Privileged"
+    );
+    assert_eq!(score_tty, 90);
+}
+
+#[test]
+fn test_adversarial_subdomain_spoofing_loopback_rejected() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let broker = secretguard::broker::SecurityBroker::new();
+    let agent = secretguard::identity::IdentityContext::mock(
+        "agent",
+        secretguard::identity::RequesterType::AutonomousAgent,
+        Some("org/repo"),
+        None,
+    );
+
+    // Attack: Craft URL with 127.0.0.1 prefix as subdomain on attacker host
+    let spoofed_urls = [
+        "http://127.0.0.1.attacker.example/steal",
+        "http://127.0.0.1.local.attacker.example/steal",
+        "http://localhost.attacker.example/steal",
+    ];
+
+    for url in spoofed_urls {
+        let req = secretguard::policy::OperationRequest::new(
+            agent.clone(),
+            "GITHUB_TOKEN",
+            secretguard::policy::OperationType::HttpGet,
+            url,
+        );
+        let res = broker.execute_delegated_call(&req, Some("ghp_validToken"));
+        assert!(
+            res.is_err(),
+            "Broker must reject spoofed loopback subdomains over HTTP: {}",
+            url
+        );
+        let err = res.err().unwrap();
+        assert!(
+            err.contains("Invalid Protocol") || err.contains("SSRF"),
+            "Expected protocol or SSRF rejection for '{}', got: {}",
+            url,
+            err
+        );
+    }
+}
+
+#[test]
+fn test_adversarial_github_repo_binding_and_policy_enforcement() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let broker = secretguard::broker::SecurityBroker::new();
+    let agent = secretguard::identity::IdentityContext::mock(
+        "claude-code",
+        secretguard::identity::RequesterType::AutonomousAgent,
+        Some("company/secure-repo"),
+        None,
+    );
+
+    // 1. Automatic repository binding from URL
+    let read_req = secretguard::policy::OperationRequest::new(
+        agent.clone(),
+        "GITHUB_TOKEN",
+        secretguard::policy::OperationType::HttpGet,
+        "https://api.github.com/repos/company/secure-repo/pulls",
+    );
+    assert_eq!(
+        read_req.repository.as_deref(),
+        Some("company/secure-repo"),
+        "Repository must be automatically parsed and bound from GitHub URL"
+    );
+
+    // GET operation is allowed delegated
+    let read_decision = broker.authorize(&read_req);
+    assert_eq!(
+        read_decision,
+        secretguard::policy::AuthorizationDecision::AllowDelegated
+    );
+
+    // 2. POST operation on repository requires interactive human approval
+    let write_req = secretguard::policy::OperationRequest::new(
+        agent.clone(),
+        "GITHUB_TOKEN",
+        secretguard::policy::OperationType::HttpPost,
+        "https://api.github.com/repos/company/secure-repo/issues",
+    );
+    let write_decision = broker.authorize(&write_req);
+    assert!(
+        matches!(
+            write_decision,
+            secretguard::policy::AuthorizationDecision::RequireHumanApproval { .. }
+        ),
+        "POST operation by AI agent must require human approval"
+    );
+
+    // 3. DELETE operation is explicitly forbidden
+    let delete_req = secretguard::policy::OperationRequest::new(
+        agent,
+        "GITHUB_TOKEN",
+        secretguard::policy::OperationType::HttpDelete,
+        "https://api.github.com/repos/company/secure-repo",
+    );
+    let delete_decision = broker.authorize(&delete_req);
+    assert!(
+        matches!(
+            delete_decision,
+            secretguard::policy::AuthorizationDecision::Deny { .. }
+        ),
+        "DELETE operation by AI agent must be denied by zero-trust policy"
+    );
+}
+
+#[test]
+fn test_adversarial_immune_local_quarantine_before_upstream() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_adv_immune_local_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&temp_dir).unwrap();
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
+    let engine = secretguard::SecretGuardEngine::new();
+
+    // Store a test credential in the vault
+    let mut store = secretguard::vault::VaultStore::default();
+    let exposed_token = "xoxb-mock-immune-test-quarantined-key";
+    store
+        .secrets
+        .insert("SLACK_BOT_TOKEN".to_string(), exposed_token.to_string());
+    secretguard::vault::save_vault(&store, None).expect("Vault must save test credential");
+
+    // Trigger containment
+    let report = secretguard::immune::ImmuneEngine::trigger_containment(exposed_token, &engine)
+        .expect("Containment must succeed");
+    assert_eq!(report.provider, "Slack Bot Token");
+
+    // Verify local vault is immediately quarantined
+    let loaded_vault = secretguard::vault::load_vault(None).expect("Vault must load");
+    let quarantined_val = loaded_vault.secrets.get("SLACK_BOT_TOKEN").unwrap();
+    assert!(
+        quarantined_val.starts_with("[QUARANTINED_BLOCKED:"),
+        "Local vault must have quarantined token immediately"
+    );
+
+    // Verify LifecycleManager state is quarantined
+    let lm = secretguard::lifecycle::LifecycleManager::load(None).expect("LifecycleManager loads");
+    let rec = lm.find_by_name("Slack Bot Token");
+    assert!(rec.is_some(), "Credential record must be registered");
+    assert!(
+        matches!(
+            rec.unwrap().state,
+            secretguard::lifecycle::CredentialState::Quarantined { .. }
+        ),
+        "Lifecycle state must be Quarantined"
+    );
+
+    // Verify broker blocks quarantined token
+    let broker = secretguard::broker::SecurityBroker::new();
+    let agent = secretguard::identity::IdentityContext::mock(
+        "agent",
+        secretguard::identity::RequesterType::AutonomousAgent,
+        Some("org/repo"),
+        None,
+    );
+    let req = secretguard::policy::OperationRequest::new(
+        agent,
+        "QUARANTINED_Slack_Bot_Token",
+        secretguard::policy::OperationType::HttpGet,
+        "https://slack.com/api/auth.test",
+    );
+    let res = broker.execute_delegated_call(&req, None);
+    assert!(
+        res.is_err(),
+        "Quarantined credential must be blocked by broker"
+    );
+    assert!(
+        res.err().unwrap().contains("QUARANTINED"),
+        "Error must specify quarantined circuit-breaker"
+    );
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }

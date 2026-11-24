@@ -35,9 +35,30 @@ struct McpGatewayState {
 
 impl McpGatewayState {
     pub fn new() -> Self {
+        let ipc_server = crate::ipc::IpcServer::new();
+        // Automatically establish authenticated session bound to the OS parent process (e.g. IDE / Agent)
+        let parent_pid = crate::identity::get_parent_pid(std::process::id()).ok();
+        let effective_pid = parent_pid.unwrap_or_else(std::process::id);
+        let auth_val = ipc_server.expected_token.clone();
+
+        let auth_msg = crate::ipc::IpcMessage::Authenticate {
+            token: auth_val,
+            client_name: "mcp-server".to_string(),
+            pid: effective_pid,
+        };
+
+        let session_id = match ipc_server.handle_message_with_peer(&auth_msg, Some(effective_pid)) {
+            crate::ipc::IpcMessage::AuthenticateResponse {
+                authenticated,
+                session_id,
+                ..
+            } if authenticated => Some(session_id),
+            _ => None,
+        };
+
         Self {
-            ipc_server: crate::ipc::IpcServer::new(),
-            current_session_id: None,
+            ipc_server,
+            current_session_id: session_id,
         }
     }
 }
@@ -47,7 +68,7 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
     let stdout = io::stdout();
     let reader = io::BufReader::new(stdin);
     let mut writer = io::BufWriter::new(stdout);
-    let mut state = McpGatewayState::new();
+    let state = McpGatewayState::new();
 
     for line in reader.lines() {
         let line: String = match line {
@@ -120,18 +141,6 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
             "tools/list" => {
                 let tools = json!({
                     "tools": [
-                        {
-                            "name": "authenticate_client",
-                            "description": "Authenticates the AI agent or client process with the SecretGuard Local Security Broker.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "client_name": { "type": "string", "description": "Client name (e.g. claude-code, aider, cursor)" },
-                                    "token": { "type": "string", "description": "SecretGuard broker IPC authentication token" }
-                                },
-                                "required": ["client_name", "token"]
-                            }
-                        },
                         {
                             "name": "authorize_operation",
                             "description": "Mediates and authorizes an operation or API access request before executing it.",
@@ -240,63 +249,24 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
 
                 let tool_result = match tool_name {
                     "authenticate_client" => {
-                        let client_name = arguments
-                            .get("client_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("mcp-client");
-                        let auth_tok_str = arguments
-                            .get("token")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let parent_pid = crate::identity::get_parent_pid(std::process::id()).ok();
-                        let default_pid = parent_pid.unwrap_or_else(std::process::id);
-                        let pid = arguments
-                            .get("pid")
-                            .and_then(|v| v.as_u64())
-                            .map(|p| p as u32)
-                            .unwrap_or(default_pid);
-
-                        let auth_msg = crate::ipc::IpcMessage::Authenticate {
-                            token: auth_tok_str.to_string(),
-                            client_name: client_name.to_string(),
-                            pid,
-                        };
-
-                        match state
-                            .ipc_server
-                            .handle_message_with_peer(&auth_msg, parent_pid)
-                        {
-                            crate::ipc::IpcMessage::AuthenticateResponse {
-                                authenticated,
-                                session_id,
-                                message,
-                            } => {
-                                if authenticated {
-                                    state.current_session_id = Some(session_id.clone());
-                                    json!({
-                                        "content": [{
-                                            "type": "text",
-                                            "text": format!("Authenticated with SecretGuard Broker: {} (Session ID: {})", message, session_id)
-                                        }],
-                                        "isError": false
-                                    })
-                                } else {
-                                    json!({
-                                        "content": [{
-                                            "type": "text",
-                                            "text": format!("Authentication Denied: {}", message)
-                                        }],
-                                        "isError": true
-                                    })
-                                }
-                            }
-                            _ => json!({
+                        // Security: AI agents must never handle or supply broker tokens directly.
+                        // Authentication is established automatically at gateway startup bound to the host process.
+                        if let Some(sess_id) = state.current_session_id.as_deref() {
+                            json!({
                                 "content": [{
                                     "type": "text",
-                                    "text": "Unexpected response from authentication plane".to_string()
+                                    "text": format!("SecretGuard MCP Gateway is verified and authenticated (Session ID: {}). AI agents do not require or receive broker tokens.", sess_id)
+                                }],
+                                "isError": false
+                            })
+                        } else {
+                            json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": "SecretGuard MCP Gateway could not establish verified broker session on startup."
                                 }],
                                 "isError": true
-                            }),
+                            })
                         }
                     }
                     "authorize_operation" => {

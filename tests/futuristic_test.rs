@@ -3,9 +3,13 @@ use secretguard::ghost::GhostVirtualizer;
 use secretguard::immune::ImmuneEngine;
 use secretguard::SecretGuardEngine;
 use std::process::Command;
+use std::sync::Mutex;
+
+static FUTURISTIC_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_ghost_tokens_generation() {
+    let _lock = FUTURISTIC_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let temp_dir = std::env::temp_dir().join(format!(
         "sg_futuristic_ghost_{}",
         std::time::SystemTime::now()
@@ -46,6 +50,17 @@ fn test_ghost_tokens_generation() {
 
 #[test]
 fn test_immune_engine_containment() {
+    let _lock = FUTURISTIC_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_futuristic_immune_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let engine = SecretGuardEngine::new();
 
     // Test simulated containment on exposed OpenAI key
@@ -61,6 +76,9 @@ fn test_immune_engine_containment() {
     assert!(report.quarantine_id.starts_with("quarantine_openai_api_"));
     assert!(!report.lifecycle_state.is_empty());
     assert!(report.containment_latency_ms < 2000); // SLA verification
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
 #[test]

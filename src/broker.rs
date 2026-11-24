@@ -125,7 +125,20 @@ pub fn validate_destination_internal(
         );
     }
 
-    if url_str.starts_with("mock://") || url_str.starts_with("test://") {
+    // 1. Parse scheme cleanly
+    let scheme_end = match url_str.find("://") {
+        Some(pos) => pos,
+        None => {
+            return Err(format!(
+                "Invalid URL format: '{}' must specify a valid protocol scheme (e.g. https://).",
+                url_str
+            ));
+        }
+    };
+    let scheme = &url_str[..scheme_end];
+    let after_scheme = &url_str[scheme_end + 3..];
+
+    if scheme == "mock" || scheme == "test" {
         return Ok(ValidatedDestination {
             host: "mock".to_string(),
             port: 0,
@@ -134,20 +147,6 @@ pub fn validate_destination_internal(
         });
     }
 
-    let is_https = url_str.starts_with("https://");
-    let is_local_http =
-        url_str.starts_with("http://127.0.0.1") || url_str.starts_with("http://localhost");
-
-    if !is_https && !is_local_http {
-        return Err(format!(
-            "Invalid Protocol: URL '{}' must use secure HTTPS (or localhost for local testing).",
-            url_str
-        ));
-    }
-
-    // Extract host and port
-    let scheme_end = url_str.find("://").map(|pos| pos + 3).unwrap_or(0);
-    let after_scheme = &url_str[scheme_end..];
     let host_port_part = match after_scheme.find(['/', '?', '#']) {
         Some(end) => &after_scheme[..end],
         None => after_scheme,
@@ -161,8 +160,8 @@ pub fn validate_destination_internal(
             let p = if let Some(colon_pos) = rest.find(':') {
                 rest[colon_pos + 1..]
                     .parse::<u16>()
-                    .unwrap_or(if is_https { 443 } else { 80 })
-            } else if is_https {
+                    .unwrap_or(if scheme == "https" { 443 } else { 80 })
+            } else if scheme == "https" {
                 443
             } else {
                 80
@@ -177,14 +176,29 @@ pub fn validate_destination_internal(
         let h = &host_port_part[..colon_pos];
         let p = host_port_part[colon_pos + 1..]
             .parse::<u16>()
-            .unwrap_or(if is_https { 443 } else { 80 });
+            .unwrap_or(if scheme == "https" { 443 } else { 80 });
         (h, p)
     } else {
-        (host_port_part, if is_https { 443 } else { 80 })
+        (host_port_part, if scheme == "https" { 443 } else { 80 })
     };
 
-    if host.is_empty() {
+    let host_lower = host.to_lowercase();
+    if host_lower.is_empty() {
         return Err("Security Violation: Missing hostname in URL (SSRF Protection).".to_string());
+    }
+
+    // Strict protocol check:
+    // Only HTTPS is permitted, EXCEPT local HTTP where host is strictly localhost, 127.0.0.1, or ::1
+    let is_strict_loopback =
+        host_lower == "127.0.0.1" || host_lower == "localhost" || host_lower == "::1";
+    let is_https = scheme == "https";
+    let is_local_http = scheme == "http" && is_strict_loopback;
+
+    if !is_https && !is_local_http {
+        return Err(format!(
+            "Invalid Protocol: URL '{}' must use secure HTTPS (or strictly localhost/127.0.0.1 for local testing).",
+            url_str
+        ));
     }
 
     // Check for ambiguous / non-canonical IP representations (octal, hex, dword)
@@ -375,6 +389,15 @@ impl SecurityBroker {
         req: &OperationRequest,
         mock_secret_provider: Option<&str>,
     ) -> Result<DelegatedResponse, String> {
+        // 0. Quarantined Credential Fast Circuit-Breaker:
+        // Quarantined tokens are permanently blocked from any operation or network lookup
+        if req.credential_name.starts_with("QUARANTINED_") {
+            return Err(format!(
+                "Security Circuit-Breaker: Credential '{}' is in QUARANTINED state and permanently blocked from use.",
+                req.credential_name
+            ));
+        }
+
         // 1. Strict URL and SSRF validation with DNS pinning info
         let url = &req.target_resource;
         let is_mock_call = mock_secret_provider.is_some()
@@ -442,12 +465,17 @@ impl SecurityBroker {
 
                     // Security: Pass sensitive headers over child stdin pipe using curl's --config -
                     // This ensures secrets NEVER appear in command line arguments or /proc/<pid>/cmdline.
+                    // -q MUST be the first argument to disable loading ~/.curlrc or system curl config files.
+                    // --noproxy "*" and stripping proxy env vars prevents proxy interception or redirection.
                     // Pre-populate curl's DNS cache using --resolve to eliminate DNS rebinding TOCTOU window.
                     let mut curl_cmd = std::process::Command::new("curl");
                     curl_cmd.args([
+                        "-q",
                         "-s",
                         "-w",
                         "\n%{http_code}",
+                        "--noproxy",
+                        "*",
                         "--proto",
                         "=https",
                         "--proto-redir",
@@ -459,6 +487,15 @@ impl SecurityBroker {
                         "-X",
                         method,
                     ]);
+
+                    curl_cmd
+                        .env_remove("HTTP_PROXY")
+                        .env_remove("http_proxy")
+                        .env_remove("HTTPS_PROXY")
+                        .env_remove("https_proxy")
+                        .env_remove("ALL_PROXY")
+                        .env_remove("all_proxy")
+                        .env_remove("CURL_HOME");
 
                     let resolve_arg = dest
                         .pinned_ip
@@ -505,22 +542,58 @@ impl SecurityBroker {
                         drop(stdin);
                     }
 
-                    let output = child
-                        .wait_with_output()
+                    // Security: Read stdout boundedly up to 10 MB to prevent memory exhaustion attacks
+                    const MAX_DELEGATED_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+                    use std::io::Read;
+
+                    let mut stdout_handle = child
+                        .stdout
+                        .take()
+                        .ok_or_else(|| "Failed to capture child stdout stream".to_string())?;
+                    let mut stderr_handle = child
+                        .stderr
+                        .take()
+                        .ok_or_else(|| "Failed to capture child stderr stream".to_string())?;
+
+                    let mut stdout_bytes = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    loop {
+                        let n = stdout_handle
+                            .read(&mut chunk)
+                            .map_err(|e| format!("Failed reading curl stdout: {}", e))?;
+                        if n == 0 {
+                            break;
+                        }
+                        stdout_bytes.extend_from_slice(&chunk[..n]);
+                        if stdout_bytes.len() > MAX_DELEGATED_RESPONSE_BYTES {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(
+                                "Security Violation: Delegated response exceeded maximum permitted size of 10 MB (Memory Exhaustion Prevention)."
+                                    .to_string(),
+                            );
+                        }
+                    }
+
+                    let mut stderr_bytes = Vec::new();
+                    let _ = stderr_handle.read_to_end(&mut stderr_bytes);
+
+                    let status = child
+                        .wait()
                         .map_err(|e| {
                             format!("Delegated HTTP dispatch error (waiting for curl): {}", e)
                         })?;
 
-                    if !output.status.success() {
-                        let stderr_text = String::from_utf8_lossy(&output.stderr);
+                    if !status.success() {
+                        let stderr_text = String::from_utf8_lossy(&stderr_bytes);
                         return Err(format!(
                             "Delegated HTTP request failed (curl exit code {:?}): {}",
-                            output.status.code(),
+                            status.code(),
                             stderr_text.trim()
                         ));
                     }
 
-                    let text = String::from_utf8_lossy(&output.stdout).to_string();
+                    let text = String::from_utf8_lossy(&stdout_bytes).to_string();
                     if let Some(last_newline) = text.rfind('\n') {
                         let body = text.as_bytes()[..last_newline].to_vec();
                         let code_str = text[last_newline + 1..].trim();
@@ -676,6 +749,9 @@ mod tests {
 
     #[test]
     fn test_broker_delegated_execution_scrubs_secret() {
+        let _lock = crate::vault::TERMINAL_INPUT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = std::env::temp_dir().join(format!("sg_broker_unit_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp_dir);
         std::env::set_var("SECRETGUARD_DIR", &temp_dir);

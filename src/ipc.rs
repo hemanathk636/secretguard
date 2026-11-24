@@ -199,22 +199,29 @@ impl IpcServer {
                     };
                 }
 
-                // If OS peer_pid is provided from kernel peer identification,
-                // verify that client-claimed PID matches OS kernel peer PID to block spoofing
-                let effective_pid = if let Some(os_pid) = peer_pid {
-                    if *pid != 0 && *pid != os_pid {
+                // Verify that client-claimed PID matches OS kernel peer PID to block spoofing
+                let effective_pid = match peer_pid {
+                    Some(os_pid) => {
+                        if *pid != 0 && *pid != os_pid {
+                            return IpcMessage::AuthenticateResponse {
+                                authenticated: false,
+                                session_id: String::new(),
+                                message: format!(
+                                    "Security Violation: PID spoofing detected! Claimed PID {} does not match kernel peer PID {}.",
+                                    pid, os_pid
+                                ),
+                            };
+                        }
+                        os_pid
+                    }
+                    None => {
+                        // Fail closed: Reject authentication when OS peer identity cannot be verified by kernel
                         return IpcMessage::AuthenticateResponse {
                             authenticated: false,
                             session_id: String::new(),
-                            message: format!(
-                                "Security Violation: PID spoofing detected! Claimed PID {} does not match kernel peer PID {}.",
-                                pid, os_pid
-                            ),
+                            message: "Security Violation: Peer process identity unverified by OS kernel. Authentication rejected (Fail-Closed).".to_string(),
                         };
                     }
-                    os_pid
-                } else {
-                    *pid
                 };
 
                 // Verify client PID through the OS kernel to prevent identity spoofing
@@ -371,17 +378,49 @@ impl IpcServer {
         );
 
         for mut stream in listener.incoming().flatten() {
-            let peer_pid = stream.peer_addr().ok().and_then(|addr| {
-                #[cfg(windows)]
-                {
-                    get_tcp_peer_pid(addr.port())
+            let peer_pid = match (stream.local_addr(), stream.peer_addr()) {
+                (Ok(local), Ok(peer)) => {
+                    #[cfg(windows)]
+                    {
+                        get_tcp_peer_pid_tuple(local.port(), peer.port())
+                    }
+                    #[cfg(unix)]
+                    {
+                        get_unix_tcp_peer_pid(local.port(), peer.port())
+                    }
                 }
-                #[cfg(unix)]
-                {
-                    None
-                }
-            });
+                _ => None,
+            };
 
+            let mut reader = BufReader::new(stream.try_clone()?);
+            let mut line = String::new();
+            if reader.read_line(&mut line)? > 0 {
+                if let Ok(req_msg) = serde_json::from_str::<IpcMessage>(line.trim()) {
+                    let resp_msg = self.handle_message_with_peer(&req_msg, peer_pid);
+                    let resp_json = serde_json::to_string(&resp_msg).unwrap_or_default();
+                    let _ = writeln!(stream, "{}", resp_json);
+                    let _ = stream.flush();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    /// Runs local Unix domain socket IPC transport listener with kernel-verified peer credentials
+    pub fn run_unix_socket_listener(&self, socket_path: &Path) -> Result<(), std::io::Error> {
+        use std::os::unix::net::UnixListener;
+        if socket_path.exists() {
+            let _ = std::fs::remove_file(socket_path);
+        }
+        let listener = UnixListener::bind(socket_path)?;
+        println!(
+            "🛡️  SecretGuard Authenticated Unix Socket listening on {}",
+            socket_path.display()
+        );
+
+        for mut stream in listener.incoming().flatten() {
+            let peer_pid = get_unix_domain_peer_pid(&stream);
             let mut reader = BufReader::new(stream.try_clone()?);
             let mut line = String::new();
             if reader.read_line(&mut line)? > 0 {
@@ -398,14 +437,14 @@ impl IpcServer {
 }
 
 #[cfg(windows)]
-fn get_tcp_peer_pid(client_port: u16) -> Option<u32> {
+fn get_tcp_peer_pid_tuple(server_port: u16, client_port: u16) -> Option<u32> {
     #[repr(C)]
     struct MIB_TCPROW_OWNER_PID {
-        _state: u32,
-        _local_addr: u32,
+        state: u32,
+        local_addr: u32,
         local_port: u32,
-        _remote_addr: u32,
-        _remote_port: u32,
+        remote_addr: u32,
+        remote_port: u32,
         owning_pid: u32,
     }
 
@@ -429,6 +468,7 @@ fn get_tcp_peer_pid(client_port: u16) -> Option<u32> {
 
     const AF_INET: u32 = 2;
     const TCP_TABLE_OWNER_PID_ALL: u32 = 5;
+    const MIB_TCP_STATE_ESTAB: u32 = 5;
 
     let mut size: u32 = 0;
     unsafe {
@@ -467,11 +507,130 @@ fn get_tcp_peer_pid(client_port: u16) -> Option<u32> {
     let rows = unsafe { std::slice::from_raw_parts(ptr as *const MIB_TCPROW_OWNER_PID, entries) };
 
     for row in rows {
-        let port_be = u16::from_be(row.local_port as u16);
-        if port_be == client_port || (row.local_port >> 16) == (client_port as u32) {
-            return Some(row.owning_pid);
+        if row.state == MIB_TCP_STATE_ESTAB {
+            let row_local_port = u16::from_be(row.local_port as u16);
+            let row_remote_port = u16::from_be(row.remote_port as u16);
+            // Match complete 4-tuple on client connection entry
+            if row_local_port == client_port && row_remote_port == server_port {
+                return Some(row.owning_pid);
+            }
         }
     }
+    None
+}
+
+#[cfg(unix)]
+fn get_unix_tcp_peer_pid(server_port: u16, client_port: u16) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        find_linux_tcp_peer_pid(server_port, client_port)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (server_port, client_port);
+        None
+    }
+}
+
+#[cfg(all(unix, target_os = "linux"))]
+fn find_linux_tcp_peer_pid(server_port: u16, client_port: u16) -> Option<u32> {
+    let tcp_file = std::fs::read_to_string("/proc/net/tcp").ok()?;
+    let client_hex = format!("{:04X}", client_port);
+    let server_hex = format!("{:04X}", server_port);
+
+    let mut target_inode = None;
+    for line in tcp_file.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 10 {
+            let local_part = parts[1];
+            let rem_part = parts[2];
+            let state = parts[3];
+            // State 01 is TCP_ESTABLISHED
+            if state == "01" && local_part.ends_with(&client_hex) && rem_part.ends_with(&server_hex)
+            {
+                target_inode = parts[9].parse::<u64>().ok();
+                break;
+            }
+        }
+    }
+
+    let inode = target_inode?;
+    let inode_str = format!("socket:[{}]", inode);
+
+    // Search /proc/*/fd/* for matching socket inode
+    let proc_dir = std::fs::read_dir("/proc").ok()?;
+    for entry in proc_dir.flatten() {
+        if let Ok(file_name) = entry.file_name().into_string() {
+            if let Ok(pid) = file_name.parse::<u32>() {
+                let fd_dir = entry.path().join("fd");
+                if let Ok(fds) = std::fs::read_dir(fd_dir) {
+                    for fd_entry in fds.flatten() {
+                        if let Ok(target) = std::fs::read_link(fd_entry.path()) {
+                            if target.to_string_lossy() == inode_str {
+                                return Some(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn get_unix_domain_peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    let fd = stream.as_raw_fd();
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut ucred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let res = libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut ucred as *mut _ as *mut libc::c_void,
+            &mut len,
+        );
+        if res == 0 && ucred.pid > 0 {
+            Some(ucred.pid as u32)
+        } else {
+            None
+        }
+    }
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))]
+    unsafe {
+        let mut pid: libc::pid_t = 0;
+        let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+        let res = libc::getsockopt(
+            fd,
+            0,
+            libc::LOCAL_PEEREPID,
+            &mut pid as *mut _ as *mut libc::c_void,
+            &mut len,
+        );
+        if res == 0 && pid > 0 {
+            return Some(pid as u32);
+        }
+        None
+    }
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    )))]
     None
 }
 
@@ -572,7 +731,7 @@ mod tests {
             client_name: "spoofed_agent".to_string(),
             pid: 9999999,
         };
-        let spoof_res = server.handle_message(&spoof_msg);
+        let spoof_res = server.handle_message_with_peer(&spoof_msg, Some(9999999));
         match spoof_res {
             IpcMessage::AuthenticateResponse {
                 authenticated,
@@ -585,13 +744,27 @@ mod tests {
             _ => panic!("Expected AuthenticateResponse"),
         }
 
-        // 3. Correct token and valid PID succeeds and registers session
+        // 2b. Missing OS peer verification (None) fails closed
+        let unverified_res = server.handle_message(&spoof_msg);
+        match unverified_res {
+            IpcMessage::AuthenticateResponse {
+                authenticated,
+                message,
+                ..
+            } => {
+                assert!(!authenticated);
+                assert!(message.contains("Peer process identity unverified"));
+            }
+            _ => panic!("Expected AuthenticateResponse"),
+        }
+
+        // 3. Correct token and valid verified PID succeeds and registers session
         let ok_msg = IpcMessage::Authenticate {
             token: correct_token,
             client_name: "claude-code".to_string(),
             pid: current_pid,
         };
-        let res = server.handle_message(&ok_msg);
+        let res = server.handle_message_with_peer(&ok_msg, Some(current_pid));
         let session_id = match res {
             IpcMessage::AuthenticateResponse {
                 authenticated,
