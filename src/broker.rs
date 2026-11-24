@@ -147,16 +147,16 @@ pub fn get_secure_curl_binary_path() -> Result<std::path::PathBuf, String> {
     Err("Secure system curl executable not found in protected system paths".to_string())
 }
 
-/// Comprehensive SSRF and URL validation preventing attacks against cloud metadata, internal subnets, and DNS rebinding
-pub fn validate_url_and_destination(url_str: &str) -> Result<ValidatedDestination, String> {
-    validate_destination_internal(url_str, false)
+/// Canonical RFC 3986 URL authority and host parser that strictly forbids userinfo
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalUrlAuthority {
+    pub scheme: String,
+    pub host: String,
+    pub port: u16,
+    pub path_and_query: String,
 }
 
-/// Internal destination validator with offline mock tolerance for network-isolated unit testing
-pub fn validate_destination_internal(
-    url_str: &str,
-    is_offline_mock: bool,
-) -> Result<ValidatedDestination, String> {
+pub fn parse_canonical_url(url_str: &str) -> Result<CanonicalUrlAuthority, String> {
     if url_str.contains("169.254.169.254")
         || url_str.contains("metadata.google.internal")
         || url_str.contains("169.254.170.2")
@@ -179,70 +179,131 @@ pub fn validate_destination_internal(
             ));
         }
     };
-    let scheme = &url_str[..scheme_end];
+    let scheme = url_str[..scheme_end].to_lowercase();
+    if scheme != "https" && scheme != "http" && scheme != "mock" && scheme != "test" {
+        return Err(format!(
+            "Unsupported protocol scheme '{}'. Only HTTPS (or local HTTP) is permitted.",
+            scheme
+        ));
+    }
+
     let after_scheme = &url_str[scheme_end + 3..];
+
+    // 2. Extract authority (everything up to first '/', '?', '#', or end of string)
+    let (authority, path_and_query) = match after_scheme.find(['/', '?', '#']) {
+        Some(pos) => (&after_scheme[..pos], &after_scheme[pos..]),
+        None => (after_scheme, "/"),
+    };
+
+    if authority.is_empty() {
+        return Err(
+            "Security Violation: URL missing authority/host (SSRF Protection).".to_string(),
+        );
+    }
+
+    // 3. STRICT USERINFO REJECTION:
+    // URLs containing '@' or percent-encoded userinfo '%40' are strictly forbidden to prevent credential exfiltration.
+    if authority.contains('@')
+        || authority.contains("%40")
+        || authority.contains("%40")
+        || authority.contains('\\')
+    {
+        return Err(
+            "Security Violation: URLs containing user information ('@') or backslashes are strictly forbidden to prevent credential exfiltration (SSRF Protection)."
+                .to_string(),
+        );
+    }
+
+    if scheme == "mock" || scheme == "test" {
+        let h = if authority.is_empty() { "mock" } else { authority };
+        return Ok(CanonicalUrlAuthority {
+            scheme,
+            host: h.to_lowercase(),
+            port: 0,
+            path_and_query: path_and_query.to_string(),
+        });
+    }
+
+    // 4. Host and Port parsing
+    let (host, port) = if authority.starts_with('[') {
+        // IPv6 bracketed address
+        let bracket_end = authority.find(']').ok_or_else(|| {
+            "Security Violation: Malformed bracketed IPv6 address in URL (SSRF Protection)."
+                .to_string()
+        })?;
+        let h = &authority[1..bracket_end];
+        let rest = &authority[bracket_end + 1..];
+        let p = if let Some(colon_pos) = rest.find(':') {
+            rest[colon_pos + 1..]
+                .parse::<u16>()
+                .map_err(|_| "Invalid port number in IPv6 URL".to_string())?
+        } else if scheme == "https" {
+            443
+        } else {
+            80
+        };
+        (h, p)
+    } else if let Some(colon_pos) = authority.rfind(':') {
+        let h = &authority[..colon_pos];
+        let p = authority[colon_pos + 1..]
+            .parse::<u16>()
+            .map_err(|_| "Invalid port number in URL".to_string())?;
+        (h, p)
+    } else {
+        (authority, if scheme == "https" { 443 } else { 80 })
+    };
+
+    // Strip trailing dots from FQDN
+    let host_clean = host.trim_end_matches('.');
+    if host_clean.is_empty() {
+        return Err("Security Violation: Hostname cannot be empty (SSRF Protection).".to_string());
+    }
+
+    // Validate characters: host must not contain spaces, control characters, or delimiters
+    if host_clean.chars().any(|c| {
+        c.is_whitespace() || c == '/' || c == '?' || c == '#' || c == ':' || c == '@' || c == '\\'
+    }) {
+        return Err(format!(
+            "Security Violation: Hostname '{}' contains invalid characters (SSRF Protection).",
+            host_clean
+        ));
+    }
+
+    Ok(CanonicalUrlAuthority {
+        scheme,
+        host: host_clean.to_lowercase(),
+        port,
+        path_and_query: path_and_query.to_string(),
+    })
+}
+
+/// Comprehensive SSRF and URL validation preventing attacks against cloud metadata, internal subnets, and DNS rebinding
+pub fn validate_url_and_destination(url_str: &str) -> Result<ValidatedDestination, String> {
+    validate_destination_internal(url_str, false)
+}
+
+/// Internal destination validator with offline mock tolerance for network-isolated unit testing
+pub fn validate_destination_internal(
+    url_str: &str,
+    is_offline_mock: bool,
+) -> Result<ValidatedDestination, String> {
+    let canonical = parse_canonical_url(url_str)?;
+    let host = &canonical.host;
+    let port = canonical.port;
+    let scheme = &canonical.scheme;
 
     if scheme == "mock" || scheme == "test" {
         return Ok(ValidatedDestination {
-            host: "mock".to_string(),
+            host: host.to_string(),
             port: 0,
             pinned_ip: None,
             is_mock: true,
         });
     }
 
-    let raw_host_port_part = match after_scheme.find(['/', '?', '#']) {
-        Some(end) => &after_scheme[..end],
-        None => after_scheme,
-    };
-
-    // Strip userinfo if present: user:pass@host:port -> host:port
-    let host_port_part = match raw_host_port_part.rfind('@') {
-        Some(at_pos) => &raw_host_port_part[at_pos + 1..],
-        None => raw_host_port_part,
-    };
-
-    let (host_raw, port) = if host_port_part.starts_with('[') {
-        // IPv6 bracketed host: [::1]:8080
-        if let Some(bracket_end) = host_port_part.find(']') {
-            let h = &host_port_part[1..bracket_end];
-            let rest = &host_port_part[bracket_end + 1..];
-            let p = if let Some(colon_pos) = rest.find(':') {
-                rest[colon_pos + 1..]
-                    .parse::<u16>()
-                    .unwrap_or(if scheme == "https" { 443 } else { 80 })
-            } else if scheme == "https" {
-                443
-            } else {
-                80
-            };
-            (h, p)
-        } else {
-            return Err(
-                "Security Violation: Malformed IPv6 address format (SSRF Protection).".to_string(),
-            );
-        }
-    } else if let Some(colon_pos) = host_port_part.rfind(':') {
-        let h = &host_port_part[..colon_pos];
-        let p = host_port_part[colon_pos + 1..]
-            .parse::<u16>()
-            .unwrap_or(if scheme == "https" { 443 } else { 80 });
-        (h, p)
-    } else {
-        (host_port_part, if scheme == "https" { 443 } else { 80 })
-    };
-
-    // Strip trailing dot from FQDN host (e.g. "127.0.0.1." or "example.com.")
-    let host = host_raw.trim_end_matches('.');
-    let host_lower = host.to_lowercase();
-    if host_lower.is_empty() {
-        return Err("Security Violation: Missing hostname in URL (SSRF Protection).".to_string());
-    }
-
     // Strict protocol check:
     // Only HTTPS is permitted, EXCEPT local HTTP where host is strictly localhost, 127.0.0.1, or ::1
-    let is_strict_loopback =
-        host_lower == "127.0.0.1" || host_lower == "localhost" || host_lower == "::1";
+    let is_strict_loopback = host == "127.0.0.1" || host == "localhost" || host == "::1";
     let is_https = scheme == "https";
     let is_local_http = scheme == "http" && is_strict_loopback;
 
@@ -557,7 +618,7 @@ impl SecurityBroker {
                         curl_cmd.arg("--resolve").arg(res_arg);
                     }
 
-                    curl_cmd.args(["--config", "-", url]);
+                    curl_cmd.args(["--config", "-"]);
 
                     let mut child = curl_cmd
                         .stdin(std::process::Stdio::piped())
@@ -569,9 +630,18 @@ impl SecurityBroker {
                         })?;
 
                     let sanitized_header = auth_header.replace('\\', "\\\\").replace('"', "\\\"");
+                    let sanitized_url = url
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"")
+                        .replace(['\r', '\n'], "");
 
                     if let Some(mut stdin) = child.stdin.take() {
                         use std::io::Write;
+                        stdin
+                            .write_all(format!("url = \"{}\"\n", sanitized_url).as_bytes())
+                            .map_err(|e| {
+                                format!("Security Error: Failed writing URL to curl stdin: {}", e)
+                            })?;
                         stdin
                             .write_all(format!("header = \"{}\"\n", sanitized_header).as_bytes())
                             .map_err(|e| {

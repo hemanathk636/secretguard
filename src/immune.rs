@@ -75,7 +75,6 @@ impl ImmuneEngine {
             method,
             "--config",
             "-",
-            url,
         ]);
 
         curl_cmd
@@ -96,6 +95,14 @@ impl ImmuneEngine {
 
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
+            let sanitized_url = url
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace(['\r', '\n'], "");
+            stdin
+                .write_all(format!("url = \"{}\"\n", sanitized_url).as_bytes())
+                .map_err(|e| format!("Failed to write URL to curl stdin: {}", e))?;
+
             if let Some(header) = auth_header {
                 if header.contains('\r') || header.contains('\n') || header.contains('\0') {
                     return Err(

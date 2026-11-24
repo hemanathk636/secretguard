@@ -105,10 +105,44 @@ impl IdentityContext {
     pub fn from_pid(pid: u32) -> Result<Self, String> {
         let (current_exe, exe_name) = query_process_info_by_pid(pid)?;
         let binary_hash = compute_file_sha256(&current_exe);
-        let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let (working_dir, env_hints) = if pid == std::process::id() {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let hints = collect_environment_hints();
+            (cwd, hints)
+        } else {
+            #[cfg(unix)]
+            {
+                let cwd = std::fs::read_link(format!("/proc/{}/cwd", pid)).unwrap_or_else(|_| {
+                    current_exe
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."))
+                });
+                let mut hints = HashMap::new();
+                if let Ok(env_data) = std::fs::read(format!("/proc/{}/environ", pid)) {
+                    for entry in env_data.split(|&b| b == 0) {
+                        if let Ok(s) = std::str::from_utf8(entry) {
+                            if let Some(pos) = s.find('=') {
+                                hints.insert(s[..pos].to_string(), s[pos + 1..].to_string());
+                            }
+                        }
+                    }
+                }
+                (cwd, hints)
+            }
+            #[cfg(not(unix))]
+            {
+                // On Windows: External process does not inherit broker process environment or working directory
+                let cwd = current_exe
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                let hints = HashMap::new();
+                (cwd, hints)
+            }
+        };
         let git_repo = detect_current_git_repo(&working_dir);
 
-        let env_hints = collect_environment_hints();
         let is_interactive_tty = false;
 
         let lineage = collect_process_lineage(pid);

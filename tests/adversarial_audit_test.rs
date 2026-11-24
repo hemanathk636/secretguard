@@ -715,3 +715,50 @@ fn test_adversarial_immune_local_quarantine_before_upstream() {
     std::env::remove_var("SECRETGUARD_DIR");
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_adversarial_userinfo_credential_exfiltration_rejected() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Adversarial attack: using URL userinfo syntax to trick parser into authorizing api.github.com
+    // while sending credentials to attacker.example
+    let evil_url = "https://api.github.com:443@attacker.example/repos/owner/repo/issues";
+
+    // 1. SSRF destination validator must strictly reject userinfo '@'
+    let dest_res = secretguard::broker::validate_url_and_destination(evil_url);
+    assert!(dest_res.is_err(), "URL with userinfo '@' must be rejected");
+    let err = dest_res.unwrap_err();
+    assert!(
+        err.contains("user information ('@')"),
+        "Unexpected error message: '{}'",
+        err
+    );
+
+    // 2. Policy engine domain extractor must fail closed and refuse domain match
+    let agent = secretguard::identity::IdentityContext::mock(
+        "claude-code",
+        secretguard::identity::RequesterType::AutonomousAgent,
+        Some("owner/repo"),
+        None,
+    );
+    let req = secretguard::policy::OperationRequest::new(
+        agent,
+        "GITHUB_TOKEN",
+        secretguard::policy::OperationType::HttpGet,
+        evil_url,
+    );
+    assert!(
+        req.target_domain.is_none(),
+        "URL with userinfo must have target_domain = None"
+    );
+
+    let engine = secretguard::policy::PolicyEngine::default();
+    let decision = engine.evaluate(&req);
+    assert!(
+        matches!(
+            decision,
+            secretguard::policy::AuthorizationDecision::Deny { .. }
+        ),
+        "Exfiltration URL must be denied by policy engine"
+    );
+}

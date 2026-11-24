@@ -451,10 +451,22 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         let scan_in = engine.scan_and_sanitize(raw_args);
                         let scan_out = engine.scan_and_sanitize(raw_resp);
 
-                        let prompt_injection = raw_args
-                            .to_lowercase()
-                            .contains("ignore all previous instructions")
-                            || raw_args.to_lowercase().contains("system prompt override");
+                        let lower_args = raw_args.to_lowercase();
+                        let lower_resp = raw_resp.to_lowercase();
+                        let injection_indicators = [
+                            "ignore all previous instructions",
+                            "system prompt override",
+                            "<|im_start|>",
+                            "<|im_end|>",
+                            "[inst]",
+                            "[/inst]",
+                            "admin override",
+                            "disregard safety guidelines",
+                            "jailbreak mode",
+                        ];
+                        let prompt_injection = injection_indicators
+                            .iter()
+                            .any(|&p| lower_args.contains(p) || lower_resp.contains(p));
 
                         let is_safe =
                             !scan_in.has_secret && !scan_out.has_secret && !prompt_injection;

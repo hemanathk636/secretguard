@@ -2817,6 +2817,51 @@ SUBCOMMANDS:
                 process::exit(2);
             }
             let key_name = &args[1];
+
+            // Security Defense: Restrict direct raw secret retrieval to interactive human developers.
+            // AI coding assistants (Claude Code, Cursor, Aider, Copilot, etc.) and non-interactive scripts
+            // are strictly prohibited from dumping raw secrets. AI agents must use SecretGuard Delegated Execution.
+            let my_pid = std::process::id();
+            let parent_pid = crate::identity::get_parent_pid(my_pid).unwrap_or(my_pid);
+            let caller_identity = crate::identity::IdentityContext::from_pid(parent_pid)
+                .or_else(|_| crate::identity::IdentityContext::from_pid(my_pid));
+
+            if let Ok(ref id) = caller_identity {
+                if id.requester_type == crate::identity::RequesterType::AutonomousAgent
+                    || id.requester_type == crate::identity::RequesterType::ApprovedIde
+                    || id.requester_type == crate::identity::RequesterType::McpServer
+                    || id.trust_tier < crate::identity::TrustTier::Tier3Privileged
+                {
+                    eprintln!("🛑 Security Violation: Direct raw credential retrieval via 'vault get' is restricted to interactive human developers.");
+                    eprintln!(
+                        "   Requester '{}' classified as {:?} (Tier: {:?}).",
+                        id.executable_name, id.requester_type, id.trust_tier
+                    );
+                    eprintln!("   AI agents and automated tools must perform operations using SecretGuard Broker Delegated Execution.");
+                    process::exit(1);
+                }
+            }
+
+            // Require an interactive terminal to prevent automated script scraping
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                eprintln!("🛑 Security Violation: 'vault get' requires an interactive terminal TTY session.");
+                process::exit(1);
+            }
+
+            // Require explicit interactive human confirmation before disclosing raw credential
+            eprint!(
+                "⚠️  Disclosing raw credential '{}'. Proceed? [y/N]: ",
+                key_name
+            );
+            let mut confirm = String::new();
+            if std::io::stdin().read_line(&mut confirm).is_err()
+                || (confirm.trim() != "y" && confirm.trim() != "Y" && confirm.trim() != "yes")
+            {
+                eprintln!("❌ Operation aborted by user.");
+                process::exit(1);
+            }
+
             let store = match load_vault(None) {
                 Ok(s) => s,
                 Err(e) => {
@@ -2826,7 +2871,7 @@ SUBCOMMANDS:
             };
 
             if let Some(val) = store.secrets.get(key_name) {
-                print!("{}", val);
+                println!("{}", val);
             } else {
                 eprintln!("❌ Secret '{}' not found in vault.", key_name);
                 process::exit(1);

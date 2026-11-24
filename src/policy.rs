@@ -53,8 +53,12 @@ impl OperationRequest {
         target_resource: &str,
     ) -> Self {
         let domain = extract_domain(target_resource);
-        let repo = crate::identity::extract_repository_from_url(target_resource)
-            .or_else(|| requester.git_repo.clone());
+        let repo = if domain.is_some() {
+            crate::identity::extract_repository_from_url(target_resource)
+                .or_else(|| requester.git_repo.clone())
+        } else {
+            None
+        };
         Self {
             requester,
             credential_name: credential_name.to_string(),
@@ -66,16 +70,11 @@ impl OperationRequest {
     }
 }
 
-/// Extracted domain from target URL or resource
+/// Extracted domain from target URL or resource using canonical parser (strictly forbidding userinfo @)
 fn extract_domain(resource: &str) -> Option<String> {
-    if let Some(pos) = resource.find("://") {
-        let rest = &resource[pos + 3..];
-        let host = rest.split('/').next()?.split(':').next()?;
-        if !host.is_empty() {
-            return Some(host.to_lowercase());
-        }
-    }
-    None
+    crate::broker::parse_canonical_url(resource)
+        .ok()
+        .map(|u| u.host)
 }
 
 /// Authorization evaluation result
@@ -191,7 +190,7 @@ impl PolicyEngine {
                     "ANTHROPIC_API_KEY".to_string(),
                     "GEMINI_API_KEY".to_string(),
                 ],
-                allowed_repositories: vec!["*".to_string()],
+                allowed_repositories: vec!["$CURRENT_REPO".to_string()],
                 allowed_domains: vec![
                     "api.openai.com".to_string(),
                     "api.anthropic.com".to_string(),

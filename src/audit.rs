@@ -257,7 +257,41 @@ impl AuditLedger {
             records: Vec::new(),
         }
     }
+}
 
+/// Sanitizes audit target resources to strip userinfo, query parameters, and sensitive credentials
+pub fn sanitize_audit_target(target: &str) -> String {
+    let engine = crate::SecretGuardEngine::new();
+    let scanned = engine.scan_and_sanitize(target).sanitized_text;
+
+    if let Some(pos) = scanned.find("://") {
+        let scheme = &scanned[..pos];
+        let rest = &scanned[pos + 3..];
+        let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let authority = &rest[..auth_end];
+        let clean_auth = match authority.rfind('@') {
+            Some(at) => &authority[at + 1..],
+            None => authority,
+        };
+        let after_auth = &rest[auth_end..];
+        let (path, has_query) = match after_auth.find('?') {
+            Some(q) => (&after_auth[..q], true),
+            None => match after_auth.find('#') {
+                Some(h) => (&after_auth[..h], false),
+                None => (after_auth, false),
+            },
+        };
+        if has_query {
+            format!("{}://{}{}[REDACTED_QUERY]", scheme, clean_auth, path)
+        } else {
+            format!("{}://{}{}", scheme, clean_auth, path)
+        }
+    } else {
+        scanned
+    }
+}
+
+impl AuditLedger {
     /// Appends a new verified authorization decision to the hash-chained ledger; fails closed if signing fails
     pub fn record_decision(
         &mut self,
@@ -287,9 +321,7 @@ impl AuditLedger {
 
         // Redact any exposed secrets from target resource and decision strings before signing and persisting
         let engine = crate::SecretGuardEngine::new();
-        let sanitized_target = engine
-            .scan_and_sanitize(&req.target_resource)
-            .sanitized_text;
+        let sanitized_target = sanitize_audit_target(&req.target_resource);
         let sanitized_decision = engine.scan_and_sanitize(&decision_str).sanitized_text;
 
         let hash = AuditRecord::compute_hash(
