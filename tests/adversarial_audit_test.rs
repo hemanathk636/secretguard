@@ -6,20 +6,36 @@ use secretguard::SecretGuardEngine;
 use std::fs;
 use std::process::Command;
 
-#[test]
-fn test_ghost_session_aes_256_gcm_encryption() {
-    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let _engine = SecretGuardEngine::new();
+fn setup_isolated_test_env(test_name: &str) -> (std::path::PathBuf, impl Drop) {
     let temp_dir = std::env::temp_dir().join(format!(
-        "sg_adv_ghost_{}_{}",
+        "sg_adv_{}_{}_{}",
+        test_name,
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
-    fs::create_dir_all(&temp_dir).unwrap();
+    let temp_dir =
+        secretguard::vault::resolve_canonical_security_path(&temp_dir).unwrap_or(temp_dir);
+    let _ = fs::create_dir_all(&temp_dir);
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
+    struct Guard(std::path::PathBuf);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            std::env::remove_var("SECRETGUARD_DIR");
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    (temp_dir.clone(), Guard(temp_dir))
+}
+
+#[test]
+fn test_ghost_session_aes_256_gcm_encryption() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("ghost");
+    let _engine = SecretGuardEngine::new();
 
     let secret = "sk-proj-superSecretRealKey1234567890abcdef12345678";
 
@@ -53,26 +69,12 @@ fn test_ghost_session_aes_256_gcm_encryption() {
     // 4. Verify decryption round-trip via vault key
     let loaded = GhostVirtualizer::load_session();
     assert!(!loaded.mappings.is_empty());
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_genuine_provider_revocation_classification() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!(
-        "sg_adv_prov_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let temp_dir =
-        secretguard::vault::resolve_canonical_security_path(&temp_dir).unwrap_or(temp_dir);
-    fs::create_dir_all(&temp_dir).unwrap();
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("prov");
 
     let engine = SecretGuardEngine::new();
 
@@ -91,9 +93,6 @@ fn test_genuine_provider_revocation_classification() {
     assert!(report_aws
         .direct_rotation_url
         .contains("console.aws.amazon.com"));
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -160,16 +159,7 @@ fn test_deep_git_history_scrubbing_across_all_commits() {
 #[test]
 fn test_csprng_master_key_generation() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!(
-        "sg_adv_master_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    fs::create_dir_all(&temp_dir).unwrap();
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("master");
 
     let key1 = secretguard::vault::get_or_generate_master_key()
         .expect("Failed to get or generate master key");
@@ -182,9 +172,6 @@ fn test_csprng_master_key_generation() {
         key1, key2,
         "Master key must be deterministically persisted on disk"
     );
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -241,9 +228,7 @@ fn test_encoded_secret_base64_detection() {
 #[test]
 fn test_adversarial_spoofed_pid_rejection() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!("sg_adv_pid_{}", std::process::id()));
-    let _ = fs::create_dir_all(&temp_dir);
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("pid");
 
     let server = secretguard::ipc::IpcServer::new();
     let token = server.expected_token.clone();
@@ -272,24 +257,12 @@ fn test_adversarial_spoofed_pid_rejection() {
         }
         _ => panic!("Expected AuthenticateResponse"),
     }
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_adversarial_ssrf_and_dns_rebinding_defense() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!(
-        "sg_adv_ssrf_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let _ = fs::create_dir_all(&temp_dir);
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("ssrf");
 
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
@@ -355,17 +328,12 @@ fn test_adversarial_ssrf_and_dns_rebinding_defense() {
             err
         );
     }
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_adversarial_peer_pid_mismatch_rejection() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!("sg_adv_peer_{}", std::process::id()));
-    let _ = fs::create_dir_all(&temp_dir);
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("peer");
 
     let server = secretguard::ipc::IpcServer::new();
     let token = server.expected_token.clone();
@@ -396,24 +364,12 @@ fn test_adversarial_peer_pid_mismatch_rejection() {
         }
         _ => panic!("Expected AuthenticateResponse"),
     }
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_adversarial_header_injection_rejection() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!(
-        "sg_adv_hdr_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let _ = fs::create_dir_all(&temp_dir);
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("hdr");
 
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
@@ -442,24 +398,12 @@ fn test_adversarial_header_injection_rejection() {
         "Expected header injection error, got: {}",
         err
     );
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_adversarial_ambiguous_ip_rejection() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!(
-        "sg_adv_amb_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let _ = fs::create_dir_all(&temp_dir);
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("amb");
 
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
@@ -492,9 +436,6 @@ fn test_adversarial_ambiguous_ip_rejection() {
             err
         );
     }
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -579,16 +520,7 @@ fn test_adversarial_non_tty_secretguard_restricted_tier() {
 #[test]
 fn test_adversarial_subdomain_spoofing_loopback_rejected() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!(
-        "sg_adv_sub_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let _ = fs::create_dir_all(&temp_dir);
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("sub");
 
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
@@ -626,24 +558,12 @@ fn test_adversarial_subdomain_spoofing_loopback_rejected() {
             err
         );
     }
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_adversarial_github_repo_binding_and_policy_enforcement() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!(
-        "sg_adv_repo_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let _ = fs::create_dir_all(&temp_dir);
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("repo");
 
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
@@ -704,24 +624,12 @@ fn test_adversarial_github_repo_binding_and_policy_enforcement() {
         ),
         "DELETE operation by AI agent must be denied by zero-trust policy"
     );
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_adversarial_immune_local_quarantine_before_upstream() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir = std::env::temp_dir().join(format!(
-        "sg_adv_immune_local_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    fs::create_dir_all(&temp_dir).unwrap();
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("immune_local");
 
     let engine = secretguard::SecretGuardEngine::new();
 
@@ -781,9 +689,6 @@ fn test_adversarial_immune_local_quarantine_before_upstream() {
         res.err().unwrap().contains("QUARANTINED"),
         "Error must specify quarantined circuit-breaker"
     );
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
