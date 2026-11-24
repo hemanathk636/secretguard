@@ -280,6 +280,17 @@ fn test_adversarial_spoofed_pid_rejection() {
 #[test]
 fn test_adversarial_ssrf_and_dns_rebinding_defense() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_adv_ssrf_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
         "adversary-agent",
@@ -344,6 +355,9 @@ fn test_adversarial_ssrf_and_dns_rebinding_defense() {
             err
         );
     }
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -390,6 +404,17 @@ fn test_adversarial_peer_pid_mismatch_rejection() {
 #[test]
 fn test_adversarial_header_injection_rejection() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_adv_hdr_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
         "claude",
@@ -417,11 +442,25 @@ fn test_adversarial_header_injection_rejection() {
         "Expected header injection error, got: {}",
         err
     );
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_adversarial_ambiguous_ip_rejection() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_adv_amb_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
         "agent",
@@ -453,6 +492,9 @@ fn test_adversarial_ambiguous_ip_rejection() {
             err
         );
     }
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
@@ -537,6 +579,17 @@ fn test_adversarial_non_tty_secretguard_restricted_tier() {
 #[test]
 fn test_adversarial_subdomain_spoofing_loopback_rejected() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_adv_sub_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
         "agent",
@@ -573,11 +626,25 @@ fn test_adversarial_subdomain_spoofing_loopback_rejected() {
             err
         );
     }
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_adversarial_github_repo_binding_and_policy_enforcement() {
     let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_adv_repo_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
     let broker = secretguard::broker::SecurityBroker::new();
     let agent = secretguard::identity::IdentityContext::mock(
         "claude-code",
@@ -637,6 +704,9 @@ fn test_adversarial_github_repo_binding_and_policy_enforcement() {
         ),
         "DELETE operation by AI agent must be denied by zero-trust policy"
     );
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]

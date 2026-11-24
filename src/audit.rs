@@ -16,27 +16,34 @@ type HmacSha256 = Hmac<Sha256>;
 pub const GENESIS_PREV_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
-static GLOBAL_AUDIT_KEY: std::sync::RwLock<Option<[u8; 32]>> = std::sync::RwLock::new(None);
+static GLOBAL_AUDIT_KEY: std::sync::RwLock<Option<(PathBuf, [u8; 32])>> =
+    std::sync::RwLock::new(None);
 
 /// Returns or initializes local HMAC signing key for tamper-proof audit verification
 pub fn get_or_create_audit_key() -> Result<[u8; 32], std::io::Error> {
+    let dir = crate::vault::get_vault_dir()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
+    let dir = crate::vault::resolve_canonical_security_path(&dir).unwrap_or(dir);
+    fs::create_dir_all(&dir)?;
+    let key_path = dir.join("audit.hmac.key");
+
     if let Ok(guard) = GLOBAL_AUDIT_KEY.read() {
-        if let Some(key) = *guard {
-            return Ok(key);
+        if let Some((ref cached_path, key)) = *guard {
+            if cached_path == &key_path {
+                return Ok(key);
+            }
         }
     }
 
     let mut guard = GLOBAL_AUDIT_KEY
         .write()
         .map_err(|_| std::io::Error::other("Audit key lock poisoned"))?;
-    if let Some(key) = *guard {
-        return Ok(key);
+    if let Some((ref cached_path, key)) = *guard {
+        if cached_path == &key_path {
+            return Ok(key);
+        }
     }
 
-    let dir = crate::vault::get_vault_dir()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
-    fs::create_dir_all(&dir)?;
-    let key_path = dir.join("audit.hmac.key");
     if key_path.exists() {
         let meta = fs::symlink_metadata(&key_path)?;
         if meta.file_type().is_symlink() {
@@ -49,7 +56,7 @@ pub fn get_or_create_audit_key() -> Result<[u8; 32], std::io::Error> {
         if data.len() == 32 {
             let mut k = [0u8; 32];
             k.copy_from_slice(&data);
-            *guard = Some(k);
+            *guard = Some((key_path, k));
             return Ok(k);
         } else {
             return Err(std::io::Error::new(
@@ -71,14 +78,14 @@ pub fn get_or_create_audit_key() -> Result<[u8; 32], std::io::Error> {
     file.write_all(&k)?;
     file.sync_all()?;
 
-    *guard = Some(k);
+    *guard = Some((key_path, k));
     Ok(k)
 }
 
 #[cfg(test)]
 pub fn set_test_audit_key(key: [u8; 32]) {
     let mut guard = GLOBAL_AUDIT_KEY.write().unwrap();
-    *guard = Some(key);
+    *guard = Some((PathBuf::from("__test_key__"), key));
 }
 
 #[cfg(test)]
@@ -424,6 +431,7 @@ impl AuditLedger {
             .unwrap_or_else(|_| {
                 crate::vault::get_vault_dir().unwrap_or_else(|_| PathBuf::from(".secretguard"))
             });
+        let base = crate::vault::resolve_canonical_security_path(&base).unwrap_or(base);
         base.join("audit_ledger.json")
     }
 
@@ -432,6 +440,7 @@ impl AuditLedger {
         let path = custom_path
             .map(PathBuf::from)
             .unwrap_or_else(Self::get_default_path);
+        let path = crate::vault::resolve_canonical_security_path(&path).unwrap_or(path);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let _ = fs::create_dir_all(parent);
 
@@ -464,6 +473,7 @@ impl AuditLedger {
         let path = custom_path
             .map(PathBuf::from)
             .unwrap_or_else(Self::get_default_path);
+        let path = crate::vault::resolve_canonical_security_path(&path).unwrap_or(path);
         if !path.exists() {
             return Ok(Self::new());
         }
