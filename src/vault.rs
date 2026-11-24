@@ -2387,6 +2387,31 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
                 break;
             }
+
+            // In multithreaded runtimes, process-directed signals may be delivered to any thread.
+            // Poll STDIN_FILENO with 50ms intervals so any signal delivered to any thread immediately
+            // unblocks this loop and triggers graceful terminal disposition restoration.
+            let mut pfd = libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let pret = unsafe { libc::poll(&mut pfd, 1, 50) };
+            if TERMINAL_INTERRUPTED.load(Ordering::SeqCst) {
+                break;
+            }
+            if pret < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted
+                    || TERMINAL_INTERRUPTED.load(Ordering::SeqCst)
+                {
+                    break;
+                }
+                return Err(io::Error::other(format!("Terminal poll error: {}", err)));
+            } else if pret == 0 {
+                continue;
+            }
+
             let n = unsafe { read(0, byte.as_mut_ptr(), 1) };
             if n == 0 {
                 // EOF reached on stdin
