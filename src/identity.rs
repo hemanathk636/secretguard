@@ -422,13 +422,13 @@ pub fn clean_git_repo_identifier(raw_url: &str) -> String {
 fn is_terminal_interactive() -> bool {
     #[cfg(unix)]
     unsafe {
-        libc::isatty(libc::STDIN_FILENO) == 1
+        libc::isatty(libc::STDIN_FILENO) == 1 && libc::isatty(libc::STDOUT_FILENO) == 1
     }
     #[cfg(windows)]
     {
-        // Safe heuristic checking stdin handle
+        // Require both stdin and stdout to be interactive terminals
         use std::io::IsTerminal;
-        std::io::stdin().is_terminal()
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
     }
 }
 
@@ -477,15 +477,25 @@ pub fn classify_requester_with_hash(
 ) -> (RequesterType, TrustTier, u8) {
     let lower_exe = exe_name.to_lowercase();
 
-    // 1. Check for autonomous AI agents
-    if lower_exe.contains("claude")
+    // 1. Check for autonomous AI agents with corroborating evidence
+    let has_agent_name = lower_exe.contains("claude")
         || lower_exe.contains("aider")
         || lower_exe.contains("copilot")
         || lower_exe.contains("cline")
-        || lower_exe.contains("goose")
-        || env_hints.contains_key("CLAUDE_CODE")
+        || lower_exe.contains("goose");
+    let has_agent_env = env_hints.contains_key("CLAUDE_CODE")
         || env_hints.contains_key("AIDER_MODEL")
-    {
+        || env_hints.contains_key("COPILOT_AGENT")
+        || env_hints.contains_key("GOOSE_PROVIDER");
+    let has_agent_lineage = lineage.iter().any(|p| {
+        let lp = p.to_lowercase();
+        lp.contains("claude")
+            || lp.contains("aider")
+            || lp.contains("copilot")
+            || lp.contains("cline")
+    });
+
+    if (has_agent_name && (has_agent_env || has_agent_lineage)) || has_agent_env {
         return (
             RequesterType::AutonomousAgent,
             TrustTier::Tier2StandardAgent,
@@ -501,15 +511,22 @@ pub fn classify_requester_with_hash(
         return (RequesterType::McpServer, TrustTier::Tier1Restricted, 45);
     }
 
-    // 3. Check for approved IDE environments
-    if lower_exe.contains("code")
+    // 3. Check for approved IDE environments with corroborating evidence
+    let has_ide_name = lower_exe.contains("code")
         || lower_exe.contains("cursor")
         || lower_exe.contains("idea")
         || lower_exe.contains("zed")
-        || lower_exe.contains("windsurf")
-        || env_hints.contains_key("VSCODE_PID")
+        || lower_exe.contains("windsurf");
+    let has_ide_env = env_hints.contains_key("VSCODE_PID")
         || env_hints.contains_key("CURSOR_APP_ID")
-    {
+        || env_hints.contains_key("ZED_TERM")
+        || env_hints.contains_key("IDEA_INITIAL_DIRECTORY");
+    let has_ide_lineage = lineage.iter().any(|p| {
+        let lp = p.to_lowercase();
+        lp.contains("code") || lp.contains("cursor") || lp.contains("idea") || lp.contains("zed")
+    });
+
+    if (has_ide_name && (has_ide_env || has_ide_lineage)) || has_ide_env {
         return (
             RequesterType::ApprovedIde,
             TrustTier::Tier2StandardAgent,
@@ -611,11 +628,21 @@ mod tests {
 
     #[test]
     fn test_classify_ai_agent() {
-        let hints = HashMap::new();
+        let mut hints = HashMap::new();
+        hints.insert("CLAUDE_CODE".to_string(), "1".to_string());
         let (req_type, tier, score) = classify_requester("claude-code", &[], false, &hints);
         assert_eq!(req_type, RequesterType::AutonomousAgent);
         assert_eq!(tier, TrustTier::Tier2StandardAgent);
         assert!(score >= 60);
+    }
+
+    #[test]
+    fn test_classify_unverified_claude_process_rejected() {
+        let hints = HashMap::new();
+        // Standalone executable with no environment proof or lineage is rejected from Tier 2
+        let (req_type, tier, _) = classify_requester("claude.exe", &[], false, &hints);
+        assert_eq!(req_type, RequesterType::UnknownProcess);
+        assert_eq!(tier, TrustTier::Tier0Blocked);
     }
 
     #[test]

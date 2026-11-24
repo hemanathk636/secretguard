@@ -53,7 +53,9 @@ impl ImmuneEngine {
         method: &str,
         auth_header: Option<&str>,
     ) -> Result<(u16, String), String> {
-        let mut curl_cmd = Command::new("curl");
+        let curl_bin = crate::broker::get_secure_curl_binary_path()
+            .map_err(|e| format!("Immune system error: {}", e))?;
+        let mut curl_cmd = Command::new(curl_bin);
         curl_cmd.args([
             "-q",
             "-s",

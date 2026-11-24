@@ -369,6 +369,49 @@ impl IpcServer {
         }
     }
 
+    /// Starts the authenticated IPC listener on a local loopback port in the background
+    pub fn start_background(self: Arc<Self>) -> Result<u16, std::io::Error> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let server = Arc::clone(&self);
+
+        std::thread::Builder::new()
+            .name("secretguard-ipc-listener".to_string())
+            .spawn(move || {
+                for mut stream in listener.incoming().flatten() {
+                    let peer_pid = match (stream.local_addr(), stream.peer_addr()) {
+                        (Ok(local), Ok(peer)) => {
+                            #[cfg(windows)]
+                            {
+                                get_tcp_peer_pid_tuple(local.port(), peer.port())
+                            }
+                            #[cfg(unix)]
+                            {
+                                get_unix_tcp_peer_pid(local.port(), peer.port())
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    let mut reader = BufReader::new(match stream.try_clone() {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    });
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) > 0 {
+                        if let Ok(req_msg) = serde_json::from_str::<IpcMessage>(line.trim()) {
+                            let resp_msg = server.handle_message_with_peer(&req_msg, peer_pid);
+                            let resp_json = serde_json::to_string(&resp_msg).unwrap_or_default();
+                            let _ = writeln!(stream, "{}", resp_json);
+                            let _ = stream.flush();
+                        }
+                    }
+                }
+            })?;
+
+        Ok(port)
+    }
+
     /// Runs local loopback TCP IPC transport listener with genuine OS peer verification
     pub fn run_listener(&self, port: u16) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port))?;
@@ -510,8 +553,11 @@ fn get_tcp_peer_pid_tuple(server_port: u16, client_port: u16) -> Option<u32> {
         if row.state == MIB_TCP_STATE_ESTAB {
             let row_local_port = u16::from_be(row.local_port as u16);
             let row_remote_port = u16::from_be(row.remote_port as u16);
-            // Match complete 4-tuple on client connection entry
-            if row_local_port == client_port && row_remote_port == server_port {
+            // Verify complete 4-tuple on loopback connection:
+            // 127.0.0.1 in network byte order is 0x0100007f (in little-endian memory)
+            let is_loopback = (row.local_addr == 0x0100007f || row.local_addr == 0x7f000001)
+                && (row.remote_addr == 0x0100007f || row.remote_addr == 0x7f000001);
+            if is_loopback && row_local_port == client_port && row_remote_port == server_port {
                 return Some(row.owning_pid);
             }
         }
@@ -537,6 +583,9 @@ fn find_linux_tcp_peer_pid(server_port: u16, client_port: u16) -> Option<u32> {
     let tcp_file = std::fs::read_to_string("/proc/net/tcp").ok()?;
     let client_hex = format!("{:04X}", client_port);
     let server_hex = format!("{:04X}", server_port);
+    // Verify complete 4-tuple on Linux loopback
+    let expected_client_endpoint = format!("0100007F:{}", client_hex);
+    let expected_server_endpoint = format!("0100007F:{}", server_hex);
 
     let mut target_inode = None;
     for line in tcp_file.lines().skip(1) {
@@ -546,7 +595,9 @@ fn find_linux_tcp_peer_pid(server_port: u16, client_port: u16) -> Option<u32> {
             let rem_part = parts[2];
             let state = parts[3];
             // State 01 is TCP_ESTABLISHED
-            if state == "01" && local_part.ends_with(&client_hex) && rem_part.ends_with(&server_hex)
+            if state == "01"
+                && local_part.eq_ignore_ascii_case(&expected_client_endpoint)
+                && rem_part.eq_ignore_ascii_case(&expected_server_endpoint)
             {
                 target_inode = parts[9].parse::<u64>().ok();
                 break;
@@ -778,12 +829,17 @@ mod tests {
             _ => panic!("Expected AuthenticateResponse"),
         };
 
-        // 4. Authenticated session permits authorize call
+        // 4. Authenticated session permits authorize call on caller's repository
+        let caller_repo = crate::identity::IdentityContext::from_pid(current_pid)
+            .ok()
+            .and_then(|id| id.git_repo)
+            .unwrap_or_else(|| "org/repo".to_string());
+        let target_url = format!("https://api.github.com/repos/{}/pulls", caller_repo);
         let auth_op = IpcMessage::AuthorizeRequest {
             session_id: session_id.clone(),
             credential_name: "GITHUB_TOKEN".to_string(),
             operation: "GET".to_string(),
-            target_resource: "https://api.github.com/repos/org/repo/pulls".to_string(),
+            target_resource: target_url,
         };
         let op_res = server.handle_message(&auth_op);
         match op_res {

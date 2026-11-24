@@ -105,12 +105,17 @@ fn test_authenticated_ipc_and_lifecycle_integration() {
         _ => panic!("Expected AuthenticateResponse"),
     };
 
-    // Authorize operation
+    // Authorize operation on caller's repository
+    let caller_repo = secretguard::identity::IdentityContext::from_pid(std::process::id())
+        .ok()
+        .and_then(|id| id.git_repo)
+        .unwrap_or_else(|| "org/repo".to_string());
+    let target_url = format!("https://api.github.com/repos/{}/pulls", caller_repo);
     let auth_op = IpcMessage::AuthorizeRequest {
         session_id,
         credential_name: "GITHUB_TOKEN".to_string(),
         operation: "GET".to_string(),
-        target_resource: "https://api.github.com/repos/org/repo/pulls".to_string(),
+        target_resource: target_url,
     };
     let op_resp = server.handle_message(&auth_op);
     match op_resp {

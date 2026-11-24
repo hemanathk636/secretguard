@@ -158,7 +158,7 @@ impl PolicyEngine {
                 ],
                 min_trust_tier: TrustTier::Tier1Restricted,
                 allowed_credentials: vec!["GITHUB_TOKEN".to_string(), "GH_TOKEN".to_string()],
-                allowed_repositories: vec!["*".to_string()],
+                allowed_repositories: vec!["$CURRENT_REPO".to_string()],
                 allowed_domains: vec!["api.github.com".to_string(), "github.com".to_string()],
                 allowed_operations: vec![
                     "GET".to_string(),
@@ -287,16 +287,21 @@ impl PolicyEngine {
             if !rule.allowed_repositories.iter().any(|r| r == "*") {
                 match &req.repository {
                     Some(repo) => {
-                        if !rule
-                            .allowed_repositories
-                            .iter()
-                            .any(|r| r.eq_ignore_ascii_case(repo))
-                        {
+                        let repo_allowed = rule.allowed_repositories.iter().any(|r| {
+                            if r == "$CURRENT_REPO" || r == "$ACTIVE_REPO" {
+                                req.requester.git_repo.as_ref().is_some_and(|caller_repo| {
+                                    caller_repo.eq_ignore_ascii_case(repo)
+                                })
+                            } else {
+                                r.eq_ignore_ascii_case(repo)
+                            }
+                        });
+                        if !repo_allowed {
                             continue;
                         }
                     }
                     None => {
-                        // Caller has no git repository context: fail closed
+                        // Caller or target has no git repository context: fail closed
                         continue;
                     }
                 }
@@ -634,5 +639,46 @@ mod tests {
 
         let decision = engine.evaluate(&req);
         assert!(matches!(decision, AuthorizationDecision::Deny { .. }));
+    }
+
+    #[test]
+    fn test_ai_agent_cross_repo_access_denied() {
+        let engine = PolicyEngine::default();
+        let agent = IdentityContext::mock(
+            "claude",
+            RequesterType::AutonomousAgent,
+            Some("attacker-org/repo-a"),
+            None,
+        );
+        let req = OperationRequest::new(
+            agent,
+            "GITHUB_TOKEN",
+            OperationType::HttpGet,
+            "https://api.github.com/repos/victim-org/repo-b/pulls",
+        );
+
+        let decision = engine.evaluate(&req);
+        assert!(
+            matches!(decision, AuthorizationDecision::Deny { .. }),
+            "Cross-repository access must be strictly denied"
+        );
+    }
+
+    #[test]
+    fn test_ai_agent_no_repo_context_denied() {
+        let engine = PolicyEngine::default();
+        let agent = IdentityContext::mock("claude", RequesterType::AutonomousAgent, None, None);
+        let req = OperationRequest::new(
+            agent,
+            "GITHUB_TOKEN",
+            OperationType::HttpGet,
+            "https://api.github.com/repos/org/repo/pulls",
+        );
+
+        let decision = engine.evaluate(&req);
+        assert!(
+            matches!(decision, AuthorizationDecision::Deny { .. }),
+            "Access without caller repository context must be fail-closed denied"
+        );
     }
 }

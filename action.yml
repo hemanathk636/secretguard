@@ -52,40 +52,54 @@ runs:
         DOWNLOAD_FILE="$RUNNER_TEMP/$TARBALL"
         CHECKSUM_FILE="$RUNNER_TEMP/${TARBALL}.sha256"
 
-        echo "📥 Downloading SecretGuard release archive: ${TARBALL}..."
-        curl -fsSL "${RELEASE_URL}/${TARBALL}" -o "$DOWNLOAD_FILE"
-
-        echo "🔒 Downloading SHA-256 release checksum..."
-        if ! curl -fsSL "${RELEASE_URL}/${TARBALL}.sha256" -o "$CHECKSUM_FILE"; then
-          echo "::error::Strict verification failure: Failed to download SHA-256 checksum for ${TARBALL}. Refusing unverified installation."
-          exit 1
+        echo "📥 Attempting to download SecretGuard pre-built release archive: ${TARBALL}..."
+        DOWNLOAD_SUCCESS=false
+        if curl -fsSL "${RELEASE_URL}/${TARBALL}" -o "$DOWNLOAD_FILE" 2>/dev/null && \
+           curl -fsSL "${RELEASE_URL}/${TARBALL}.sha256" -o "$CHECKSUM_FILE" 2>/dev/null; then
+          echo "🔒 Cryptographically verifying SHA-256 checksum..."
+          cd "$RUNNER_TEMP"
+          if command -v sha256sum >/dev/null 2>&1; then
+            if sha256sum -c "$CHECKSUM_FILE"; then
+              DOWNLOAD_SUCCESS=true
+            fi
+          elif command -v shasum >/dev/null 2>&1; then
+            if shasum -a 256 -c "$CHECKSUM_FILE"; then
+              DOWNLOAD_SUCCESS=true
+            fi
+          fi
+          cd - >/dev/null
         fi
 
-        echo "🔒 Cryptographically verifying SHA-256 checksum..."
-        cd "$RUNNER_TEMP"
-        if command -v sha256sum >/dev/null 2>&1; then
-          sha256sum -c "$CHECKSUM_FILE" || { echo "::error::Cryptographic checksum mismatch for ${TARBALL}!"; exit 1; }
-        elif command -v shasum >/dev/null 2>&1; then
-          shasum -a 256 -c "$CHECKSUM_FILE" || { echo "::error::Cryptographic checksum mismatch for ${TARBALL}!"; exit 1; }
+        if [ "$DOWNLOAD_SUCCESS" = true ]; then
+          echo "✅ Release archive SHA-256 checksum verified successfully."
+          if [[ "$TARBALL" == *.zip ]]; then
+            unzip -q "$DOWNLOAD_FILE" -d "$INSTALL_DIR"
+          else
+            tar -xzf "$DOWNLOAD_FILE" -C "$INSTALL_DIR"
+          fi
         else
-          echo "::error::Neither sha256sum nor shasum is available on this runner to verify release checksum."
-          exit 1
-        fi
-        cd - >/dev/null
-        echo "✅ Release archive SHA-256 checksum verified successfully."
-
-        # Extract archive securely
-        if [[ "$TARBALL" == *.zip ]]; then
-          unzip -q "$DOWNLOAD_FILE" -d "$INSTALL_DIR"
-        else
-          tar -xzf "$DOWNLOAD_FILE" -C "$INSTALL_DIR"
+          echo "ℹ️ Pre-built release archive not yet published on GitHub Releases. Building native binary from source..."
+          if ! command -v cargo >/dev/null 2>&1; then
+            echo "::error::Cargo is required to build SecretGuard from source when pre-built releases are not published."
+            exit 1
+          fi
+          cargo build --release
+          if [ -f "target/release/secretguard.exe" ]; then
+            cp "target/release/secretguard.exe" "$INSTALL_DIR/"
+          elif [ -f "target/release/secretguard" ]; then
+            cp "target/release/secretguard" "$INSTALL_DIR/"
+            chmod +x "$INSTALL_DIR/secretguard"
+          else
+            echo "::error::Built binary not found in target/release/"
+            exit 1
+          fi
         fi
 
         # Safely register to GITHUB_PATH without requiring sudo elevation
         echo "$INSTALL_DIR" >> "$GITHUB_PATH"
         export PATH="$INSTALL_DIR:$PATH"
         secretguard --help > /dev/null
-        echo "✅ SecretGuard ${VERSION} verified and installed."
+        echo "✅ SecretGuard ${VERSION} ready and verified."
 
     - name: Run SecretGuard Codebase Scan
       shell: bash

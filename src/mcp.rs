@@ -29,35 +29,49 @@ struct JsonRpcResponse {
 
 /// State for the MCP AI Security Gateway connected to verified broker IPC service
 struct McpGatewayState {
-    pub ipc_server: crate::ipc::IpcServer,
+    pub broker_server: std::sync::Arc<crate::ipc::IpcServer>,
+    pub broker_port: u16,
     pub current_session_id: Option<String>,
 }
 
 impl McpGatewayState {
     pub fn new() -> Self {
-        let ipc_server = crate::ipc::IpcServer::new();
-        // Automatically establish authenticated session bound to the OS parent process (e.g. IDE / Agent)
-        let parent_pid = crate::identity::get_parent_pid(std::process::id()).ok();
-        let effective_pid = parent_pid.unwrap_or_else(std::process::id);
-        let auth_val = ipc_server.expected_token.clone();
-
-        let auth_msg = crate::ipc::IpcMessage::Authenticate {
-            token: auth_val,
-            client_name: "mcp-server".to_string(),
-            pid: effective_pid,
+        // Start the real authenticated broker IPC transport listener with genuine OS peer verification
+        let server = std::sync::Arc::new(crate::ipc::IpcServer::new());
+        let expected_token = server.expected_token.clone();
+        let port = match std::sync::Arc::clone(&server).start_background() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to start SecretGuard IPC transport listener: {}", e);
+                return Self {
+                    broker_server: server,
+                    broker_port: 0,
+                    current_session_id: None,
+                };
+            }
         };
 
-        let session_id = match ipc_server.handle_message_with_peer(&auth_msg, Some(effective_pid)) {
-            crate::ipc::IpcMessage::AuthenticateResponse {
+        // Authenticate by connecting to the real transport socket as a client.
+        // The OS kernel establishes the client PID from the TCP socket connection (GetExtendedTcpTable / /proc/net/tcp).
+        let my_pid = std::process::id();
+        let auth_msg = crate::ipc::IpcMessage::Authenticate {
+            token: expected_token,
+            client_name: "mcp-server".to_string(),
+            pid: my_pid,
+        };
+
+        let session_id = match crate::ipc::send_ipc_request(port, &auth_msg) {
+            Ok(crate::ipc::IpcMessage::AuthenticateResponse {
                 authenticated,
                 session_id,
                 ..
-            } if authenticated => Some(session_id),
+            }) if authenticated => Some(session_id),
             _ => None,
         };
 
         Self {
-            ipc_server,
+            broker_server: server,
+            broker_port: port,
             current_session_id: session_id,
         }
     }
@@ -296,13 +310,13 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                 target_resource: res_url.to_string(),
                             };
 
-                            match state.ipc_server.handle_message(&auth_req) {
-                                crate::ipc::IpcMessage::AuthorizeResponse {
+                            match crate::ipc::send_ipc_request(state.broker_port, &auth_req) {
+                                Ok(crate::ipc::IpcMessage::AuthorizeResponse {
                                     decision,
                                     allowed,
                                     audit_sequence,
                                     details,
-                                } => json!({
+                                }) => json!({
                                     "content": [{
                                         "type": "text",
                                         "text": serde_json::to_string_pretty(&json!({
@@ -317,10 +331,17 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                     }],
                                     "isError": !allowed
                                 }),
-                                crate::ipc::IpcMessage::Error { code, message } => json!({
+                                Ok(crate::ipc::IpcMessage::Error { code, message }) => json!({
                                     "content": [{
                                         "type": "text",
                                         "text": format!("Security Error [{}]: {}", code, message)
+                                    }],
+                                    "isError": true
+                                }),
+                                Err(e) => json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": format!("IPC transport communication error: {}", e)
                                     }],
                                     "isError": true
                                 }),
@@ -366,13 +387,13 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                 target_resource: res_url.to_string(),
                             };
 
-                            match state.ipc_server.handle_message(&call_req) {
-                                crate::ipc::IpcMessage::DelegatedCallResponse {
+                            match crate::ipc::send_ipc_request(state.broker_port, &call_req) {
+                                Ok(crate::ipc::IpcMessage::DelegatedCallResponse {
                                     status_code,
                                     body,
                                     scrubbed_count,
                                     audit_sequence,
-                                } => json!({
+                                }) => json!({
                                     "content": [{
                                         "type": "text",
                                         "text": serde_json::to_string_pretty(&json!({
@@ -384,10 +405,17 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                     }],
                                     "isError": status_code >= 400
                                 }),
-                                crate::ipc::IpcMessage::Error { code, message } => json!({
+                                Ok(crate::ipc::IpcMessage::Error { code, message }) => json!({
                                     "content": [{
                                         "type": "text",
                                         "text": format!("Delegated execution error [{}]: {}", code, message)
+                                    }],
+                                    "isError": true
+                                }),
+                                Err(e) => json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": format!("IPC transport communication error: {}", e)
                                     }],
                                     "isError": true
                                 }),
@@ -448,8 +476,8 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         })
                     }
                     "get_security_posture" => {
-                        let policies = state.ipc_server.broker.policy_engine.read().unwrap();
-                        let ledger = state.ipc_server.broker.audit_ledger.lock().unwrap();
+                        let policies = state.broker_server.broker.policy_engine.read().unwrap();
+                        let ledger = state.broker_server.broker.audit_ledger.lock().unwrap();
 
                         json!({
                             "content": [{

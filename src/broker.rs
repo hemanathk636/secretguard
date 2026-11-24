@@ -103,6 +103,50 @@ fn has_ambiguous_ip_format(host: &str) -> bool {
     false
 }
 
+/// Locates the authentic system curl binary to prevent PATH hijacking
+pub fn get_secure_curl_binary_path() -> Result<std::path::PathBuf, String> {
+    #[cfg(windows)]
+    {
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let sys32_curl = std::path::PathBuf::from(&system_root)
+            .join("System32")
+            .join("curl.exe");
+        if sys32_curl.is_file() {
+            return Ok(sys32_curl);
+        }
+        let sys_curl = std::path::PathBuf::from("C:\\Windows\\System32\\curl.exe");
+        if sys_curl.is_file() {
+            return Ok(sys_curl);
+        }
+    }
+    #[cfg(unix)]
+    {
+        for path in &["/usr/bin/curl", "/bin/curl", "/usr/local/bin/curl"] {
+            let p = std::path::PathBuf::from(path);
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+    }
+    // Fail-safe lookup in PATH only if it does NOT come from current working directory or relative path
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            if dir.as_os_str().is_empty() || dir == std::path::Path::new(".") {
+                continue; // Reject relative/current directory
+            }
+            #[cfg(windows)]
+            let cand = dir.join("curl.exe");
+            #[cfg(not(windows))]
+            let cand = dir.join("curl");
+
+            if cand.is_file() {
+                return Ok(cand);
+            }
+        }
+    }
+    Err("Secure system curl executable not found in protected system paths".to_string())
+}
+
 /// Comprehensive SSRF and URL validation preventing attacks against cloud metadata, internal subnets, and DNS rebinding
 pub fn validate_url_and_destination(url_str: &str) -> Result<ValidatedDestination, String> {
     validate_destination_internal(url_str, false)
@@ -147,12 +191,18 @@ pub fn validate_destination_internal(
         });
     }
 
-    let host_port_part = match after_scheme.find(['/', '?', '#']) {
+    let raw_host_port_part = match after_scheme.find(['/', '?', '#']) {
         Some(end) => &after_scheme[..end],
         None => after_scheme,
     };
 
-    let (host, port) = if host_port_part.starts_with('[') {
+    // Strip userinfo if present: user:pass@host:port -> host:port
+    let host_port_part = match raw_host_port_part.rfind('@') {
+        Some(at_pos) => &raw_host_port_part[at_pos + 1..],
+        None => raw_host_port_part,
+    };
+
+    let (host_raw, port) = if host_port_part.starts_with('[') {
         // IPv6 bracketed host: [::1]:8080
         if let Some(bracket_end) = host_port_part.find(']') {
             let h = &host_port_part[1..bracket_end];
@@ -182,6 +232,8 @@ pub fn validate_destination_internal(
         (host_port_part, if scheme == "https" { 443 } else { 80 })
     };
 
+    // Strip trailing dot from FQDN host (e.g. "127.0.0.1." or "example.com.")
+    let host = host_raw.trim_end_matches('.');
     let host_lower = host.to_lowercase();
     if host_lower.is_empty() {
         return Err("Security Violation: Missing hostname in URL (SSRF Protection).".to_string());
@@ -468,7 +520,8 @@ impl SecurityBroker {
                     // -q MUST be the first argument to disable loading ~/.curlrc or system curl config files.
                     // --noproxy "*" and stripping proxy env vars prevents proxy interception or redirection.
                     // Pre-populate curl's DNS cache using --resolve to eliminate DNS rebinding TOCTOU window.
-                    let mut curl_cmd = std::process::Command::new("curl");
+                    let curl_bin = get_secure_curl_binary_path()?;
+                    let mut curl_cmd = std::process::Command::new(curl_bin);
                     curl_cmd.args([
                         "-q",
                         "-s",

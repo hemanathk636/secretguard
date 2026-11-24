@@ -285,6 +285,13 @@ impl AuditLedger {
             AuthorizationDecision::Deny { reason } => format!("Deny:{}", reason),
         };
 
+        // Redact any exposed secrets from target resource and decision strings before signing and persisting
+        let engine = crate::SecretGuardEngine::new();
+        let sanitized_target = engine
+            .scan_and_sanitize(&req.target_resource)
+            .sanitized_text;
+        let sanitized_decision = engine.scan_and_sanitize(&decision_str).sanitized_text;
+
         let hash = AuditRecord::compute_hash(
             seq,
             timestamp,
@@ -293,8 +300,8 @@ impl AuditLedger {
             req.requester.requester_type,
             &req.credential_name,
             req.operation.as_str(),
-            &req.target_resource,
-            &decision_str,
+            &sanitized_target,
+            &sanitized_decision,
             &prev_hash,
         )?;
 
@@ -306,8 +313,8 @@ impl AuditLedger {
             requester_type: req.requester.requester_type,
             credential_name: req.credential_name.clone(),
             operation: req.operation.as_str().to_string(),
-            target_resource: req.target_resource.clone(),
-            decision: decision_str,
+            target_resource: sanitized_target,
+            decision: sanitized_decision,
             prev_record_hash: prev_hash,
             record_hash: hash,
         };

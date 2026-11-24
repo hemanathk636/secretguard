@@ -10,9 +10,9 @@ We actively maintain and provide security patches for the following versions:
 
 | Version | Supported          | Security Status |
 | ------- | ------------------ | --------------- |
-| 0.3.x   | :white_check_mark: | Active (Current Release) |
-| 0.2.x   | :white_check_mark: | Critical Security Fixes Only |
-| < 0.2.0 | :x:                | Unsupported (Please upgrade) |
+| 1.0.x   | :white_check_mark: | Active (Current Release) |
+| 0.3.x   | :white_check_mark: | Critical Security Fixes Only |
+| < 0.3.0 | :x:                | Unsupported (Please upgrade) |
 
 ---
 
