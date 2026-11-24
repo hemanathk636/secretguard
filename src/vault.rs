@@ -755,6 +755,20 @@ pub fn validate_secure_path(path: &Path, is_file: bool) -> Result<(), String> {
             ancestors.reverse();
 
             for ancestor in ancestors {
+                #[cfg(target_os = "macos")]
+                {
+                    if ancestor == Path::new("/var")
+                        || ancestor == Path::new("/tmp")
+                        || ancestor == Path::new("/etc")
+                        || ancestor == Path::new("/private")
+                        || ancestor == Path::new("/private/var")
+                        || ancestor == Path::new("/private/tmp")
+                        || ancestor == Path::new("/private/etc")
+                    {
+                        continue;
+                    }
+                }
+
                 match fs::symlink_metadata(ancestor) {
                     Ok(p_meta) => {
                         if p_meta.file_type().is_symlink() {
@@ -2324,7 +2338,13 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         // Notifies parent test harness ONLY AFTER terminal echo is successfully suppressed,
         // signal handlers are actively installed and armed, and signals are unblocked.
         if std::env::var("SG_SIGNAL_TEST_ARMED").is_ok() {
-            eprintln!("SG_ARMED");
+            unsafe {
+                libc::write(
+                    libc::STDERR_FILENO,
+                    b"SG_ARMED\n".as_ptr() as *const libc::c_void,
+                    9,
+                );
+            }
             let _ = io::stderr().flush();
         }
 

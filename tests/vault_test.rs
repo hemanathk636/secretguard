@@ -2198,6 +2198,8 @@ fn test_real_signal_delivery_and_disposition_restoration() {
 
             let mut child = Command::new(&exe)
                 .arg("test_real_signal_delivery_and_disposition_restoration")
+                .arg("--nocapture")
+                .arg("--exact")
                 .env("SG_SIGNAL_TEST_WORKER", "read_password")
                 .env("SG_SIGNAL_TEST_ARMED", "1") // Requests deterministic readiness notification
                 .stdin(Stdio::from(slave_in))
@@ -2232,7 +2234,8 @@ fn test_real_signal_delivery_and_disposition_restoration() {
                     events: POLLIN,
                     revents: 0,
                 };
-                let ret = unsafe { poll(&mut pfd, 1, remaining_ms) };
+                let poll_timeout = remaining_ms.min(100);
+                let ret = unsafe { poll(&mut pfd, 1, poll_timeout) };
                 if ret < 0 {
                     let err = std::io::Error::last_os_error();
                     if err.kind() == std::io::ErrorKind::Interrupted {
@@ -2241,13 +2244,6 @@ fn test_real_signal_delivery_and_disposition_restoration() {
                     let _ = child.kill();
                     let _ = child.wait();
                     panic!("poll() failed while waiting for SG_ARMED: {}", err);
-                } else if ret == 0 {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!(
-                        "Timed out waiting for child SG_ARMED notification in poll (5s). Buffer: {:?}",
-                        String::from_utf8_lossy(&ready_buf)
-                    );
                 }
 
                 if let Ok(Some(exit_status)) = child.try_wait() {
@@ -2422,6 +2418,8 @@ fn test_read_password_hidden_multithread_serialization() {
         let exe = std::env::current_exe().expect("Must have current test binary path");
         let mut child = Command::new(&exe)
             .arg("test_read_password_hidden_multithread_serialization")
+            .arg("--nocapture")
+            .arg("--exact")
             .env("SG_CONCURRENT_INPUT_WORKER", "1")
             .stdin(Stdio::from(slave_in))
             .stdout(Stdio::from(slave_out))
