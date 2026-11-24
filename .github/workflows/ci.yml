@@ -53,7 +53,22 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run Full Workspace Test Suite
-        run: cargo test --verbose -- --nocapture --test-threads=1
+        shell: bash
+        run: |
+          cargo test --verbose -- --nocapture --test-threads=1 2>&1 | tee test_output.log
+        continue-on-error: true
+        id: test_suite
+
+      - name: Diagnose Test Failures
+        if: steps.test_suite.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::error::=== FAILED TESTS DETAILS ==="
+          grep -A 10 -B 2 "FAILED" test_output.log || true
+          grep -A 10 -B 2 "panicked at" test_output.log || true
+          echo "=== LAST 100 LINES OF OUTPUT ==="
+          tail -n 100 test_output.log
+          exit 1
 
       - name: Run Diagnostics (secretguard doctor)
         run: cargo run -- doctor
