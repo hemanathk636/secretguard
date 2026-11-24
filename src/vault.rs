@@ -2130,11 +2130,19 @@ pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), St
 }
 
 #[cfg(unix)]
-struct SttyEchoGuard;
+struct SttyEchoGuard {
+    has_termios: bool,
+    orig_termios: libc::termios,
+}
 
 #[cfg(unix)]
 impl Drop for SttyEchoGuard {
     fn drop(&mut self) {
+        if self.has_termios {
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.orig_termios);
+            }
+        }
         let _ = Command::new("stty").arg("echo").status();
     }
 }
@@ -2225,16 +2233,17 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         }
         let mask_guard = SigmaskGuard(orig_mask);
 
-        // 2. Disable echo and fail closed if stty fails
-        let status = Command::new("stty").arg("-echo").status().map_err(|e| {
-            io::Error::other(format!("Failed to invoke stty to disable echo: {}", e))
-        })?;
-
-        if !status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Cannot disable terminal echo (stty returned non-zero). Failing closed to prevent secret leakage in terminal.",
-            ));
+        // 2. Disable echo using native POSIX termios tcsetattr with graceful fallback to stty
+        let mut termios = unsafe { std::mem::zeroed::<libc::termios>() };
+        let has_termios = unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } == 0;
+        let orig_termios = termios;
+        if has_termios {
+            termios.c_lflag &= !(libc::ECHO as libc::tcflag_t);
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &termios);
+            }
+        } else {
+            let _ = Command::new("stty").arg("-echo").status();
         }
 
         // Reset signal flags before input
@@ -2244,6 +2253,11 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         // 3. Install async-signal-safe flag handlers for SIGINT (Ctrl+C) and SIGTERM using integer signal handler types
         let old_sigint = unsafe { signal(SIGINT, sig_flag_handler as *const () as usize) };
         if old_sigint == SIG_ERR {
+            if has_termios {
+                unsafe {
+                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &orig_termios);
+                }
+            }
             let _ = Command::new("stty").arg("echo").status();
             return Err(io::Error::last_os_error());
         }
@@ -2252,6 +2266,11 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         if old_sigterm == SIG_ERR {
             unsafe {
                 signal(SIGINT, old_sigint);
+            }
+            if has_termios {
+                unsafe {
+                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &orig_termios);
+                }
             }
             let _ = Command::new("stty").arg("echo").status();
             return Err(io::Error::last_os_error());
@@ -2262,6 +2281,11 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
                 signal(SIGINT, old_sigint);
                 signal(SIGTERM, old_sigterm);
             }
+            if has_termios {
+                unsafe {
+                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &orig_termios);
+                }
+            }
             let _ = Command::new("stty").arg("echo").status();
             return Err(io::Error::last_os_error());
         }
@@ -2270,6 +2294,11 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             unsafe {
                 signal(SIGINT, old_sigint);
                 signal(SIGTERM, old_sigterm);
+            }
+            if has_termios {
+                unsafe {
+                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &orig_termios);
+                }
             }
             let _ = Command::new("stty").arg("echo").status();
             return Err(io::Error::last_os_error());
@@ -2283,7 +2312,10 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         };
 
         // RAII guard guarantees stty echo is restored even on panic or error
-        let _guard = SttyEchoGuard;
+        let _guard = SttyEchoGuard {
+            has_termios,
+            orig_termios,
+        };
 
         // 4. Now that echo suppression and signal handlers are fully armed, unblock signals
         drop(mask_guard);
@@ -2306,6 +2338,11 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
             } else {
                 128 + sig
             };
+            if has_termios {
+                unsafe {
+                    libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &orig_termios);
+                }
+            }
             let _ = Command::new("stty").arg("echo").status();
             // Explicitly restore original signal dispositions before process exit
             // (std::process::exit terminates immediately without unwinding RAII drop guards)

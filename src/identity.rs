@@ -110,7 +110,7 @@ impl IdentityContext {
             let hints = collect_environment_hints();
             (cwd, hints)
         } else {
-            #[cfg(unix)]
+            #[cfg(all(unix, target_os = "linux"))]
             {
                 let cwd = std::fs::read_link(format!("/proc/{}/cwd", pid)).unwrap_or_else(|_| {
                     current_exe
@@ -130,9 +130,9 @@ impl IdentityContext {
                 }
                 (cwd, hints)
             }
-            #[cfg(not(unix))]
+            #[cfg(not(all(unix, target_os = "linux")))]
             {
-                // On Windows: External process does not inherit broker process environment or working directory
+                // On Windows and macOS: External process does not inherit broker process environment or working directory
                 let cwd = current_exe
                     .parent()
                     .map(|p| p.to_path_buf())
@@ -322,23 +322,52 @@ pub fn get_parent_pid(pid: u32) -> Result<u32, String> {
 
 #[cfg(unix)]
 fn query_process_info_by_pid(pid: u32) -> Result<(PathBuf, String), String> {
-    let proc_exe = PathBuf::from(format!("/proc/{}/exe", pid));
-    if proc_exe.exists() {
-        if let Ok(target) = std::fs::read_link(&proc_exe) {
-            let exe_name = target
+    if pid == std::process::id() {
+        if let Ok(exe) = std::env::current_exe() {
+            let name = exe
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            return Ok((target, exe_name));
+                .unwrap_or_else(|| "secretguard".to_string());
+            return Ok((exe, name));
         }
     }
 
-    let path = PathBuf::from(format!("/proc/{}", pid));
-    if !path.exists() {
-        return Err(format!("Process with PID {} does not exist in /proc", pid));
+    #[cfg(target_os = "linux")]
+    {
+        let proc_exe = PathBuf::from(format!("/proc/{}/exe", pid));
+        if proc_exe.exists() {
+            if let Ok(target) = std::fs::read_link(&proc_exe) {
+                let exe_name = target
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                return Ok((target, exe_name));
+            }
+        }
+
+        let path = PathBuf::from(format!("/proc/{}", pid));
+        if !path.exists() {
+            return Err(format!("Process with PID {} does not exist in /proc", pid));
+        }
+        let exe_name = format!("proc_{}", pid);
+        Ok((path, exe_name))
     }
-    let exe_name = format!("proc_{}", pid);
-    Ok((path, exe_name))
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // On macOS and other Unix without /proc:
+        let exists = unsafe {
+            libc::kill(pid as i32, 0) == 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        };
+        if !exists {
+            return Err(format!("Process with PID {} does not exist", pid));
+        }
+        let exe_path =
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from(format!("/proc_{}", pid)));
+        let exe_name = format!("proc_{}", pid);
+        Ok((exe_path, exe_name))
+    }
 }
 
 #[cfg(unix)]
@@ -347,20 +376,27 @@ pub fn get_parent_pid(pid: u32) -> Result<u32, String> {
     if pid == std::process::id() {
         return Ok(unsafe { libc::getppid() as u32 });
     }
-    let stat_file = PathBuf::from(format!("/proc/{}/stat", pid));
-    if let Ok(content) = std::fs::read_to_string(&stat_file) {
-        if let Some(idx) = content.rfind(')') {
-            let after = content[idx + 1..].trim_start();
-            let mut parts = after.split_whitespace();
-            let _state = parts.next();
-            if let Some(ppid_str) = parts.next() {
-                if let Ok(ppid) = ppid_str.parse::<u32>() {
-                    return Ok(ppid);
+    #[cfg(target_os = "linux")]
+    {
+        let stat_file = PathBuf::from(format!("/proc/{}/stat", pid));
+        if let Ok(content) = std::fs::read_to_string(&stat_file) {
+            if let Some(idx) = content.rfind(')') {
+                let after = content[idx + 1..].trim_start();
+                let mut parts = after.split_whitespace();
+                let _state = parts.next();
+                if let Some(ppid_str) = parts.next() {
+                    if let Ok(ppid) = ppid_str.parse::<u32>() {
+                        return Ok(ppid);
+                    }
                 }
             }
         }
+        Err(format!("Parent PID not found for PID {}", pid))
     }
-    Err(format!("Parent PID not found for PID {}", pid))
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(1)
+    }
 }
 
 /// Computes SHA-256 hash of an executable binary
