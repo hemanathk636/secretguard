@@ -314,6 +314,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "lazy_static",
+ "libc",
  "rand_core",
  "regex",
  "serde",

@@ -202,7 +202,7 @@ impl ImmuneEngine {
         let (revocation_status, lifecycle_state) =
             Self::dispatch_provider_revocation(token, provider);
 
-        // 2. Quarantine in local hardware/encrypted vault store
+        // 2. Quarantine in local encrypted vault store & update LifecycleManager
         let epoch_nano = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -214,12 +214,36 @@ impl ImmuneEngine {
         );
 
         let _ = crate::vault::load_vault(None).map(|mut store| {
+            let mut matching_keys = Vec::new();
+            for (k, v) in &store.secrets {
+                if v == token || k.eq_ignore_ascii_case(provider) {
+                    matching_keys.push(k.clone());
+                }
+            }
+            for k in matching_keys {
+                store
+                    .secrets
+                    .insert(k, format!("[QUARANTINED_BLOCKED:{}]", token_fingerprint));
+            }
             store.secrets.insert(
                 format!("QUARANTINED_{}", provider.replace(' ', "_")),
                 format!("[QUARANTINED_BLOCKED:{}]", token_fingerprint),
             );
             let _ = crate::vault::save_vault(&store, None);
         });
+
+        // 3. Update persistent LifecycleManager state
+        if let Ok(mut lm) = crate::lifecycle::LifecycleManager::load(None) {
+            lm.quarantine_by_name_or_token(
+                provider,
+                token,
+                &format!(
+                    "Compromised token quarantined by Autonomous Immune Engine ({})",
+                    token_fingerprint
+                ),
+            );
+            let _ = lm.save(None);
+        }
 
         // 3. Inspect actual git status if inside a git repository
         let git_status = if std::path::Path::new(".git").exists() {

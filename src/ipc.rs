@@ -1,4 +1,4 @@
-//! Authenticated Local IPC Protocol for SecretGuard
+//! Authenticated Local IPC Protocol & Service for SecretGuard
 //!
 //! Provides a secure, zero-trust inter-process communication protocol connecting:
 //! - IDE extensions (VS Code, Cursor, Windsurf)
@@ -9,7 +9,8 @@
 //! Security Properties:
 //! - Authenticated sessions via ephemeral CSPRNG bearer tokens saved at 0o600
 //! - Automatic caller identity verification (`IdentityContext`)
-//! - Strict schema validation across JSON-RPC / IPC messages
+//! - Strict session registry with TTL expiry and peer validation
+//! - Real loopback socket IPC transport
 //! - All operations logged to tamper-evident audit ledger
 
 use crate::broker::SecurityBroker;
@@ -17,8 +18,11 @@ use crate::identity::{IdentityContext, RequesterType};
 use crate::policy::{AuthorizationDecision, OperationRequest, OperationType};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, RwLock};
 
 /// IPC Message payload exchange
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +41,7 @@ pub enum IpcMessage {
     },
     /// Request authorization evaluation for an operation
     AuthorizeRequest {
+        session_id: String,
         credential_name: String,
         operation: String,
         target_resource: String,
@@ -50,6 +55,7 @@ pub enum IpcMessage {
     },
     /// Request delegated execution (broker executes call, scrubs secrets, returns result)
     DelegatedCallRequest {
+        session_id: String,
         credential_name: String,
         operation: String,
         target_resource: String,
@@ -73,12 +79,14 @@ pub struct AuthenticatedSession {
     pub pid: u32,
     pub requester_type: RequesterType,
     pub established_at: u64,
+    pub last_active_at: u64,
 }
 
-/// IPC Handler managing authenticated requests
+/// IPC Server managing authenticated sessions and IPC transport
 pub struct IpcServer {
     pub broker: SecurityBroker,
-    expected_token: String,
+    pub expected_token: String,
+    pub sessions: Arc<RwLock<HashMap<String, AuthenticatedSession>>>,
 }
 
 impl Default for IpcServer {
@@ -88,13 +96,25 @@ impl Default for IpcServer {
 }
 
 impl IpcServer {
-    pub fn new() -> Self {
+    pub fn try_new() -> Result<Self, String> {
         let expected_token = Self::get_or_create_token()
-            .unwrap_or_else(|_| "sg_fallback_ephemeral_token".to_string());
-        Self {
-            broker: SecurityBroker::new(),
+            .map_err(|e| format!("Security Fail-Closed: Cannot derive IPC token: {}", e))?;
+
+        let broker = SecurityBroker::try_new()
+            .map_err(|e| format!("Security Fail-Closed: Cannot initialize broker: {}", e))?;
+
+        Ok(Self {
+            broker,
             expected_token,
-        }
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+
+    pub fn new() -> Self {
+        Self::try_new().unwrap_or_else(|e| {
+            eprintln!("CRITICAL IPC FAILURE: {}", e);
+            panic!("{}", e);
+        })
     }
 
     /// Derives or creates local IPC authentication token stored securely in .secretguard/ipc.token (0o600)
@@ -104,9 +124,16 @@ impl IpcServer {
         let token_path = dir.join("ipc.token");
 
         if token_path.exists() {
+            let meta = fs::symlink_metadata(&token_path)?;
+            if meta.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Security Error: IPC token path is an untrusted symlink!",
+                ));
+            }
             if let Ok(content) = fs::read_to_string(&token_path) {
                 let trimmed = content.trim();
-                if !trimmed.is_empty() {
+                if trimmed.len() >= 32 {
                     return Ok(trimmed.to_string());
                 }
             }
@@ -126,12 +153,31 @@ impl IpcServer {
         Ok(token)
     }
 
+    /// Validates an active session ID against session registry and TTL (3600s)
+    pub fn validate_session(&self, session_id: &str) -> Result<AuthenticatedSession, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut registry = self.sessions.write().unwrap();
+        if let Some(session) = registry.get_mut(session_id) {
+            // Check session TTL (1 hour)
+            if now.saturating_sub(session.last_active_at) > 3600 {
+                registry.remove(session_id);
+                return Err(
+                    "Authentication Session Expired (TTL 3600s). Re-authenticate.".to_string(),
+                );
+            }
+            session.last_active_at = now;
+            Ok(session.clone())
+        } else {
+            Err("Authentication Required: Session expired or invalid (Session ID not found in broker registry).".to_string())
+        }
+    }
+
     /// Processes an incoming IPC message and returns the response
-    pub fn handle_message(
-        &self,
-        session: Option<&AuthenticatedSession>,
-        msg: &IpcMessage,
-    ) -> IpcMessage {
+    pub fn handle_message(&self, msg: &IpcMessage) -> IpcMessage {
         match msg {
             IpcMessage::Authenticate {
                 token,
@@ -151,6 +197,31 @@ impl IpcServer {
                 let hex_nonce: String = nonce.iter().map(|b| format!("{:02x}", b)).collect();
                 let session_id = format!("sess_{}", hex_nonce);
 
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+
+                let req_type = match client_name.to_lowercase().as_str() {
+                    "claude-code" | "aider" | "copilot" | "cline" => RequesterType::AutonomousAgent,
+                    "vscode" | "cursor" | "windsurf" | "zed" => RequesterType::ApprovedIde,
+                    _ => RequesterType::AutonomousAgent,
+                };
+
+                let session = AuthenticatedSession {
+                    session_id: session_id.clone(),
+                    client_name: client_name.clone(),
+                    pid: *pid,
+                    requester_type: req_type,
+                    established_at: now,
+                    last_active_at: now,
+                };
+
+                self.sessions
+                    .write()
+                    .unwrap()
+                    .insert(session_id.clone(), session);
+
                 IpcMessage::AuthenticateResponse {
                     authenticated: true,
                     session_id,
@@ -158,17 +229,17 @@ impl IpcServer {
                 }
             }
             IpcMessage::AuthorizeRequest {
+                session_id,
                 credential_name,
                 operation,
                 target_resource,
             } => {
-                let active_session = match session {
-                    Some(s) => s,
-                    None => {
+                let active_session = match self.validate_session(session_id) {
+                    Ok(s) => s,
+                    Err(e) => {
                         return IpcMessage::Error {
                             code: -32001,
-                            message: "Authentication required before requesting authorization."
-                                .to_string(),
+                            message: e,
                         }
                     }
                 };
@@ -218,17 +289,17 @@ impl IpcServer {
                 }
             }
             IpcMessage::DelegatedCallRequest {
+                session_id,
                 credential_name,
                 operation,
                 target_resource,
             } => {
-                let active_session = match session {
-                    Some(s) => s,
-                    None => {
+                let active_session = match self.validate_session(session_id) {
+                    Ok(s) => s,
+                    Err(e) => {
                         return IpcMessage::Error {
                             code: -32001,
-                            message: "Authentication required before executing delegated call."
-                                .to_string(),
+                            message: e,
                         }
                     }
                 };
@@ -261,6 +332,48 @@ impl IpcServer {
             },
         }
     }
+
+    /// Runs local loopback TCP IPC transport listener
+    pub fn run_listener(&self, port: u16) -> Result<(), std::io::Error> {
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", port))?;
+        println!(
+            "🛡️  SecretGuard Authenticated IPC Service listening on 127.0.0.1:{}",
+            port
+        );
+
+        for mut stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone()?);
+            let mut line = String::new();
+            if reader.read_line(&mut line)? > 0 {
+                if let Ok(req_msg) = serde_json::from_str::<IpcMessage>(line.trim()) {
+                    let resp_msg = self.handle_message(&req_msg);
+                    let resp_json = serde_json::to_string(&resp_msg).unwrap_or_default();
+                    let _ = writeln!(stream, "{}", resp_json);
+                    let _ = stream.flush();
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Client helper: sends an authenticated IPC message across loopback socket
+pub fn send_ipc_request(port: u16, msg: &IpcMessage) -> Result<IpcMessage, String> {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .map_err(|e| format!("Failed to connect to SecretGuard IPC service: {}", e))?;
+
+    let json_req = serde_json::to_string(msg).map_err(|e| e.to_string())?;
+    writeln!(stream, "{}", json_req).map_err(|e| e.to_string())?;
+    stream.flush().map_err(|e| e.to_string())?;
+
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| format!("Failed to read IPC response: {}", e))?;
+
+    serde_json::from_str::<IpcMessage>(line.trim())
+        .map_err(|e| format!("Invalid IPC response: {}", e))
 }
 
 fn parse_op_type(op: &str) -> OperationType {
@@ -281,7 +394,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ipc_authentication_handshake() {
+    fn test_ipc_authentication_handshake_and_session_registration() {
+        let temp_dir = std::env::temp_dir().join(format!("sg_ipc_unit_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
         let server = IpcServer::new();
         let correct_token = server.expected_token.clone();
 
@@ -291,20 +408,20 @@ mod tests {
             client_name: "test_agent".to_string(),
             pid: 1234,
         };
-        let res = server.handle_message(None, &fail_msg);
+        let res = server.handle_message(&fail_msg);
         match res {
             IpcMessage::AuthenticateResponse { authenticated, .. } => assert!(!authenticated),
             _ => panic!("Expected AuthenticateResponse"),
         }
 
-        // 2. Correct token succeeds
+        // 2. Correct token succeeds and registers session
         let ok_msg = IpcMessage::Authenticate {
             token: correct_token,
             client_name: "claude-code".to_string(),
             pid: 1234,
         };
-        let res = server.handle_message(None, &ok_msg);
-        match res {
+        let res = server.handle_message(&ok_msg);
+        let session_id = match res {
             IpcMessage::AuthenticateResponse {
                 authenticated,
                 session_id,
@@ -312,24 +429,38 @@ mod tests {
             } => {
                 assert!(authenticated);
                 assert!(session_id.starts_with("sess_"));
+                session_id
             }
             _ => panic!("Expected AuthenticateResponse"),
-        }
-    }
+        };
 
-    #[test]
-    fn test_unauthenticated_request_rejected() {
-        let server = IpcServer::new();
-        let auth_req = IpcMessage::AuthorizeRequest {
+        // 3. Authenticated session permits authorize call
+        let auth_op = IpcMessage::AuthorizeRequest {
+            session_id: session_id.clone(),
+            credential_name: "GITHUB_TOKEN".to_string(),
+            operation: "GET".to_string(),
+            target_resource: "https://api.github.com/repos/org/repo/pulls".to_string(),
+        };
+        let op_res = server.handle_message(&auth_op);
+        match op_res {
+            IpcMessage::AuthorizeResponse { allowed, .. } => assert!(allowed),
+            _ => panic!("Expected AuthorizeResponse"),
+        }
+
+        // 4. Fake session ID fails closed
+        let fake_op = IpcMessage::AuthorizeRequest {
+            session_id: "sess_fake_unregistered_id".to_string(),
             credential_name: "GITHUB_TOKEN".to_string(),
             operation: "GET".to_string(),
             target_resource: "https://api.github.com".to_string(),
         };
-
-        let res = server.handle_message(None, &auth_req);
-        match res {
+        let fake_res = server.handle_message(&fake_op);
+        match fake_res {
             IpcMessage::Error { code, .. } => assert_eq!(code, -32001),
-            _ => panic!("Expected Error with code -32001"),
+            _ => panic!("Expected Error code -32001 for fake session"),
         }
+
+        std::env::remove_var("SECRETGUARD_DIR");
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

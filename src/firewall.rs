@@ -246,12 +246,27 @@ EXAMPLES:
     let mut child = Command::new(child_cmd)
         .args(child_args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| {
             eprintln!("❌ Failed to spawn agent command '{}': {}", child_cmd, e);
             process::exit(1);
         });
+
+    let stderr_handle = if let Some(stderr) = child.stderr.take() {
+        let engine_clone = engine.clone();
+        Some(std::thread::spawn(move || {
+            let reader = io::BufReader::new(stderr);
+            let stderr_out = io::stderr();
+            let mut handle = stderr_out.lock();
+            for line in reader.lines().map_while(Result::ok) {
+                let res = engine_clone.scan_and_sanitize(&line);
+                let _ = writeln!(handle, "{}", res.sanitized_text);
+            }
+        }))
+    } else {
+        None
+    };
 
     if let Some(stdout) = child.stdout.take() {
         let reader = io::BufReader::new(stdout);
@@ -261,8 +276,12 @@ EXAMPLES:
         for line in reader.lines().map_while(Result::ok) {
             // Live secret interception and output scrubbing
             let res = engine.scan_and_sanitize(&line);
-            writeln!(handle, "{}", res.sanitized_text).unwrap();
+            let _ = writeln!(handle, "{}", res.sanitized_text);
         }
+    }
+
+    if let Some(th) = stderr_handle {
+        let _ = th.join();
     }
 
     let status = child.wait().expect("Child process wasn't running");

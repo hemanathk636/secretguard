@@ -196,6 +196,16 @@ impl PolicyEngine {
 
     /// Evaluates an OperationRequest against active policy rules
     pub fn evaluate(&self, req: &OperationRequest) -> AuthorizationDecision {
+        // 0. Quarantined Credential Block
+        if req.credential_name.starts_with("QUARANTINED_") {
+            return AuthorizationDecision::Deny {
+                reason: format!(
+                    "Security Circuit-Breaker: Credential '{}' is in QUARANTINED state and permanently blocked from use.",
+                    req.credential_name
+                ),
+            };
+        }
+
         // 1. Absolute Trust Tier 0 Block
         if req.requester.trust_tier == TrustTier::Tier0Blocked {
             return AuthorizationDecision::Deny {
@@ -241,25 +251,41 @@ impl PolicyEngine {
                 continue;
             }
 
-            // Match Domain if specified
-            if let Some(target_dom) = &req.target_domain {
-                if !rule
-                    .allowed_domains
-                    .iter()
-                    .any(|d| d == "*" || d.eq_ignore_ascii_case(target_dom))
-                {
-                    continue;
+            // Match Domain (fail closed if rule restricts domains but target has no valid parsed domain)
+            if !rule.allowed_domains.iter().any(|d| d == "*") {
+                match &req.target_domain {
+                    Some(dom) => {
+                        if !rule
+                            .allowed_domains
+                            .iter()
+                            .any(|d| d.eq_ignore_ascii_case(dom))
+                        {
+                            continue;
+                        }
+                    }
+                    None => {
+                        // Domain missing or unparseable: fail closed
+                        continue;
+                    }
                 }
             }
 
-            // Match Repository Context
-            if let Some(req_repo) = &req.repository {
-                if !rule
-                    .allowed_repositories
-                    .iter()
-                    .any(|r| r == "*" || r.eq_ignore_ascii_case(req_repo))
-                {
-                    continue;
+            // Match Repository Context (fail closed if rule restricts repositories)
+            if !rule.allowed_repositories.iter().any(|r| r == "*") {
+                match &req.repository {
+                    Some(repo) => {
+                        if !rule
+                            .allowed_repositories
+                            .iter()
+                            .any(|r| r.eq_ignore_ascii_case(repo))
+                        {
+                            continue;
+                        }
+                    }
+                    None => {
+                        // Caller has no git repository context: fail closed
+                        continue;
+                    }
                 }
             }
 

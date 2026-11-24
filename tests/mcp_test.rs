@@ -70,9 +70,12 @@ fn test_mcp_security_gateway_inspection() {
         .contains("sk-proj-123456789012345678901234567890123456789012345678"));
 }
 
+static MCP_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn test_authenticated_ipc_and_lifecycle_integration() {
-    use secretguard::ipc::{AuthenticatedSession, IpcMessage, IpcServer};
+    let _guard = MCP_MUTEX.lock().unwrap();
+    use secretguard::ipc::{IpcMessage, IpcServer};
     use secretguard::lifecycle::LifecycleManager;
 
     let test_dir = std::env::temp_dir().join(format!("sg_ipc_test_{}", std::process::id()));
@@ -89,7 +92,7 @@ fn test_authenticated_ipc_and_lifecycle_integration() {
         pid: std::process::id(),
     };
 
-    let auth_resp = server.handle_message(None, &auth_msg);
+    let auth_resp = server.handle_message(&auth_msg);
     let session_id = match auth_resp {
         IpcMessage::AuthenticateResponse {
             authenticated,
@@ -102,21 +105,14 @@ fn test_authenticated_ipc_and_lifecycle_integration() {
         _ => panic!("Expected AuthenticateResponse"),
     };
 
-    let session = AuthenticatedSession {
-        session_id,
-        client_name: "claude-code".to_string(),
-        pid: std::process::id(),
-        requester_type: secretguard::identity::RequesterType::AutonomousAgent,
-        established_at: 1000,
-    };
-
     // Authorize operation
     let auth_op = IpcMessage::AuthorizeRequest {
+        session_id,
         credential_name: "GITHUB_TOKEN".to_string(),
         operation: "GET".to_string(),
         target_resource: "https://api.github.com/repos/org/repo/pulls".to_string(),
     };
-    let op_resp = server.handle_message(Some(&session), &auth_op);
+    let op_resp = server.handle_message(&auth_op);
     match op_resp {
         IpcMessage::AuthorizeResponse {
             allowed, decision, ..
@@ -134,5 +130,63 @@ fn test_authenticated_ipc_and_lifecycle_integration() {
     lm.quarantine_credential("GITHUB_TOKEN", "Exposed in log");
     assert!(!lm.record_usage("GITHUB_TOKEN"));
 
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn test_unauthenticated_ipc_and_invalid_tokens_rejected() {
+    let _guard = MCP_MUTEX.lock().unwrap();
+    use secretguard::ipc::{IpcMessage, IpcServer};
+
+    let test_dir = std::env::temp_dir().join(format!("sg_ipc_reject_test_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&test_dir);
+    std::env::set_var("SECRETGUARD_DIR", &test_dir);
+
+    let server = IpcServer::new();
+
+    // 1. Invalid token submitted during authentication
+    let bad_auth = IpcMessage::Authenticate {
+        token: "invalid_spoofed_token_value_9999".to_string(),
+        client_name: "rogue-agent".to_string(),
+        pid: 99999,
+    };
+    let bad_resp = server.handle_message(&bad_auth);
+    match bad_resp {
+        IpcMessage::AuthenticateResponse {
+            authenticated,
+            session_id,
+            message,
+        } => {
+            assert!(
+                !authenticated,
+                "Authentication with invalid token must fail"
+            );
+            assert!(session_id.is_empty());
+            assert!(message.contains("Invalid IPC authentication token"));
+        }
+        _ => panic!("Expected AuthenticateResponse"),
+    }
+
+    // 2. Unauthenticated caller attempting an operation with fake session ID
+    let op_msg = IpcMessage::AuthorizeRequest {
+        session_id: "fake_unauthenticated_session_999".to_string(),
+        credential_name: "AWS_ACCESS_KEY_ID".to_string(),
+        operation: "GET".to_string(),
+        target_resource: "https://s3.amazonaws.com".to_string(),
+    };
+    let unauth_resp = server.handle_message(&op_msg);
+    match unauth_resp {
+        IpcMessage::Error { code, message } => {
+            assert_eq!(
+                code, -32001,
+                "Unauthenticated calls must return standard error code -32001"
+            );
+            assert!(message.contains("Session expired or invalid"));
+        }
+        _ => panic!("Expected Error response for unauthenticated operation"),
+    }
+
+    std::env::remove_var("SECRETGUARD_DIR");
     let _ = std::fs::remove_dir_all(&test_dir);
 }

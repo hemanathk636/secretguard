@@ -25,6 +25,9 @@ hmac = "0.12"
 argon2 = "0.5"
 rand_core = { version = "0.6", features = ["std", "getrandom"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lib]
 name = "secretguard"
 path = "src/lib.rs"

@@ -11,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 /// Formal lifecycle state of a credential managed by SecretGuard
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +151,74 @@ impl LifecycleManager {
         } else {
             None
         }
+    }
+
+    pub fn quarantine_by_name_or_token(
+        &mut self,
+        identifier: &str,
+        raw_token: &str,
+        reason: &str,
+    ) -> &CredentialRecord {
+        let fp = CredentialRecord::compute_fingerprint(raw_token);
+        let target_key = self
+            .credentials
+            .iter()
+            .find(|(k, v)| k.as_str() == identifier || v.fingerprint == fp)
+            .map(|(k, _)| k.clone());
+
+        let key = if let Some(k) = target_key {
+            k
+        } else {
+            let record = CredentialRecord::new(identifier, identifier, &fp);
+            self.credentials.insert(identifier.to_string(), record);
+            identifier.to_string()
+        };
+
+        let rec = self.credentials.get_mut(&key).unwrap();
+        rec.quarantine(reason);
+        rec
+    }
+
+    pub fn get_default_path() -> PathBuf {
+        let base = std::env::var("SECRETGUARD_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                crate::vault::get_vault_dir().unwrap_or_else(|_| PathBuf::from(".secretguard"))
+            });
+        base.join("lifecycle.json")
+    }
+
+    pub fn load(custom_path: Option<&Path>) -> Result<Self, std::io::Error> {
+        let path = custom_path
+            .map(PathBuf::from)
+            .unwrap_or_else(Self::get_default_path);
+        if !path.exists() {
+            return Ok(Self::new());
+        }
+        let data = fs::read_to_string(&path)?;
+        serde_json::from_str(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
+    pub fn save(&self, custom_path: Option<&Path>) -> Result<(), std::io::Error> {
+        let path = custom_path
+            .map(PathBuf::from)
+            .unwrap_or_else(Self::get_default_path);
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let _ = fs::create_dir_all(parent);
+
+        let data = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+
+        let tmp_path = parent.join(format!(".tmp_lifecycle_{}", std::process::id()));
+        fs::write(&tmp_path, data.as_bytes())?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600));
+        }
+
+        fs::rename(tmp_path, path)
     }
 
     pub fn record_usage(&mut self, name: &str) -> bool {

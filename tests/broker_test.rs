@@ -14,6 +14,9 @@ use secretguard::identity::{IdentityContext, RequesterType, TrustTier};
 use secretguard::policy::{AuthorizationDecision, OperationRequest, OperationType, PolicyEngine};
 use secretguard::self_test::run_security_self_test;
 use std::fs;
+use std::sync::Mutex;
+
+static TEST_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_process_identity_classification() {
@@ -225,6 +228,7 @@ fn test_audit_ledger_tamper_detection() {
 
 #[test]
 fn test_broker_delegated_execution_scrubs_secret() {
+    let _guard = TEST_ENV_MUTEX.lock().unwrap();
     let broker = SecurityBroker::new();
     let agent = IdentityContext::mock(
         "claude-worker",
@@ -257,6 +261,7 @@ fn test_broker_delegated_execution_scrubs_secret() {
 
 #[test]
 fn test_security_self_test_all_simulations_pass() {
+    let _guard = TEST_ENV_MUTEX.lock().unwrap();
     let report = run_security_self_test();
     assert_eq!(report.total, 6);
     assert_eq!(
@@ -265,4 +270,129 @@ fn test_security_self_test_all_simulations_pass() {
         report.tests
     );
     assert!(report.is_all_passed());
+}
+
+#[test]
+fn test_broker_quarantined_credential_blocked() {
+    let _guard = TEST_ENV_MUTEX.lock().unwrap();
+    let broker = SecurityBroker::new();
+    let agent = IdentityContext::mock(
+        "claude-worker",
+        RequesterType::AutonomousAgent,
+        Some("company/project"),
+        None,
+    );
+
+    // 1. PolicyEngine directly denies QUARANTINED_ credentials
+    let req_quarantined_name = OperationRequest::new(
+        agent.clone(),
+        "QUARANTINED_GITHUB_TOKEN",
+        OperationType::HttpGet,
+        "https://api.github.com/repos/company/project",
+    );
+    let decision = broker
+        .policy_engine
+        .read()
+        .unwrap()
+        .evaluate(&req_quarantined_name);
+    assert!(matches!(decision, AuthorizationDecision::Deny { .. }));
+
+    // 2. Broker delegated execution strictly denies quarantined secrets
+    let req = OperationRequest::new(
+        agent,
+        "GITHUB_TOKEN",
+        OperationType::HttpGet,
+        "https://api.github.com/repos/company/project",
+    );
+    let quarantined_secret = "[QUARANTINED_BLOCKED:ghp_...7a9f]";
+    let err = broker
+        .execute_delegated_call(&req, Some(quarantined_secret))
+        .unwrap_err();
+    assert!(err.contains("QUARANTINED") || err.contains("Circuit-Breaker"));
+}
+
+#[test]
+fn test_broker_ssrf_cloud_metadata_blocked() {
+    let _guard = TEST_ENV_MUTEX.lock().unwrap();
+    let broker = SecurityBroker::new();
+    let agent = IdentityContext::mock(
+        "claude-worker",
+        RequesterType::AutonomousAgent,
+        Some("company/project"),
+        None,
+    );
+
+    // AWS/Azure metadata IP
+    let req_aws = OperationRequest::new(
+        agent.clone(),
+        "AWS_KEY",
+        OperationType::HttpGet,
+        "http://169.254.169.254/latest/meta-data/",
+    );
+    let err_aws = broker
+        .execute_delegated_call(&req_aws, Some("mock"))
+        .unwrap_err();
+    assert!(
+        err_aws.contains("SSRF")
+            || err_aws.contains("Metadata")
+            || err_aws.contains("cloud metadata")
+    );
+
+    // GCP metadata domain
+    let req_gcp = OperationRequest::new(
+        agent,
+        "GCP_KEY",
+        OperationType::HttpGet,
+        "http://metadata.google.internal/computeMetadata/v1/",
+    );
+    let err_gcp = broker
+        .execute_delegated_call(&req_gcp, Some("mock"))
+        .unwrap_err();
+    assert!(
+        err_gcp.contains("SSRF")
+            || err_gcp.contains("Metadata")
+            || err_gcp.contains("cloud metadata")
+    );
+}
+
+#[test]
+fn test_broker_fails_closed_on_corrupt_audit_ledger() {
+    let _guard = TEST_ENV_MUTEX.lock().unwrap();
+    let temp_dir =
+        std::env::temp_dir().join(format!("sg_corrupt_ledger_test_{}", std::process::id()));
+    let _ = fs::create_dir_all(&temp_dir);
+    let ledger_path = temp_dir.join("audit_ledger.json");
+
+    // Write a tampered/corrupt audit ledger
+    let mut ledger = AuditLedger::new();
+    let ident = IdentityContext::mock(
+        "worker",
+        RequesterType::AutonomousAgent,
+        Some("org/repo"),
+        None,
+    );
+    let req = OperationRequest::new(
+        ident,
+        "KEY",
+        OperationType::HttpGet,
+        "https://api.example.com",
+    );
+    ledger.record_decision(&req, &AuthorizationDecision::AllowDelegated);
+    ledger.records[0].target_resource = "https://tampered.com".to_string(); // Corrupt hash chain
+    ledger
+        .save(Some(&ledger_path))
+        .expect("save tampered ledger");
+
+    // Temporarily set SECRETGUARD_DIR to the corrupted directory
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
+    // SecurityBroker::try_new() MUST fail closed and refuse to start
+    let broker_res = SecurityBroker::try_new();
+    assert!(
+        broker_res.is_err(),
+        "SecurityBroker must fail closed on tampered audit ledger"
+    );
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
 }

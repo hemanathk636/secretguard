@@ -30,17 +30,34 @@ impl Default for SecurityBroker {
 }
 
 impl SecurityBroker {
+    /// Initializes a new SecurityBroker safely; fails closed if existing audit ledger is corrupted
+    pub fn try_new() -> Result<Self, String> {
+        let policy_engine = Arc::new(RwLock::new(PolicyEngine::default()));
+
+        let audit_path = AuditLedger::get_default_path();
+        let ledger = if audit_path.exists() {
+            AuditLedger::load(None).map_err(|e| {
+                format!(
+                    "Security Fail-Closed: Existing audit ledger is corrupted or tampered ({}). Refusing to start broker.",
+                    e
+                )
+            })?
+        } else {
+            AuditLedger::new()
+        };
+
+        Ok(Self {
+            policy_engine,
+            audit_ledger: Arc::new(Mutex::new(ledger)),
+        })
+    }
+
     /// Initializes a new SecurityBroker instance loading policy and audit ledger
     pub fn new() -> Self {
-        let policy_engine = Arc::new(RwLock::new(PolicyEngine::default()));
-        let audit_ledger = Arc::new(Mutex::new(
-            AuditLedger::load(None).unwrap_or_else(|_| AuditLedger::new()),
-        ));
-
-        Self {
-            policy_engine,
-            audit_ledger,
-        }
+        Self::try_new().unwrap_or_else(|e| {
+            eprintln!("CRITICAL SECURITY REFUSAL: {}", e);
+            panic!("{}", e);
+        })
     }
 
     /// Evaluates an OperationRequest, records it to the tamper-evident audit ledger, and returns the decision
@@ -50,10 +67,21 @@ impl SecurityBroker {
             engine.evaluate(req)
         };
 
-        // Record decision in tamper-evident audit log
-        if let Ok(mut ledger) = self.audit_ledger.lock() {
+        // Record decision in tamper-evident audit log with fail-closed guarantee
+        let record_res = if let Ok(mut ledger) = self.audit_ledger.lock() {
             ledger.record_decision(req, &decision);
-            let _ = ledger.save(None);
+            ledger.save(None).map_err(|e| e.to_string())
+        } else {
+            Err("Audit ledger mutex poisoned".to_string())
+        };
+
+        if let Err(e) = record_res {
+            return AuthorizationDecision::Deny {
+                reason: format!(
+                    "Security Fail-Closed: Failed to record audit log ({}). Access denied.",
+                    e
+                ),
+            };
         }
 
         decision
@@ -65,6 +93,25 @@ impl SecurityBroker {
         req: &OperationRequest,
         mock_secret_provider: Option<&str>,
     ) -> Result<DelegatedResponse, String> {
+        // 1. Strict URL and SSRF validation
+        let url = &req.target_resource;
+        if url.contains("169.254.169.254") || url.contains("metadata.google.internal") {
+            return Err("Security Violation: Target resource attempts Cloud Metadata SSRF (SSRF Protection).".to_string());
+        }
+
+        let is_http = url.starts_with("https://")
+            || url.starts_with("http://127.0.0.1")
+            || url.starts_with("http://localhost");
+        let is_mock_test = url.starts_with("mock://") || url.starts_with("test://");
+
+        if !is_http && !is_mock_test {
+            return Err(format!(
+                "Invalid Protocol: URL '{}' must use secure HTTPS (or localhost for local testing).",
+                url
+            ));
+        }
+
+        // 2. Authorize via policy engine and audit ledger
         let decision = self.authorize(req);
 
         match decision {
@@ -72,30 +119,95 @@ impl SecurityBroker {
                 // Fetch the actual credential securely in-memory
                 let secret_value = if let Some(mock) = mock_secret_provider {
                     mock.to_string()
+                } else if is_mock_test {
+                    "SG_MOCK_TEST_SECRET".to_string()
                 } else {
-                    // Try to resolve from encrypted vault
-                    match crate::vault::load_vault(None) {
-                        Ok(v) => v
-                            .secrets
-                            .get(&req.credential_name)
-                            .cloned()
-                            .unwrap_or_else(|| "SG_MOCK_TOKEN_UNSET".to_string()),
-                        Err(_) => "SG_MOCK_TOKEN_DEV".to_string(),
-                    }
+                    let vault = crate::vault::load_vault(None)
+                        .map_err(|e| format!("Security Broker failed to load vault: {}", e))?;
+                    vault
+                        .secrets
+                        .get(&req.credential_name)
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!(
+                                "Security Broker: Credential '{}' not found in vault.",
+                                req.credential_name
+                            )
+                        })?
                 };
 
-                // Simulate/execute delegated HTTP dispatch in-memory
-                // Raw secret is injected ONLY into the broker's ephemeral request context
-                let mut mock_response = format!(
-                    r#"{{"status":"ok","delegated_execution":true,"resource":"{}","operation":"{}"}}"#,
-                    req.target_resource,
-                    req.operation.as_str()
-                );
+                if secret_value.starts_with("[QUARANTINED_BLOCKED") {
+                    return Err(format!(
+                        "Security Circuit-Breaker: Credential '{}' is in QUARANTINED state and permanently blocked from use.",
+                        req.credential_name
+                    ));
+                }
 
-                // Ensure real secret is never reflected back to caller
+                // 3. Dispatch genuine delegated HTTP call (or mock test harness if mock URL)
+                let (raw_status, raw_body) = if is_http && mock_secret_provider.is_none() {
+                    let auth_header = if req.credential_name.to_uppercase().contains("GITHUB") {
+                        format!("Authorization: token {}", secret_value)
+                    } else {
+                        format!("Authorization: Bearer {}", secret_value)
+                    };
+
+                    let method = req.operation.as_str();
+                    let output = std::process::Command::new("curl")
+                        .args([
+                            "-s",
+                            "-w",
+                            "\n%{http_code}",
+                            "-X",
+                            method,
+                            "-H",
+                            &auth_header,
+                            "-H",
+                            "User-Agent: SecretGuard-Security-Broker/1.0",
+                            "--max-time",
+                            "15",
+                            url,
+                        ])
+                        .output();
+
+                    match output {
+                        Ok(out) => {
+                            let text = String::from_utf8_lossy(&out.stdout).to_string();
+                            if let Some(last_newline) = text.rfind('\n') {
+                                let body = text.as_bytes()[..last_newline].to_vec();
+                                let code_str = text[last_newline + 1..].trim();
+                                let code = code_str.parse::<u16>().unwrap_or(200);
+                                (code, body)
+                            } else {
+                                (200, out.stdout)
+                            }
+                        }
+                        Err(e) => {
+                            return Err(format!("Delegated HTTP dispatch error via system curl: {}", e));
+                        }
+                    }
+                } else {
+                    // Offline test harness execution
+                    let body_str = format!(
+                        r#"{{"status":"ok","delegated_execution":true,"resource":"{}","operation":"{}"}}"#,
+                        req.target_resource,
+                        req.operation.as_str()
+                    );
+                    (200, body_str.into_bytes())
+                };
+
+                // 4. Scrubbing: Ensure real secret is NEVER reflected back to caller
+                let mut body_str = String::from_utf8_lossy(&raw_body).to_string();
                 let mut scrubbed_count = 0;
-                if mock_response.contains(&secret_value) {
-                    mock_response = mock_response.replace(&secret_value, "[DELEGATED_SECRET_MASKED]");
+                if body_str.contains(&secret_value) {
+                    body_str = body_str.replace(&secret_value, "[DELEGATED_SECRET_MASKED]");
+                    scrubbed_count += 1;
+                }
+
+                // Inbound scanner layer: sanitize any other leaked keys in response
+                let engine = crate::SecretGuardEngine::new();
+                let scanned = engine.scan_and_sanitize(&body_str);
+                if scanned.has_secret {
+                    body_str = scanned.sanitized_text;
                     scrubbed_count += 1;
                 }
 
@@ -107,8 +219,8 @@ impl SecurityBroker {
                     .unwrap_or(0);
 
                 Ok(DelegatedResponse {
-                    status_code: 200,
-                    body: mock_response.into_bytes(),
+                    status_code: raw_status,
+                    body: body_str.into_bytes(),
                     scrubbed_tokens_count: scrubbed_count,
                     audit_sequence: audit_seq,
                 })
@@ -216,6 +328,10 @@ mod tests {
 
     #[test]
     fn test_broker_delegated_execution_scrubs_secret() {
+        let temp_dir = std::env::temp_dir().join(format!("sg_broker_unit_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
         let broker = SecurityBroker::new();
         let agent = IdentityContext::mock(
             "claude",
@@ -235,5 +351,8 @@ mod tests {
         assert_eq!(res.status_code, 200);
         let body_str = String::from_utf8(res.body).unwrap();
         assert!(!body_str.contains(secret));
+
+        std::env::remove_var("SECRETGUARD_DIR");
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

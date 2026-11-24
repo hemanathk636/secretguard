@@ -129,9 +129,9 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                 "type": "object",
                                 "properties": {
                                     "client_name": { "type": "string", "description": "Client name (e.g. claude-code, aider, cursor)" },
-                                    "token": { "type": "string", "description": "IPC authentication token or session handshake key" }
+                                    "token": { "type": "string", "description": "SecretGuard broker IPC authentication token" }
                                 },
-                                "required": ["client_name"]
+                                "required": ["client_name", "token"]
                             }
                         },
                         {
@@ -245,135 +245,159 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         let client_name = arguments
                             .get("client_name")
                             .and_then(|v| v.as_str())
-                            .unwrap_or("agent");
-                        let req_type = match client_name.to_lowercase().as_str() {
-                            "claude-code" | "aider" | "copilot" | "cline" => {
-                                RequesterType::AutonomousAgent
-                            }
-                            "vscode" | "cursor" | "windsurf" => RequesterType::ApprovedIde,
-                            _ => RequesterType::AutonomousAgent,
-                        };
-                        let ident = IdentityContext::mock(client_name, req_type, None, None);
-                        state
-                            .authenticated_clients
-                            .insert("current".to_string(), ident.clone());
+                            .unwrap_or("");
+                        let supplied_token = arguments
+                            .get("token")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
 
-                        json!({
-                            "content": [{
-                                "type": "text",
-                                "text": format!("Authenticated client '{}' with Trust Tier '{:?}' (Score: {})", client_name, ident.trust_tier, ident.trust_score)
-                            }],
-                            "isError": false
-                        })
+                        match crate::ipc::IpcServer::get_or_create_token() {
+                            Err(e) => json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": format!("Authentication error: cannot load broker token ({})", e)
+                                }],
+                                "isError": true
+                            }),
+                            Ok(valid_token) => {
+                                if supplied_token.is_empty() || supplied_token != valid_token {
+                                    json!({
+                                        "content": [{
+                                            "type": "text",
+                                            "text": "Authentication Denied: Invalid or missing SecretGuard broker token.".to_string()
+                                        }],
+                                        "isError": true
+                                    })
+                                } else {
+                                    let req_type = match client_name.to_lowercase().as_str() {
+                                        "claude-code" | "aider" | "copilot" | "cline" => {
+                                            RequesterType::AutonomousAgent
+                                        }
+                                        "vscode" | "cursor" | "windsurf" | "zed" => {
+                                            RequesterType::ApprovedIde
+                                        }
+                                        _ => RequesterType::AutonomousAgent,
+                                    };
+                                    let ident =
+                                        IdentityContext::mock(client_name, req_type, None, None);
+                                    state
+                                        .authenticated_clients
+                                        .insert("current".to_string(), ident.clone());
+
+                                    json!({
+                                        "content": [{
+                                            "type": "text",
+                                            "text": format!("Authenticated client '{}' with Trust Tier '{:?}' (Score: {})", client_name, ident.trust_tier, ident.trust_score)
+                                        }],
+                                        "isError": false
+                                    })
+                                }
+                            }
+                        }
                     }
                     "authorize_operation" => {
-                        let cred = arguments
-                            .get("credential_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let op_str = arguments
-                            .get("operation")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("GET");
-                        let res_url = arguments
-                            .get("target_resource")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        if let Some(caller) = state.authenticated_clients.get("current").cloned() {
+                            let cred = arguments
+                                .get("credential_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let op_str = arguments
+                                .get("operation")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("GET");
+                            let res_url = arguments
+                                .get("target_resource")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
 
-                        let caller = state
-                            .authenticated_clients
-                            .get("current")
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                IdentityContext::mock(
-                                    "mcp-agent",
-                                    RequesterType::AutonomousAgent,
-                                    None,
-                                    None,
-                                )
-                            });
+                            let op_type = match op_str.to_uppercase().as_str() {
+                                "GET" => OperationType::HttpGet,
+                                "POST" => OperationType::HttpPost,
+                                "PUT" => OperationType::HttpPut,
+                                "DELETE" => OperationType::HttpDelete,
+                                "RAW" => OperationType::RawCredentialAccess,
+                                _ => OperationType::HttpGet,
+                            };
 
-                        let op_type = match op_str.to_uppercase().as_str() {
-                            "GET" => OperationType::HttpGet,
-                            "POST" => OperationType::HttpPost,
-                            "PUT" => OperationType::HttpPut,
-                            "DELETE" => OperationType::HttpDelete,
-                            "RAW" => OperationType::RawCredentialAccess,
-                            _ => OperationType::HttpGet,
-                        };
+                            let req = OperationRequest::new(caller, cred, op_type, res_url);
+                            let decision = state.broker.authorize(&req);
+                            let allowed = matches!(
+                                decision,
+                                AuthorizationDecision::AllowDelegated
+                                    | AuthorizationDecision::AllowRaw
+                            );
 
-                        let req = OperationRequest::new(caller, cred, op_type, res_url);
-                        let decision = state.broker.authorize(&req);
-                        let allowed = matches!(
-                            decision,
-                            AuthorizationDecision::AllowDelegated | AuthorizationDecision::AllowRaw
-                        );
-
-                        json!({
-                            "content": [{
-                                "type": "text",
-                                "text": serde_json::to_string_pretty(&json!({
-                                    "allowed": allowed,
-                                    "decision": format!("{:?}", decision),
-                                    "credential": cred,
-                                    "operation": op_str,
-                                    "target": res_url
-                                })).unwrap()
-                            }],
-                            "isError": !allowed
-                        })
-                    }
-                    "execute_delegated_call" => {
-                        let cred = arguments
-                            .get("credential_name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let op_str = arguments
-                            .get("operation")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("GET");
-                        let res_url = arguments
-                            .get("target_resource")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-
-                        let caller = state
-                            .authenticated_clients
-                            .get("current")
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                IdentityContext::mock(
-                                    "mcp-agent",
-                                    RequesterType::AutonomousAgent,
-                                    None,
-                                    None,
-                                )
-                            });
-
-                        let op_type = match op_str.to_uppercase().as_str() {
-                            "GET" => OperationType::HttpGet,
-                            "POST" => OperationType::HttpPost,
-                            _ => OperationType::HttpGet,
-                        };
-
-                        let req = OperationRequest::new(caller, cred, op_type, res_url);
-                        match state.broker.execute_delegated_call(&req, None) {
-                            Ok(res) => json!({
+                            json!({
                                 "content": [{
                                     "type": "text",
                                     "text": serde_json::to_string_pretty(&json!({
-                                        "status_code": res.status_code,
-                                        "body": String::from_utf8_lossy(&res.body),
-                                        "scrubbed_tokens_count": res.scrubbed_tokens_count,
-                                        "audit_sequence": res.audit_sequence
+                                        "allowed": allowed,
+                                        "decision": format!("{:?}", decision),
+                                        "credential": cred,
+                                        "operation": op_str,
+                                        "target": res_url
                                     })).unwrap()
                                 }],
-                                "isError": false
-                            }),
-                            Err(e) => json!({
-                                "content": [{ "type": "text", "text": format!("Delegated execution denied: {}", e) }],
+                                "isError": !allowed
+                            })
+                        } else {
+                            json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": "Security Violation: MCP client is unauthenticated. You must call 'authenticate_client' with a valid SecretGuard broker token first.".to_string()
+                                }],
                                 "isError": true
-                            }),
+                            })
+                        }
+                    }
+                    "execute_delegated_call" => {
+                        if let Some(caller) = state.authenticated_clients.get("current").cloned() {
+                            let cred = arguments
+                                .get("credential_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let op_str = arguments
+                                .get("operation")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("GET");
+                            let res_url = arguments
+                                .get("target_resource")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            let op_type = match op_str.to_uppercase().as_str() {
+                                "GET" => OperationType::HttpGet,
+                                "POST" => OperationType::HttpPost,
+                                _ => OperationType::HttpGet,
+                            };
+
+                            let req = OperationRequest::new(caller, cred, op_type, res_url);
+                            match state.broker.execute_delegated_call(&req, None) {
+                                Ok(res) => json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": serde_json::to_string_pretty(&json!({
+                                            "status_code": res.status_code,
+                                            "body": String::from_utf8_lossy(&res.body),
+                                            "scrubbed_tokens_count": res.scrubbed_tokens_count,
+                                            "audit_sequence": res.audit_sequence
+                                        })).unwrap()
+                                    }],
+                                    "isError": false
+                                }),
+                                Err(e) => json!({
+                                    "content": [{ "type": "text", "text": format!("Delegated execution denied: {}", e) }],
+                                    "isError": true
+                                }),
+                            }
+                        } else {
+                            json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": "Security Violation: MCP client is unauthenticated. You must call 'authenticate_client' with a valid SecretGuard broker token first.".to_string()
+                                }],
+                                "isError": true
+                            })
                         }
                     }
                     "inspect_call_safety" => {

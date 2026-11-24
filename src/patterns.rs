@@ -1,5 +1,6 @@
 use regex::Regex;
 
+#[derive(Clone)]
 pub struct SecretPattern {
     pub name: &'static str,
     pub description: &'static str,

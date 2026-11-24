@@ -46,6 +46,7 @@ pub struct ScanResult {
     pub redacted_pairs: Vec<(String, String)>,
 }
 
+#[derive(Clone)]
 pub struct SecretGuardEngine {
     patterns: Vec<SecretPattern>,
     whitelist: Vec<String>,
@@ -105,6 +106,10 @@ impl SecretGuardEngine {
             patterns,
             whitelist: cfg.whitelist,
         }
+    }
+
+    pub fn patterns_len(&self) -> usize {
+        self.patterns.len()
     }
 
     /// Fast scan, sanitize (with redaction masks), and generate format-preserving synthetic mocks.

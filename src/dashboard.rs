@@ -113,23 +113,36 @@ fn handle_connection(mut stream: TcpStream, engine: &SecretGuardEngine) {
             score += 10.0;
         }
 
+        // Measure real dynamic scan latency across 10 iterations of realistic payload
+        let bench_input = format!(
+            "export OPENAI_API_KEY={}-proj-{}",
+            "sk", "9999888877776666555544443333222211110000"
+        );
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            let _ = engine.scan_and_sanitize(&bench_input);
+        }
+        let dynamic_latency_us = (start.elapsed().as_nanos() as f64) / 10000.0;
+        let patterns_count = engine.patterns_len();
+
         let json_body = serde_json::json!({
             "status": "healthy",
             "version": env!("CARGO_PKG_VERSION"),
-            "latency_us": 14.8,
-            "patterns_loaded": 24,
+            "latency_us": dynamic_latency_us,
+            "patterns_loaded": patterns_count,
             "dual_tier_entropy": true,
             "encoded_secret_engine": true,
             "broker": {
                 "active_policy_rules": policy_count,
                 "audit_records_count": audit_records,
                 "ledger_cryptographically_verified": ledger_verified,
-                "vault_hardware_encryption": vault_active
+                "vault_encryption_type": "Software AES-256-GCM Keystore (Argon2id + CSPRNG Key)",
+                "vault_configured": vault_active
             },
             "shields": {
                 "terminal_hook": "Active (Sub-millisecond Pre-exec)",
                 "ghost_tokens": "Active (Zero-Knowledge LLM Context Virtualization)",
-                "tls_swapper": "Standby (127.0.0.1:9090)",
+                "tls_swapper": "Standby (127.0.0.1:9090) - Development Simulation Testbed",
                 "screen_shield": "Monitoring active screen capture",
                 "clipboard_guardian": "Active (Auto-scrub 30s TTL)",
                 "ai_firewall": "Active (Egress & Prompt Air-Gap)"
@@ -280,12 +293,12 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
         <div class="grid-stats">
             <div class="card">
                 <div class="card-title">Interception Latency</div>
-                <div class="card-metric">14.8 <span>µs</span></div>
-                <div class="card-sub">⚡ Sub-millisecond guaranteed</div>
+                <div class="card-metric" id="metric-latency">Sub-ms <span>µs</span></div>
+                <div class="card-sub">⚡ Real-time dynamic measurement</div>
             </div>
             <div class="card">
                 <div class="card-title">Cloud Providers Protected</div>
-                <div class="card-metric">24+ <span>Platforms</span></div>
+                <div class="card-metric" id="metric-patterns">24+ <span>Platforms</span></div>
                 <div class="card-sub">✓ AWS, OpenAI, GitHub, Stripe...</div>
             </div>
             <div class="card">
@@ -295,8 +308,8 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
             </div>
             <div class="card">
                 <div class="card-title">Compliance Posture</div>
-                <div class="card-metric">98.4% <span>SOC2/ISO</span></div>
-                <div class="card-sub">✓ Zero Staged Secrets in Git</div>
+                <div class="card-metric" id="metric-compliance">98.4% <span>SOC2/ISO</span></div>
+                <div class="card-sub">✓ Tamper-Evident HMAC Ledger</div>
             </div>
         </div>
 
@@ -366,6 +379,26 @@ const DASHBOARD_HTML: &str = r#"<!DOCTYPE html>
     </div>
 
     <script>
+        async function loadStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                if (data.latency_us !== undefined) {
+                    const el = document.getElementById('metric-latency');
+                    if (el) el.innerHTML = `${data.latency_us.toFixed(1)} <span>µs</span>`;
+                }
+                if (data.patterns_loaded !== undefined) {
+                    const el = document.getElementById('metric-patterns');
+                    if (el) el.innerHTML = `${data.patterns_loaded}+ <span>Rules</span>`;
+                }
+                if (data.compliance_score) {
+                    const el = document.getElementById('metric-compliance');
+                    if (el) el.innerHTML = `${data.compliance_score} <span>Audit</span>`;
+                }
+            } catch (e) {}
+        }
+        window.addEventListener('DOMContentLoaded', loadStatus);
+
         async function runTestScan() {
             const input = document.getElementById('sample-input').value;
             const outputBox = document.getElementById('sandbox-output');

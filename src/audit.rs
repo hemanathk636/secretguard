@@ -3,13 +3,66 @@
 
 use crate::identity::RequesterType;
 use crate::policy::{AuthorizationDecision, OperationRequest};
+use hmac::{Hmac, Mac};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+
+type HmacSha256 = Hmac<Sha256>;
 
 pub const GENESIS_PREV_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
+
+static GLOBAL_AUDIT_KEY: std::sync::RwLock<Option<[u8; 32]>> = std::sync::RwLock::new(None);
+
+/// Returns or initializes local HMAC signing key for tamper-proof audit verification
+pub fn get_or_create_audit_key() -> Result<[u8; 32], std::io::Error> {
+    if let Ok(guard) = GLOBAL_AUDIT_KEY.read() {
+        if let Some(key) = *guard {
+            return Ok(key);
+        }
+    }
+
+    let mut guard = GLOBAL_AUDIT_KEY.write().unwrap();
+    if let Some(key) = *guard {
+        return Ok(key);
+    }
+
+    let key = match crate::vault::get_vault_dir() {
+        Ok(dir) => {
+            let _ = fs::create_dir_all(&dir);
+            let key_path = dir.join("audit.hmac.key");
+            if key_path.exists() {
+                if let Ok(data) = fs::read(&key_path) {
+                    if data.len() == 32 {
+                        let mut k = [0u8; 32];
+                        k.copy_from_slice(&data);
+                        *guard = Some(k);
+                        return Ok(k);
+                    }
+                }
+            }
+            let mut k = [0u8; 32];
+            OsRng.fill_bytes(&mut k);
+            if let Ok(mut file) = crate::vault::create_secure_file_exclusive(&key_path, 0o600) {
+                let _ = file.write_all(&k);
+                let _ = file.sync_all();
+            }
+            k
+        }
+        Err(_) => {
+            let mut k = [0u8; 32];
+            OsRng.fill_bytes(&mut k);
+            k
+        }
+    };
+
+    *guard = Some(key);
+    Ok(key)
+}
 
 /// Immutable, hash-chained record representing a security authorization event
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,7 +81,38 @@ pub struct AuditRecord {
 }
 
 impl AuditRecord {
-    /// Computes deterministic SHA-256 hash across record attributes
+    /// Computes cryptographically keyed HMAC-SHA256 across record attributes
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_keyed_hash(
+        key: &[u8],
+        seq: u64,
+        timestamp: u64,
+        pid: u32,
+        name: &str,
+        req_type: RequesterType,
+        cred: &str,
+        op: &str,
+        target: &str,
+        decision: &str,
+        prev_hash: &str,
+    ) -> String {
+        let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key size");
+        mac.update(&seq.to_le_bytes());
+        mac.update(&timestamp.to_le_bytes());
+        mac.update(&pid.to_le_bytes());
+        mac.update(name.as_bytes());
+        mac.update(format!("{:?}", req_type).as_bytes());
+        mac.update(cred.as_bytes());
+        mac.update(op.as_bytes());
+        mac.update(target.as_bytes());
+        mac.update(decision.as_bytes());
+        mac.update(prev_hash.as_bytes());
+        let result = mac.finalize();
+        let bytes = result.into_bytes();
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// Computes deterministic hash across record attributes
     #[allow(clippy::too_many_arguments)]
     pub fn compute_hash(
         seq: u64,
@@ -42,18 +126,10 @@ impl AuditRecord {
         decision: &str,
         prev_hash: &str,
     ) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(seq.to_le_bytes());
-        hasher.update(timestamp.to_le_bytes());
-        hasher.update(pid.to_le_bytes());
-        hasher.update(name.as_bytes());
-        hasher.update(format!("{:?}", req_type).as_bytes());
-        hasher.update(cred.as_bytes());
-        hasher.update(op.as_bytes());
-        hasher.update(target.as_bytes());
-        hasher.update(decision.as_bytes());
-        hasher.update(prev_hash.as_bytes());
-        format!("{:x}", hasher.finalize())
+        let key = get_or_create_audit_key().unwrap_or([0x5au8; 32]);
+        Self::compute_keyed_hash(
+            &key, seq, timestamp, pid, name, req_type, cred, op, target, decision, prev_hash,
+        )
     }
 }
 
@@ -264,18 +340,7 @@ impl AuditLedger {
         let base = std::env::var("SECRETGUARD_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
-                #[cfg(windows)]
-                {
-                    std::env::var("USERPROFILE")
-                        .map(|p| PathBuf::from(p).join(".secretguard"))
-                        .unwrap_or_else(|_| PathBuf::from(".secretguard"))
-                }
-                #[cfg(not(windows))]
-                {
-                    std::env::var("HOME")
-                        .map(|p| PathBuf::from(p).join(".secretguard"))
-                        .unwrap_or_else(|_| PathBuf::from(".secretguard"))
-                }
+                crate::vault::get_vault_dir().unwrap_or_else(|_| PathBuf::from(".secretguard"))
             });
         base.join("audit_ledger.json")
     }
@@ -327,7 +392,21 @@ impl AuditLedger {
             return Err("Security Error: Audit ledger is an untrusted symlink!".to_string());
         }
 
-        let data = fs::read(&path).map_err(|e| format!("Failed to read audit ledger: {}", e))?;
+        let mut attempts = 0;
+        let data = loop {
+            match fs::read(&path) {
+                Ok(d) => break d,
+                Err(e)
+                    if attempts < 5
+                        && (e.kind() == std::io::ErrorKind::PermissionDenied
+                            || e.raw_os_error() == Some(32)) =>
+                {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                }
+                Err(e) => return Err(format!("Failed to read audit ledger: {}", e)),
+            }
+        };
         let ledger: Self = serde_json::from_slice(&data)
             .map_err(|e| format!("Invalid audit JSON format: {}", e))?;
 
