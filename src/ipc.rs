@@ -22,6 +22,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 /// IPC Message payload exchange

@@ -2069,6 +2069,10 @@ mod unix_pty_test_support {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     compile_error!("SecretGuard strictly supports Linux and macOS on Unix.");
 
+    #[allow(
+        invalid_runtime_symbol_definitions,
+        suspicious_runtime_symbol_definitions
+    )]
     extern "C" {
         pub fn posix_openpt(oflag: i32) -> i32;
         pub fn grantpt(fd: i32) -> i32;
@@ -2258,7 +2262,7 @@ fn test_real_signal_delivery_and_disposition_restoration() {
 
                 match master_file.read(&mut single) {
                     Ok(0) => break,
-                    Ok(1) => ready_buf.push(single[0]),
+                    Ok(n) => ready_buf.extend_from_slice(&single[..n]),
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }

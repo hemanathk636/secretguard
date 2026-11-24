@@ -35,6 +35,10 @@ static TERMINAL_INTERRUPTED: AtomicBool = AtomicBool::new(false);
 static RECEIVED_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
 #[cfg(unix)]
+#[allow(
+    suspicious_runtime_symbol_definitions,
+    invalid_runtime_symbol_definitions
+)]
 extern "C" {
     fn getuid() -> u32;
     fn signal(signum: i32, handler: usize) -> usize;
@@ -1356,7 +1360,7 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
             }
         }
 
-        return Ok(Some(file));
+        Ok(Some(file))
     }
 
     #[cfg(windows)]
@@ -1646,7 +1650,7 @@ pub fn create_secure_file_exclusive(path: &Path, mode: u32) -> Result<fs::File, 
             ));
         }
 
-        return Ok(file);
+        Ok(file)
     }
 
     #[cfg(windows)]
@@ -2223,10 +2227,7 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
 
         // 2. Disable echo and fail closed if stty fails
         let status = Command::new("stty").arg("-echo").status().map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to invoke stty to disable echo: {}", e),
-            )
+            io::Error::other(format!("Failed to invoke stty to disable echo: {}", e))
         })?;
 
         if !status.success() {
@@ -2241,13 +2242,13 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
         RECEIVED_SIGNAL.store(0, Ordering::SeqCst);
 
         // 3. Install async-signal-safe flag handlers for SIGINT (Ctrl+C) and SIGTERM using integer signal handler types
-        let old_sigint = unsafe { signal(SIGINT, sig_flag_handler as usize) };
+        let old_sigint = unsafe { signal(SIGINT, sig_flag_handler as *const () as usize) };
         if old_sigint == SIG_ERR {
             let _ = Command::new("stty").arg("echo").status();
             return Err(io::Error::last_os_error());
         }
 
-        let old_sigterm = unsafe { signal(SIGTERM, sig_flag_handler as usize) };
+        let old_sigterm = unsafe { signal(SIGTERM, sig_flag_handler as *const () as usize) };
         if old_sigterm == SIG_ERR {
             unsafe {
                 signal(SIGINT, old_sigint);
@@ -2341,10 +2342,7 @@ pub fn read_password_hidden(prompt: &str) -> io::Result<String> {
                     // Interrupted system call (EINTR) from delivered signal
                     break;
                 }
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Terminal read error: {}", err),
-                ));
+                return Err(io::Error::other(format!("Terminal read error: {}", err)));
             }
             if byte[0] == b'\n' || byte[0] == b'\r' {
                 break;
