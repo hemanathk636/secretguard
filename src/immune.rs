@@ -531,6 +531,17 @@ mod tests {
         let _lock = crate::vault::TERMINAL_INPUT_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let temp_dir = std::env::temp_dir().join(format!(
+            "sg_immune_unit_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
         let engine = SecretGuardEngine::new();
         let report =
             ImmuneEngine::trigger_containment("ghp_testleaktoken1234567890abcdef", &engine)
@@ -541,5 +552,8 @@ mod tests {
         assert!(report.direct_rotation_url.contains("github.com"));
         assert!(report.remediation_action.contains("github.com"));
         assert!(!report.lifecycle_state.is_empty());
+
+        std::env::remove_var("SECRETGUARD_DIR");
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
