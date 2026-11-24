@@ -13,10 +13,33 @@ use secretguard::broker::SecurityBroker;
 use secretguard::identity::{IdentityContext, RequesterType, TrustTier};
 use secretguard::policy::{AuthorizationDecision, OperationRequest, OperationType, PolicyEngine};
 use secretguard::self_test::run_security_self_test;
+use secretguard::vault::TERMINAL_INPUT_LOCK as TEST_ENV_MUTEX;
 use std::fs;
-use std::sync::Mutex;
 
-static TEST_ENV_MUTEX: Mutex<()> = Mutex::new(());
+fn setup_isolated_test_env(test_name: &str) -> (std::path::PathBuf, impl Drop) {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "sg_broker_{}_{}_{}",
+        test_name,
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let temp_dir =
+        secretguard::vault::resolve_canonical_security_path(&temp_dir).unwrap_or(temp_dir);
+    let _ = fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
+    struct Guard(std::path::PathBuf);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            std::env::remove_var("SECRETGUARD_DIR");
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    (temp_dir.clone(), Guard(temp_dir))
+}
 
 #[test]
 fn test_process_identity_classification() {
@@ -145,8 +168,8 @@ fn test_operation_aware_policy_matrix() {
 
 #[test]
 fn test_tamper_evident_audit_ledger_lifecycle() {
-    let temp_dir = std::env::temp_dir().join(format!("sg_broker_test_{}", std::process::id()));
-    let _ = fs::create_dir_all(&temp_dir);
+    let _guard_mutex = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (temp_dir, _guard_dir) = setup_isolated_test_env("lifecycle");
     let ledger_path = temp_dir.join("audit.ledger");
 
     let mut ledger = AuditLedger::new();
@@ -189,12 +212,12 @@ fn test_tamper_evident_audit_ledger_lifecycle() {
     let loaded = AuditLedger::load(Some(&ledger_path)).expect("load ledger");
     assert_eq!(loaded.records.len(), 2);
     assert_eq!(loaded.verify_integrity().unwrap(), 2);
-
-    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[test]
 fn test_audit_ledger_tamper_detection() {
+    let _guard_mutex = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("tamper");
     let mut ledger = AuditLedger::new();
     let ident = IdentityContext::mock(
         "worker",
@@ -235,6 +258,7 @@ fn test_audit_ledger_tamper_detection() {
 #[test]
 fn test_broker_delegated_execution_scrubs_secret() {
     let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("delegated");
     let broker = SecurityBroker::new();
     let agent = IdentityContext::mock(
         "claude-worker",
@@ -268,6 +292,7 @@ fn test_broker_delegated_execution_scrubs_secret() {
 #[test]
 fn test_security_self_test_all_simulations_pass() {
     let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("self_test");
     let report = run_security_self_test();
     assert_eq!(report.total, 6);
     assert_eq!(
@@ -281,6 +306,7 @@ fn test_security_self_test_all_simulations_pass() {
 #[test]
 fn test_broker_quarantined_credential_blocked() {
     let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("quarantined");
     let broker = SecurityBroker::new();
     let agent = IdentityContext::mock(
         "claude-worker",
@@ -320,6 +346,7 @@ fn test_broker_quarantined_credential_blocked() {
 #[test]
 fn test_broker_ssrf_cloud_metadata_blocked() {
     let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (_temp_dir, _guard_dir) = setup_isolated_test_env("ssrf");
     let broker = SecurityBroker::new();
     let agent = IdentityContext::mock(
         "claude-worker",
@@ -364,9 +391,7 @@ fn test_broker_ssrf_cloud_metadata_blocked() {
 #[test]
 fn test_broker_fails_closed_on_corrupt_audit_ledger() {
     let _guard = TEST_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let temp_dir =
-        std::env::temp_dir().join(format!("sg_corrupt_ledger_test_{}", std::process::id()));
-    let _ = fs::create_dir_all(&temp_dir);
+    let (temp_dir, _guard_dir) = setup_isolated_test_env("corrupt");
     let ledger_path = temp_dir.join("audit_ledger.json");
 
     // Write a tampered/corrupt audit ledger
@@ -391,16 +416,10 @@ fn test_broker_fails_closed_on_corrupt_audit_ledger() {
         .save(Some(&ledger_path))
         .expect("save tampered ledger");
 
-    // Temporarily set SECRETGUARD_DIR to the corrupted directory
-    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
-
     // SecurityBroker::try_new() MUST fail closed and refuse to start
     let broker_res = SecurityBroker::try_new();
     assert!(
         broker_res.is_err(),
         "SecurityBroker must fail closed on tampered audit ledger"
     );
-
-    std::env::remove_var("SECRETGUARD_DIR");
-    let _ = fs::remove_dir_all(&temp_dir);
 }
