@@ -281,7 +281,7 @@ impl ImmuneEngine {
                 crate::policy::OperationType::RawCredentialAccess,
                 "containment:quarantine",
             );
-            ledger.record_decision(
+            let _ = ledger.record_decision(
                 &req,
                 &crate::policy::AuthorizationDecision::Deny {
                     reason: format!(

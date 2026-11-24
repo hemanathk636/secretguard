@@ -159,7 +159,9 @@ fn test_tamper_evident_audit_ledger_lifecycle() {
         OperationType::HttpPost,
         "https://api.openai.com/v1/chat/completions",
     );
-    ledger.record_decision(&req1, &AuthorizationDecision::AllowDelegated);
+    ledger
+        .record_decision(&req1, &AuthorizationDecision::AllowDelegated)
+        .unwrap();
 
     let req2 = OperationRequest::new(
         ident,
@@ -167,12 +169,14 @@ fn test_tamper_evident_audit_ledger_lifecycle() {
         OperationType::RawCredentialAccess,
         "https://s3.amazonaws.com",
     );
-    ledger.record_decision(
-        &req2,
-        &AuthorizationDecision::Deny {
-            reason: "IDE denied raw AWS credentials".to_string(),
-        },
-    );
+    ledger
+        .record_decision(
+            &req2,
+            &AuthorizationDecision::Deny {
+                reason: "IDE denied raw AWS credentials".to_string(),
+            },
+        )
+        .unwrap();
 
     assert_eq!(ledger.records.len(), 2);
     assert_eq!(ledger.verify_integrity().unwrap(), 2);
@@ -206,7 +210,9 @@ fn test_audit_ledger_tamper_detection() {
             OperationType::HttpGet,
             "https://api.example.com",
         );
-        ledger.record_decision(&req, &AuthorizationDecision::AllowDelegated);
+        ledger
+            .record_decision(&req, &AuthorizationDecision::AllowDelegated)
+            .unwrap();
     }
 
     assert_eq!(ledger.verify_integrity().unwrap(), 5);
@@ -377,7 +383,9 @@ fn test_broker_fails_closed_on_corrupt_audit_ledger() {
         OperationType::HttpGet,
         "https://api.example.com",
     );
-    ledger.record_decision(&req, &AuthorizationDecision::AllowDelegated);
+    ledger
+        .record_decision(&req, &AuthorizationDecision::AllowDelegated)
+        .unwrap();
     ledger.records[0].target_resource = "https://tampered.com".to_string(); // Corrupt hash chain
     ledger
         .save(Some(&ledger_path))

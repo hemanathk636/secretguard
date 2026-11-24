@@ -1,10 +1,8 @@
-use crate::broker::SecurityBroker;
-use crate::identity::{IdentityContext, RequesterType};
+use crate::identity::IdentityContext;
 use crate::policy::{AuthorizationDecision, OperationRequest, OperationType};
 use crate::SecretGuardEngine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -29,17 +27,17 @@ struct JsonRpcResponse {
     error: Option<Value>,
 }
 
-/// State for the MCP AI Security Gateway
+/// State for the MCP AI Security Gateway connected to verified broker IPC service
 struct McpGatewayState {
-    pub broker: SecurityBroker,
-    pub authenticated_clients: HashMap<String, IdentityContext>,
+    pub ipc_server: crate::ipc::IpcServer,
+    pub current_session_id: Option<String>,
 }
 
 impl McpGatewayState {
     pub fn new() -> Self {
         Self {
-            broker: SecurityBroker::new(),
-            authenticated_clients: HashMap::new(),
+            ipc_server: crate::ipc::IpcServer::new(),
+            current_session_id: None,
         }
     }
 }
@@ -245,58 +243,64 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         let client_name = arguments
                             .get("client_name")
                             .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let supplied_token = arguments
+                            .unwrap_or("mcp-client");
+                        let auth_tok_str = arguments
                             .get("token")
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
+                        let pid = arguments
+                            .get("pid")
+                            .and_then(|v| v.as_u64())
+                            .map(|p| p as u32)
+                            .unwrap_or_else(std::process::id);
 
-                        match crate::ipc::IpcServer::get_or_create_token() {
-                            Err(e) => json!({
-                                "content": [{
-                                    "type": "text",
-                                    "text": format!("Authentication error: cannot load broker token ({})", e)
-                                }],
-                                "isError": true
-                            }),
-                            Ok(valid_token) => {
-                                if supplied_token.is_empty() || supplied_token != valid_token {
+                        let auth_msg = crate::ipc::IpcMessage::Authenticate {
+                            token: auth_tok_str.to_string(),
+                            client_name: client_name.to_string(),
+                            pid,
+                        };
+
+                        match state.ipc_server.handle_message(&auth_msg) {
+                            crate::ipc::IpcMessage::AuthenticateResponse {
+                                authenticated,
+                                session_id,
+                                message,
+                            } => {
+                                if authenticated {
+                                    state.current_session_id = Some(session_id.clone());
                                     json!({
                                         "content": [{
                                             "type": "text",
-                                            "text": "Authentication Denied: Invalid or missing SecretGuard broker token.".to_string()
-                                        }],
-                                        "isError": true
-                                    })
-                                } else {
-                                    let req_type = match client_name.to_lowercase().as_str() {
-                                        "claude-code" | "aider" | "copilot" | "cline" => {
-                                            RequesterType::AutonomousAgent
-                                        }
-                                        "vscode" | "cursor" | "windsurf" | "zed" => {
-                                            RequesterType::ApprovedIde
-                                        }
-                                        _ => RequesterType::AutonomousAgent,
-                                    };
-                                    let ident =
-                                        IdentityContext::mock(client_name, req_type, None, None);
-                                    state
-                                        .authenticated_clients
-                                        .insert("current".to_string(), ident.clone());
-
-                                    json!({
-                                        "content": [{
-                                            "type": "text",
-                                            "text": format!("Authenticated client '{}' with Trust Tier '{:?}' (Score: {})", client_name, ident.trust_tier, ident.trust_score)
+                                            "text": format!("Authenticated with SecretGuard Broker: {} (Session ID: {})", message, session_id)
                                         }],
                                         "isError": false
                                     })
+                                } else {
+                                    json!({
+                                        "content": [{
+                                            "type": "text",
+                                            "text": format!("Authentication Denied: {}", message)
+                                        }],
+                                        "isError": true
+                                    })
                                 }
                             }
+                            _ => json!({
+                                "content": [{
+                                    "type": "text",
+                                    "text": "Unexpected response from authentication plane".to_string()
+                                }],
+                                "isError": true
+                            }),
                         }
                     }
                     "authorize_operation" => {
-                        if let Some(caller) = state.authenticated_clients.get("current").cloned() {
+                        let session_id = arguments
+                            .get("session_id")
+                            .and_then(|v| v.as_str())
+                            .or(state.current_session_id.as_deref());
+
+                        if let Some(sess_id) = session_id {
                             let cred = arguments
                                 .get("credential_name")
                                 .and_then(|v| v.as_str())
@@ -310,36 +314,46 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
 
-                            let op_type = match op_str.to_uppercase().as_str() {
-                                "GET" => OperationType::HttpGet,
-                                "POST" => OperationType::HttpPost,
-                                "PUT" => OperationType::HttpPut,
-                                "DELETE" => OperationType::HttpDelete,
-                                "RAW" => OperationType::RawCredentialAccess,
-                                _ => OperationType::HttpGet,
+                            let auth_req = crate::ipc::IpcMessage::AuthorizeRequest {
+                                session_id: sess_id.to_string(),
+                                credential_name: cred.to_string(),
+                                operation: op_str.to_string(),
+                                target_resource: res_url.to_string(),
                             };
 
-                            let req = OperationRequest::new(caller, cred, op_type, res_url);
-                            let decision = state.broker.authorize(&req);
-                            let allowed = matches!(
-                                decision,
-                                AuthorizationDecision::AllowDelegated
-                                    | AuthorizationDecision::AllowRaw
-                            );
-
-                            json!({
-                                "content": [{
-                                    "type": "text",
-                                    "text": serde_json::to_string_pretty(&json!({
-                                        "allowed": allowed,
-                                        "decision": format!("{:?}", decision),
-                                        "credential": cred,
-                                        "operation": op_str,
-                                        "target": res_url
-                                    })).unwrap()
-                                }],
-                                "isError": !allowed
-                            })
+                            match state.ipc_server.handle_message(&auth_req) {
+                                crate::ipc::IpcMessage::AuthorizeResponse {
+                                    decision,
+                                    allowed,
+                                    audit_sequence,
+                                    details,
+                                } => json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": serde_json::to_string_pretty(&json!({
+                                            "allowed": allowed,
+                                            "decision": decision,
+                                            "audit_sequence": audit_sequence,
+                                            "details": details,
+                                            "credential": cred,
+                                            "operation": op_str,
+                                            "target": res_url
+                                        })).unwrap()
+                                    }],
+                                    "isError": !allowed
+                                }),
+                                crate::ipc::IpcMessage::Error { code, message } => json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": format!("Security Error [{}]: {}", code, message)
+                                    }],
+                                    "isError": true
+                                }),
+                                _ => json!({
+                                    "content": [{ "type": "text", "text": "Unexpected broker response" }],
+                                    "isError": true
+                                }),
+                            }
                         } else {
                             json!({
                                 "content": [{
@@ -351,7 +365,12 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         }
                     }
                     "execute_delegated_call" => {
-                        if let Some(caller) = state.authenticated_clients.get("current").cloned() {
+                        let session_id = arguments
+                            .get("session_id")
+                            .and_then(|v| v.as_str())
+                            .or(state.current_session_id.as_deref());
+
+                        if let Some(sess_id) = session_id {
                             let cred = arguments
                                 .get("credential_name")
                                 .and_then(|v| v.as_str())
@@ -365,28 +384,40 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
 
-                            let op_type = match op_str.to_uppercase().as_str() {
-                                "GET" => OperationType::HttpGet,
-                                "POST" => OperationType::HttpPost,
-                                _ => OperationType::HttpGet,
+                            let call_req = crate::ipc::IpcMessage::DelegatedCallRequest {
+                                session_id: sess_id.to_string(),
+                                credential_name: cred.to_string(),
+                                operation: op_str.to_string(),
+                                target_resource: res_url.to_string(),
                             };
 
-                            let req = OperationRequest::new(caller, cred, op_type, res_url);
-                            match state.broker.execute_delegated_call(&req, None) {
-                                Ok(res) => json!({
+                            match state.ipc_server.handle_message(&call_req) {
+                                crate::ipc::IpcMessage::DelegatedCallResponse {
+                                    status_code,
+                                    body,
+                                    scrubbed_count,
+                                    audit_sequence,
+                                } => json!({
                                     "content": [{
                                         "type": "text",
                                         "text": serde_json::to_string_pretty(&json!({
-                                            "status_code": res.status_code,
-                                            "body": String::from_utf8_lossy(&res.body),
-                                            "scrubbed_tokens_count": res.scrubbed_tokens_count,
-                                            "audit_sequence": res.audit_sequence
+                                            "status_code": status_code,
+                                            "body": String::from_utf8_lossy(&body),
+                                            "scrubbed_tokens_count": scrubbed_count,
+                                            "audit_sequence": audit_sequence
                                         })).unwrap()
                                     }],
-                                    "isError": false
+                                    "isError": status_code >= 400
                                 }),
-                                Err(e) => json!({
-                                    "content": [{ "type": "text", "text": format!("Delegated execution denied: {}", e) }],
+                                crate::ipc::IpcMessage::Error { code, message } => json!({
+                                    "content": [{
+                                        "type": "text",
+                                        "text": format!("Delegated execution error [{}]: {}", code, message)
+                                    }],
+                                    "isError": true
+                                }),
+                                _ => json!({
+                                    "content": [{ "type": "text", "text": "Unexpected broker response" }],
                                     "isError": true
                                 }),
                             }
@@ -442,8 +473,8 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                         })
                     }
                     "get_security_posture" => {
-                        let policies = state.broker.policy_engine.read().unwrap();
-                        let ledger = state.broker.audit_ledger.lock().unwrap();
+                        let policies = state.ipc_server.broker.policy_engine.read().unwrap();
+                        let ledger = state.ipc_server.broker.audit_ledger.lock().unwrap();
 
                         json!({
                             "content": [{
@@ -553,7 +584,7 @@ pub fn run_mcp_server(engine: &SecretGuardEngine) {
                                     reason: format!("Firewall Block: {:?}", verdict.reasons),
                                 }
                             };
-                            ledger.record_decision(&req, &decision);
+                            let _ = ledger.record_decision(&req, &decision);
                             let _ = ledger.save(None);
                         }
 

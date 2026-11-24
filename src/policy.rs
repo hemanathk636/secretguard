@@ -149,8 +149,12 @@ impl PolicyEngine {
             PolicyRule {
                 id: "rule-agent-github-pr-review".to_string(),
                 name: "AI Coding Assistant Delegated GitHub Access".to_string(),
-                allowed_roles: vec![RequesterType::AutonomousAgent, RequesterType::ApprovedIde],
-                min_trust_tier: TrustTier::Tier2StandardAgent,
+                allowed_roles: vec![
+                    RequesterType::AutonomousAgent,
+                    RequesterType::ApprovedIde,
+                    RequesterType::McpServer,
+                ],
+                min_trust_tier: TrustTier::Tier1Restricted,
                 allowed_credentials: vec!["GITHUB_TOKEN".to_string(), "GH_TOKEN".to_string()],
                 allowed_repositories: vec!["*".to_string()],
                 allowed_domains: vec!["api.github.com".to_string(), "github.com".to_string()],

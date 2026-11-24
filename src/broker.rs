@@ -6,7 +6,183 @@ use crate::audit::AuditLedger;
 use crate::identity::{IdentityContext, RequesterType};
 use crate::policy::{AuthorizationDecision, OperationRequest, OperationType, PolicyEngine};
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex, RwLock};
+
+/// Checks if an IP address belongs to loopback, link-local, private RFC1918, CGNAT, multicast, or broadcast ranges
+pub fn is_private_or_restricted_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => {
+            let octets = ipv4.octets();
+            // Loopback 127.0.0.0/8
+            if octets[0] == 127 {
+                return true;
+            }
+            // Link-local / Cloud metadata 169.254.0.0/16
+            if octets[0] == 169 && octets[1] == 254 {
+                return true;
+            }
+            // RFC1918 Private: 10.0.0.0/8
+            if octets[0] == 10 {
+                return true;
+            }
+            // RFC1918 Private: 172.16.0.0/12
+            if octets[0] == 172 && (16..=31).contains(&octets[1]) {
+                return true;
+            }
+            // RFC1918 Private: 192.168.0.0/16
+            if octets[0] == 192 && octets[1] == 168 {
+                return true;
+            }
+            // Carrier-grade NAT (CGNAT): 100.64.0.0/10
+            if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+                return true;
+            }
+            // Unspecified 0.0.0.0/8 or Broadcast 255.255.255.255
+            if octets[0] == 0 || ipv4.is_broadcast() {
+                return true;
+            }
+            // Multicast 224.0.0.0/4
+            if ipv4.is_multicast() {
+                return true;
+            }
+            false
+        }
+        IpAddr::V6(ipv6) => {
+            if ipv6.is_loopback() || ipv6.is_unspecified() || ipv6.is_multicast() {
+                return true;
+            }
+            let segments = ipv6.segments();
+            // Link-local fe80::/10
+            if (segments[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            // Unique local fc00::/7 (ULA)
+            if (segments[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
+            // IPv4-mapped IPv6 (::ffff:0:0/96)
+            if let Some(mapped_v4) = ipv6.to_ipv4_mapped() {
+                return is_private_or_restricted_ip(&IpAddr::V4(mapped_v4));
+            }
+            // AWS IPv6 metadata: fd00:ec2::254
+            segments[0] == 0xfd00 && segments[1] == 0x0ec2 && segments[7] == 0x0254
+        }
+    }
+}
+
+/// Comprehensive SSRF and URL validation preventing attacks against cloud metadata and internal subnets
+pub fn validate_url_and_destination(url_str: &str) -> Result<(), String> {
+    if url_str.contains("169.254.169.254")
+        || url_str.contains("metadata.google.internal")
+        || url_str.contains("169.254.170.2")
+        || url_str.contains("fd00:ec2::254")
+    {
+        return Err(
+            "Security Violation: Target resource attempts Cloud Metadata SSRF (SSRF Protection)."
+                .to_string(),
+        );
+    }
+
+    if url_str.starts_with("mock://") || url_str.starts_with("test://") {
+        return Ok(());
+    }
+
+    let is_https = url_str.starts_with("https://");
+    let is_local_http =
+        url_str.starts_with("http://127.0.0.1") || url_str.starts_with("http://localhost");
+
+    if !is_https && !is_local_http {
+        return Err(format!(
+            "Invalid Protocol: URL '{}' must use secure HTTPS (or localhost for local testing).",
+            url_str
+        ));
+    }
+
+    // Extract host and port
+    let scheme_end = url_str.find("://").map(|pos| pos + 3).unwrap_or(0);
+    let after_scheme = &url_str[scheme_end..];
+    let host_port_part = match after_scheme.find(['/', '?', '#']) {
+        Some(end) => &after_scheme[..end],
+        None => after_scheme,
+    };
+
+    let (host, port) = if host_port_part.starts_with('[') {
+        // IPv6 bracketed host: [::1]:8080
+        if let Some(bracket_end) = host_port_part.find(']') {
+            let h = &host_port_part[1..bracket_end];
+            let rest = &host_port_part[bracket_end + 1..];
+            let p = if let Some(colon_pos) = rest.find(':') {
+                rest[colon_pos + 1..]
+                    .parse::<u16>()
+                    .unwrap_or(if is_https { 443 } else { 80 })
+            } else if is_https {
+                443
+            } else {
+                80
+            };
+            (h, p)
+        } else {
+            return Err(
+                "Security Violation: Malformed IPv6 address format (SSRF Protection).".to_string(),
+            );
+        }
+    } else if let Some(colon_pos) = host_port_part.rfind(':') {
+        let h = &host_port_part[..colon_pos];
+        let p = host_port_part[colon_pos + 1..]
+            .parse::<u16>()
+            .unwrap_or(if is_https { 443 } else { 80 });
+        (h, p)
+    } else {
+        (host_port_part, if is_https { 443 } else { 80 })
+    };
+
+    if host.is_empty() {
+        return Err("Security Violation: Missing hostname in URL (SSRF Protection).".to_string());
+    }
+
+    // Direct IP address check
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_local_http && ip.is_loopback() {
+            return Ok(());
+        }
+        if is_private_or_restricted_ip(&ip) {
+            return Err(format!(
+                "Security Violation: Target IP '{}' is a private/restricted network or cloud metadata address (SSRF Protection).",
+                ip
+            ));
+        }
+    } else {
+        // Hostname: resolve via DNS to detect SSRF / DNS rebinding to private IPs
+        if is_local_http && (host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1") {
+            return Ok(());
+        }
+
+        let socket_addr_str = format!("{}:{}", host, port);
+        if let Ok(addrs) = socket_addr_str.to_socket_addrs() {
+            for addr in addrs {
+                let ip = addr.ip();
+                if is_private_or_restricted_ip(&ip) {
+                    return Err(format!(
+                        "Security Violation: Destination '{}' resolves to private/restricted IP '{}' (SSRF Protection).",
+                        host, ip
+                    ));
+                }
+            }
+        } else if host.contains("localhost")
+            || host.ends_with(".internal")
+            || host.ends_with(".local")
+            || host.contains("169.254")
+        {
+            return Err(format!(
+                "Security Violation: Target host '{}' is an internal or metadata domain (SSRF Protection).",
+                host
+            ));
+        }
+    }
+
+    Ok(())
+}
 
 /// Result of an approved delegated operation executed by the broker
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,8 +245,10 @@ impl SecurityBroker {
 
         // Record decision in tamper-evident audit log with fail-closed guarantee
         let record_res = if let Ok(mut ledger) = self.audit_ledger.lock() {
-            ledger.record_decision(req, &decision);
-            ledger.save(None).map_err(|e| e.to_string())
+            match ledger.record_decision(req, &decision) {
+                Ok(_) => ledger.save(None).map_err(|e| e.to_string()),
+                Err(e) => Err(format!("HMAC audit signing failed: {}", e)),
+            }
         } else {
             Err("Audit ledger mutex poisoned".to_string())
         };
@@ -95,21 +273,12 @@ impl SecurityBroker {
     ) -> Result<DelegatedResponse, String> {
         // 1. Strict URL and SSRF validation
         let url = &req.target_resource;
-        if url.contains("169.254.169.254") || url.contains("metadata.google.internal") {
-            return Err("Security Violation: Target resource attempts Cloud Metadata SSRF (SSRF Protection).".to_string());
-        }
+        validate_url_and_destination(url)?;
 
         let is_http = url.starts_with("https://")
             || url.starts_with("http://127.0.0.1")
             || url.starts_with("http://localhost");
         let is_mock_test = url.starts_with("mock://") || url.starts_with("test://");
-
-        if !is_http && !is_mock_test {
-            return Err(format!(
-                "Invalid Protocol: URL '{}' must use secure HTTPS (or localhost for local testing).",
-                url
-            ));
-        }
 
         // 2. Authorize via policy engine and audit ledger
         let decision = self.authorize(req);
@@ -152,38 +321,74 @@ impl SecurityBroker {
                     };
 
                     let method = req.operation.as_str();
-                    let output = std::process::Command::new("curl")
+
+                    // Security: Pass sensitive headers over child stdin pipe using curl's --config -
+                    // This ensures secrets NEVER appear in command line arguments or /proc/<pid>/cmdline.
+                    let mut child = std::process::Command::new("curl")
                         .args([
                             "-s",
                             "-w",
                             "\n%{http_code}",
-                            "-X",
-                            method,
-                            "-H",
-                            &auth_header,
-                            "-H",
-                            "User-Agent: SecretGuard-Security-Broker/1.0",
+                            "--proto",
+                            "=https",
+                            "--proto-redir",
+                            "=https",
+                            "--max-redirs",
+                            "0",
                             "--max-time",
                             "15",
+                            "-X",
+                            method,
+                            "--config",
+                            "-",
                             url,
                         ])
-                        .output();
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .map_err(|e| {
+                            format!("Delegated HTTP dispatch error (spawning curl): {}", e)
+                        })?;
 
-                    match output {
-                        Ok(out) => {
-                            let text = String::from_utf8_lossy(&out.stdout).to_string();
-                            if let Some(last_newline) = text.rfind('\n') {
-                                let body = text.as_bytes()[..last_newline].to_vec();
-                                let code_str = text[last_newline + 1..].trim();
-                                let code = code_str.parse::<u16>().unwrap_or(200);
-                                (code, body)
-                            } else {
-                                (200, out.stdout)
-                            }
-                        }
-                        Err(e) => {
-                            return Err(format!("Delegated HTTP dispatch error via system curl: {}", e));
-                        }
+                    if let Some(mut stdin) = child.stdin.take() {
+                        use std::io::Write;
+                        let _ = writeln!(stdin, "header = \"{}\"", auth_header.replace('"', "\\\""));
+                        let _ = writeln!(
+                            stdin,
+                            "header = \"User-Agent: SecretGuard-Security-Broker/1.0\""
+                        );
+                        // Drop stdin to signal EOF so curl can execute
+                        drop(stdin);
+                    }
+
+                    let output = child
+                        .wait_with_output()
+                        .map_err(|e| {
+                            format!("Delegated HTTP dispatch error (waiting for curl): {}", e)
+                        })?;
+
+                    if !output.status.success() {
+                        let stderr_text = String::from_utf8_lossy(&output.stderr);
+                        return Err(format!(
+                            "Delegated HTTP request failed (curl exit code {:?}): {}",
+                            output.status.code(),
+                            stderr_text.trim()
+                        ));
+                    }
+
+                    let text = String::from_utf8_lossy(&output.stdout).to_string();
+                    if let Some(last_newline) = text.rfind('\n') {
+                        let body = text.as_bytes()[..last_newline].to_vec();
+                        let code_str = text[last_newline + 1..].trim();
+                        let code = code_str.parse::<u16>().map_err(|_| {
+                            "Failed to parse HTTP status code from curl response".to_string()
+                        })?;
+                        (code, body)
+                    } else {
+                        return Err(
+                            "Malformed curl output: missing HTTP status code trailer".to_string()
+                        );
                     }
                 } else {
                     // Offline test harness execution

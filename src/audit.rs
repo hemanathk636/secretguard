@@ -26,42 +26,65 @@ pub fn get_or_create_audit_key() -> Result<[u8; 32], std::io::Error> {
         }
     }
 
-    let mut guard = GLOBAL_AUDIT_KEY.write().unwrap();
+    let mut guard = GLOBAL_AUDIT_KEY
+        .write()
+        .map_err(|_| std::io::Error::other("Audit key lock poisoned"))?;
     if let Some(key) = *guard {
         return Ok(key);
     }
 
-    let key = match crate::vault::get_vault_dir() {
-        Ok(dir) => {
-            let _ = fs::create_dir_all(&dir);
-            let key_path = dir.join("audit.hmac.key");
-            if key_path.exists() {
-                if let Ok(data) = fs::read(&key_path) {
-                    if data.len() == 32 {
-                        let mut k = [0u8; 32];
-                        k.copy_from_slice(&data);
-                        *guard = Some(k);
-                        return Ok(k);
-                    }
-                }
-            }
-            let mut k = [0u8; 32];
-            OsRng.fill_bytes(&mut k);
-            if let Ok(mut file) = crate::vault::create_secure_file_exclusive(&key_path, 0o600) {
-                let _ = file.write_all(&k);
-                let _ = file.sync_all();
-            }
-            k
+    let dir = crate::vault::get_vault_dir()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
+    fs::create_dir_all(&dir)?;
+    let key_path = dir.join("audit.hmac.key");
+    if key_path.exists() {
+        let meta = fs::symlink_metadata(&key_path)?;
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "Security Alert: audit.hmac.key is an untrusted symlink",
+            ));
         }
-        Err(_) => {
+        let data = fs::read(&key_path)?;
+        if data.len() == 32 {
             let mut k = [0u8; 32];
-            OsRng.fill_bytes(&mut k);
-            k
+            k.copy_from_slice(&data);
+            *guard = Some(k);
+            return Ok(k);
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "Security Alert: Corrupt audit.hmac.key file: expected 32 bytes, found {}",
+                    data.len()
+                ),
+            ));
         }
-    };
+    }
 
+    // Fail-Closed: Generate 32-byte CSPRNG key and persist exclusively with 0o600.
+    // If creation or writing fails, fail closed with Err - never return an ephemeral in-memory key!
+    let mut k = [0u8; 32];
+    OsRng.fill_bytes(&mut k);
+    let mut file = crate::vault::create_secure_file_exclusive(&key_path, 0o600)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
+    file.write_all(&k)?;
+    file.sync_all()?;
+
+    *guard = Some(k);
+    Ok(k)
+}
+
+#[cfg(test)]
+pub fn set_test_audit_key(key: [u8; 32]) {
+    let mut guard = GLOBAL_AUDIT_KEY.write().unwrap();
     *guard = Some(key);
-    Ok(key)
+}
+
+#[cfg(test)]
+pub fn clear_test_audit_key() {
+    let mut guard = GLOBAL_AUDIT_KEY.write().unwrap();
+    *guard = None;
 }
 
 /// Immutable, hash-chained record representing a security authorization event
@@ -82,6 +105,7 @@ pub struct AuditRecord {
 
 impl AuditRecord {
     /// Computes cryptographically keyed HMAC-SHA256 across record attributes
+    /// Uses canonical length-delimited framing to prevent field concatenation ambiguity.
     #[allow(clippy::too_many_arguments)]
     pub fn compute_keyed_hash(
         key: &[u8],
@@ -97,22 +121,30 @@ impl AuditRecord {
         prev_hash: &str,
     ) -> String {
         let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key size");
+        let req_type_str = format!("{:?}", req_type);
+
+        fn write_delimited(mac: &mut HmacSha256, data: &[u8]) {
+            mac.update(&(data.len() as u64).to_le_bytes());
+            mac.update(data);
+        }
+
         mac.update(&seq.to_le_bytes());
         mac.update(&timestamp.to_le_bytes());
         mac.update(&pid.to_le_bytes());
-        mac.update(name.as_bytes());
-        mac.update(format!("{:?}", req_type).as_bytes());
-        mac.update(cred.as_bytes());
-        mac.update(op.as_bytes());
-        mac.update(target.as_bytes());
-        mac.update(decision.as_bytes());
-        mac.update(prev_hash.as_bytes());
+        write_delimited(&mut mac, name.as_bytes());
+        write_delimited(&mut mac, req_type_str.as_bytes());
+        write_delimited(&mut mac, cred.as_bytes());
+        write_delimited(&mut mac, op.as_bytes());
+        write_delimited(&mut mac, target.as_bytes());
+        write_delimited(&mut mac, decision.as_bytes());
+        write_delimited(&mut mac, prev_hash.as_bytes());
+
         let result = mac.finalize();
         let bytes = result.into_bytes();
         bytes.iter().map(|b| format!("{:02x}", b)).collect()
     }
 
-    /// Computes deterministic hash across record attributes
+    /// Computes deterministic hash across record attributes using persisted audit key; fails closed
     #[allow(clippy::too_many_arguments)]
     pub fn compute_hash(
         seq: u64,
@@ -125,11 +157,11 @@ impl AuditRecord {
         target: &str,
         decision: &str,
         prev_hash: &str,
-    ) -> String {
-        let key = get_or_create_audit_key().unwrap_or([0x5au8; 32]);
-        Self::compute_keyed_hash(
+    ) -> Result<String, std::io::Error> {
+        let key = get_or_create_audit_key()?;
+        Ok(Self::compute_keyed_hash(
             &key, seq, timestamp, pid, name, req_type, cred, op, target, decision, prev_hash,
-        )
+        ))
     }
 }
 
@@ -137,6 +169,7 @@ impl AuditRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditIntegrityError {
     EmptyLedger,
+    KeyError(String),
     SequenceMismatch {
         index: usize,
         expected: u64,
@@ -163,6 +196,7 @@ impl std::fmt::Display for AuditIntegrityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AuditIntegrityError::EmptyLedger => write!(f, "Audit ledger contains zero records."),
+            AuditIntegrityError::KeyError(err) => write!(f, "HMAC audit key error: {}", err),
             AuditIntegrityError::SequenceMismatch {
                 index,
                 expected,
@@ -224,12 +258,12 @@ impl AuditLedger {
         }
     }
 
-    /// Appends a new verified authorization decision to the hash-chained ledger
+    /// Appends a new verified authorization decision to the hash-chained ledger; fails closed if signing fails
     pub fn record_decision(
         &mut self,
         req: &OperationRequest,
         decision: &AuthorizationDecision,
-    ) -> &AuditRecord {
+    ) -> Result<&AuditRecord, std::io::Error> {
         let seq = (self.records.len() as u64) + 1;
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -262,7 +296,7 @@ impl AuditLedger {
             &req.target_resource,
             &decision_str,
             &prev_hash,
-        );
+        )?;
 
         let record = AuditRecord {
             sequence_number: seq,
@@ -279,11 +313,19 @@ impl AuditLedger {
         };
 
         self.records.push(record);
-        self.records.last().unwrap()
+        Ok(self.records.last().unwrap())
     }
 
     /// Cryptographically verifies the integrity of the entire audit chain
     pub fn verify_integrity(&self) -> Result<usize, AuditIntegrityError> {
+        let key = get_or_create_audit_key().map_err(|e| {
+            AuditIntegrityError::KeyError(format!("Failed to retrieve HMAC audit key: {}", e))
+        })?;
+        self.verify_integrity_with_key(&key)
+    }
+
+    /// Cryptographically verifies the integrity of the entire audit chain using a specific HMAC key
+    pub fn verify_integrity_with_key(&self, key: &[u8]) -> Result<usize, AuditIntegrityError> {
         if self.records.is_empty() {
             return Err(AuditIntegrityError::EmptyLedger);
         }
@@ -308,7 +350,8 @@ impl AuditLedger {
                 });
             }
 
-            let computed = AuditRecord::compute_hash(
+            let computed = AuditRecord::compute_keyed_hash(
+                key,
                 record.sequence_number,
                 record.timestamp_epoch_secs,
                 record.requester_pid,
@@ -548,8 +591,12 @@ mod tests {
             "https://api.github.com",
         );
 
-        ledger.record_decision(&req1, &AuthorizationDecision::AllowRaw);
-        ledger.record_decision(&req2, &AuthorizationDecision::AllowDelegated);
+        ledger
+            .record_decision(&req1, &AuthorizationDecision::AllowRaw)
+            .unwrap();
+        ledger
+            .record_decision(&req2, &AuthorizationDecision::AllowDelegated)
+            .unwrap();
 
         assert_eq!(ledger.verify_integrity(), Ok(2));
     }
@@ -570,12 +617,14 @@ mod tests {
             "https://api.github.com",
         );
 
-        ledger.record_decision(
-            &req,
-            &AuthorizationDecision::Deny {
-                reason: "Forbidden".to_string(),
-            },
-        );
+        ledger
+            .record_decision(
+                &req,
+                &AuthorizationDecision::Deny {
+                    reason: "Forbidden".to_string(),
+                },
+            )
+            .unwrap();
         assert_eq!(ledger.verify_integrity(), Ok(1));
 
         // Maliciously tamper with decision string in memory

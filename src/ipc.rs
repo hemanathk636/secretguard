@@ -78,6 +78,8 @@ pub struct AuthenticatedSession {
     pub client_name: String,
     pub pid: u32,
     pub requester_type: RequesterType,
+    pub executable_path: Option<std::path::PathBuf>,
+    pub binary_hash: Option<String>,
     pub established_at: u64,
     pub last_active_at: u64,
 }
@@ -181,7 +183,7 @@ impl IpcServer {
         match msg {
             IpcMessage::Authenticate {
                 token,
-                client_name,
+                client_name: _client_name,
                 pid,
             } => {
                 if token != &self.expected_token {
@@ -191,6 +193,21 @@ impl IpcServer {
                         message: "Invalid IPC authentication token.".to_string(),
                     };
                 }
+
+                // Verify client PID through the OS kernel to prevent identity spoofing
+                let verified_ident = match IdentityContext::from_pid(*pid) {
+                    Ok(ident) => ident,
+                    Err(e) => {
+                        return IpcMessage::AuthenticateResponse {
+                            authenticated: false,
+                            session_id: String::new(),
+                            message: format!(
+                                "Security Violation: Kernel process verification failed for PID {} ({}).",
+                                pid, e
+                            ),
+                        };
+                    }
+                };
 
                 let mut nonce = [0u8; 16];
                 OsRng.fill_bytes(&mut nonce);
@@ -202,17 +219,13 @@ impl IpcServer {
                     .map(|d| d.as_secs())
                     .unwrap_or(0);
 
-                let req_type = match client_name.to_lowercase().as_str() {
-                    "claude-code" | "aider" | "copilot" | "cline" => RequesterType::AutonomousAgent,
-                    "vscode" | "cursor" | "windsurf" | "zed" => RequesterType::ApprovedIde,
-                    _ => RequesterType::AutonomousAgent,
-                };
-
                 let session = AuthenticatedSession {
                     session_id: session_id.clone(),
-                    client_name: client_name.clone(),
+                    client_name: verified_ident.executable_name.clone(),
                     pid: *pid,
-                    requester_type: req_type,
+                    requester_type: verified_ident.requester_type,
+                    executable_path: verified_ident.executable_path.clone(),
+                    binary_hash: verified_ident.binary_hash.clone(),
                     established_at: now,
                     last_active_at: now,
                 };
@@ -225,7 +238,10 @@ impl IpcServer {
                 IpcMessage::AuthenticateResponse {
                     authenticated: true,
                     session_id,
-                    message: format!("Authenticated as '{}' (PID {})", client_name, pid),
+                    message: format!(
+                        "Authenticated as '{}' (PID {}, Trust Tier: {:?})",
+                        verified_ident.executable_name, pid, verified_ident.trust_tier
+                    ),
                 }
             }
             IpcMessage::AuthorizeRequest {
@@ -245,12 +261,7 @@ impl IpcServer {
                 };
 
                 let op_type = parse_op_type(operation);
-                let ident = IdentityContext::mock(
-                    &active_session.client_name,
-                    active_session.requester_type,
-                    None,
-                    None,
-                );
+                let ident = session_to_identity(&active_session);
                 let req = OperationRequest::new(ident, credential_name, op_type, target_resource);
 
                 let decision = self.broker.authorize(&req);
@@ -305,12 +316,7 @@ impl IpcServer {
                 };
 
                 let op_type = parse_op_type(operation);
-                let ident = IdentityContext::mock(
-                    &active_session.client_name,
-                    active_session.requester_type,
-                    None,
-                    None,
-                );
+                let ident = session_to_identity(&active_session);
                 let req = OperationRequest::new(ident, credential_name, op_type, target_resource);
 
                 match self.broker.execute_delegated_call(&req, None) {
@@ -376,6 +382,39 @@ pub fn send_ipc_request(port: u16, msg: &IpcMessage) -> Result<IpcMessage, Strin
         .map_err(|e| format!("Invalid IPC response: {}", e))
 }
 
+fn session_to_identity(session: &AuthenticatedSession) -> IdentityContext {
+    IdentityContext {
+        pid: session.pid,
+        ppid: None,
+        executable_name: session.client_name.clone(),
+        executable_path: session.executable_path.clone(),
+        binary_hash: session.binary_hash.clone(),
+        lineage: vec![session.client_name.clone()],
+        requester_type: session.requester_type,
+        trust_tier: match session.requester_type {
+            RequesterType::HumanInteractive => crate::identity::TrustTier::Tier3Privileged,
+            RequesterType::ApprovedIde => crate::identity::TrustTier::Tier2StandardAgent,
+            RequesterType::AutonomousAgent => crate::identity::TrustTier::Tier2StandardAgent,
+            RequesterType::McpServer => crate::identity::TrustTier::Tier1Restricted,
+            RequesterType::BuildOrScript => crate::identity::TrustTier::Tier1Restricted,
+            RequesterType::UnknownProcess => crate::identity::TrustTier::Tier0Blocked,
+        },
+        trust_score: match session.requester_type {
+            RequesterType::HumanInteractive => 90,
+            RequesterType::ApprovedIde => 75,
+            RequesterType::AutonomousAgent => 65,
+            RequesterType::McpServer => 45,
+            RequesterType::BuildOrScript => 35,
+            RequesterType::UnknownProcess => 10,
+        },
+        is_interactive_tty: session.requester_type == RequesterType::HumanInteractive,
+        working_dir: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        git_repo: crate::identity::detect_current_git_repo(
+            &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        ),
+    }
+}
+
 fn parse_op_type(op: &str) -> OperationType {
     match op.to_uppercase().as_str() {
         "GET" | "HTTPGET" => OperationType::HttpGet,
@@ -401,12 +440,13 @@ mod tests {
 
         let server = IpcServer::new();
         let correct_token = server.expected_token.clone();
+        let current_pid = std::process::id();
 
         // 1. Wrong token fails
         let fail_msg = IpcMessage::Authenticate {
             token: "invalid_token".to_string(),
             client_name: "test_agent".to_string(),
-            pid: 1234,
+            pid: current_pid,
         };
         let res = server.handle_message(&fail_msg);
         match res {
@@ -414,11 +454,30 @@ mod tests {
             _ => panic!("Expected AuthenticateResponse"),
         }
 
-        // 2. Correct token succeeds and registers session
+        // 2. Spoofed non-existent PID fails closed
+        let spoof_msg = IpcMessage::Authenticate {
+            token: correct_token.clone(),
+            client_name: "spoofed_agent".to_string(),
+            pid: 9999999,
+        };
+        let spoof_res = server.handle_message(&spoof_msg);
+        match spoof_res {
+            IpcMessage::AuthenticateResponse {
+                authenticated,
+                message,
+                ..
+            } => {
+                assert!(!authenticated);
+                assert!(message.contains("Kernel process verification failed"));
+            }
+            _ => panic!("Expected AuthenticateResponse"),
+        }
+
+        // 3. Correct token and valid PID succeeds and registers session
         let ok_msg = IpcMessage::Authenticate {
             token: correct_token,
             client_name: "claude-code".to_string(),
-            pid: 1234,
+            pid: current_pid,
         };
         let res = server.handle_message(&ok_msg);
         let session_id = match res {
@@ -434,7 +493,7 @@ mod tests {
             _ => panic!("Expected AuthenticateResponse"),
         };
 
-        // 3. Authenticated session permits authorize call
+        // 4. Authenticated session permits authorize call
         let auth_op = IpcMessage::AuthorizeRequest {
             session_id: session_id.clone(),
             credential_name: "GITHUB_TOKEN".to_string(),
@@ -447,7 +506,7 @@ mod tests {
             _ => panic!("Expected AuthorizeResponse"),
         }
 
-        // 4. Fake session ID fails closed
+        // 5. Fake session ID fails closed
         let fake_op = IpcMessage::AuthorizeRequest {
             session_id: "sess_fake_unregistered_id".to_string(),
             credential_name: "GITHUB_TOKEN".to_string(),

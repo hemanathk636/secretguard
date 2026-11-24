@@ -203,7 +203,7 @@ fn test_audit_hash_chain_tamper_detection() -> TestCaseResult {
         OperationType::HttpGet,
         "https://api.example.com",
     );
-    ledger.record_decision(&req1, &AuthorizationDecision::AllowRaw);
+    let _ = ledger.record_decision(&req1, &AuthorizationDecision::AllowRaw);
 
     let id2 = IdentityContext::mock(
         "test2",
@@ -217,7 +217,7 @@ fn test_audit_hash_chain_tamper_detection() -> TestCaseResult {
         OperationType::HttpGet,
         "https://api.example.com/data",
     );
-    ledger.record_decision(&req2, &AuthorizationDecision::AllowDelegated);
+    let _ = ledger.record_decision(&req2, &AuthorizationDecision::AllowDelegated);
 
     let valid_count = ledger.verify_integrity().unwrap_or(0);
     if valid_count != 2 {

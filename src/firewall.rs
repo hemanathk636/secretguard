@@ -168,7 +168,7 @@ EXAMPLES:
                     reason: format!("Firewall Interception: {:?}", verdict.reasons),
                 }
             };
-            ledger.record_decision(&req, &decision);
+            let _ = ledger.record_decision(&req, &decision);
             let _ = ledger.save(None);
         }
 

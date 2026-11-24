@@ -93,6 +93,37 @@ impl IdentityContext {
         }
     }
 
+    /// Derives IdentityContext directly from the operating system kernel for a given process ID (PID)
+    /// Performs non-forgeable process image query and binary hash verification.
+    pub fn from_pid(pid: u32) -> Result<Self, String> {
+        let (current_exe, exe_name) = query_process_info_by_pid(pid)?;
+        let binary_hash = compute_file_sha256(&current_exe);
+        let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let git_repo = detect_current_git_repo(&working_dir);
+
+        let env_hints = collect_environment_hints();
+        let is_interactive_tty = false;
+
+        let lineage = collect_process_lineage(pid);
+        let (requester_type, trust_tier, trust_score) =
+            classify_requester(&exe_name, &lineage, is_interactive_tty, &env_hints);
+
+        Ok(Self {
+            pid,
+            ppid: lineage.first().and_then(|s| s.parse::<u32>().ok()),
+            executable_name: exe_name,
+            executable_path: Some(current_exe),
+            binary_hash,
+            lineage,
+            requester_type,
+            trust_tier,
+            trust_score,
+            is_interactive_tty,
+            working_dir,
+            git_repo,
+        })
+    }
+
     /// Creates a mock identity context for policy testing and audit simulations
     pub fn mock(
         name: &str,
@@ -124,6 +155,76 @@ impl IdentityContext {
             git_repo: repo.map(|r| r.to_string()),
         }
     }
+}
+
+#[cfg(windows)]
+fn query_process_info_by_pid(pid: u32) -> Result<(PathBuf, String), String> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::raw::HANDLE;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> HANDLE;
+        fn QueryFullProcessImageNameW(
+            hProcess: HANDLE,
+            dwFlags: u32,
+            lpExeName: *mut u16,
+            lpdwSize: *mut u32,
+        ) -> i32;
+        fn CloseHandle(hObject: HANDLE) -> i32;
+    }
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return Err(format!(
+            "Kernel refused access to PID {} (Process not found or insufficient access privilege)",
+            pid
+        ));
+    }
+
+    let mut buf = vec![0u16; 1024];
+    let mut size = buf.len() as u32;
+    let res = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
+    unsafe { CloseHandle(handle) };
+
+    if res == 0 || size == 0 {
+        return Err(format!(
+            "Failed to query full image name from kernel for PID {}",
+            pid
+        ));
+    }
+
+    let os_string = std::ffi::OsString::from_wide(&buf[..size as usize]);
+    let path = PathBuf::from(os_string);
+    let exe_name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown.exe".to_string());
+
+    Ok((path, exe_name))
+}
+
+#[cfg(unix)]
+fn query_process_info_by_pid(pid: u32) -> Result<(PathBuf, String), String> {
+    let proc_exe = PathBuf::from(format!("/proc/{}/exe", pid));
+    if proc_exe.exists() {
+        if let Ok(target) = std::fs::read_link(&proc_exe) {
+            let exe_name = target
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            return Ok((target, exe_name));
+        }
+    }
+
+    let path = PathBuf::from(format!("/proc/{}", pid));
+    if !path.exists() {
+        return Err(format!("Process with PID {} does not exist in /proc", pid));
+    }
+    let exe_name = format!("proc_{}", pid);
+    Ok((path, exe_name))
 }
 
 /// Computes SHA-256 hash of an executable binary
@@ -281,14 +382,14 @@ pub fn classify_requester(
         );
     }
 
-    // 4. Check for interactive human developer session
-    if is_tty
-        && (lower_exe.contains("bash")
-            || lower_exe.contains("zsh")
-            || lower_exe.contains("sh")
-            || lower_exe.contains("pwsh")
-            || lower_exe.contains("powershell")
-            || lower_exe.contains("secretguard"))
+    // 4. Check for interactive human developer session or native SecretGuard executable
+    if lower_exe.contains("secretguard")
+        || (is_tty
+            && (lower_exe.contains("bash")
+                || lower_exe.contains("zsh")
+                || lower_exe.contains("sh")
+                || lower_exe.contains("pwsh")
+                || lower_exe.contains("powershell")))
     {
         return (
             RequesterType::HumanInteractive,

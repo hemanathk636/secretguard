@@ -220,3 +220,111 @@ fn test_encoded_secret_base64_detection() {
     assert!(res.matched_rules.iter().any(|r| r.contains("Encoded")));
     assert!(res.sanitized_text.contains("[REDACTED"));
 }
+
+#[test]
+fn test_adversarial_spoofed_pid_rejection() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap();
+    let temp_dir = std::env::temp_dir().join(format!("sg_adv_pid_{}", std::process::id()));
+    let _ = fs::create_dir_all(&temp_dir);
+    std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
+    let server = secretguard::ipc::IpcServer::new();
+    let token = server.expected_token.clone();
+
+    // Adversary claims to be 'claude-code' but sends a spoofed PID that does not exist
+    let spoofed_msg = secretguard::ipc::IpcMessage::Authenticate {
+        token,
+        client_name: "claude-code".to_string(),
+        pid: 9_999_999, // Non-existent process
+    };
+
+    let resp = server.handle_message(&spoofed_msg);
+    match resp {
+        secretguard::ipc::IpcMessage::AuthenticateResponse {
+            authenticated,
+            message,
+            ..
+        } => {
+            assert!(!authenticated, "Server must reject spoofed PID");
+            assert!(
+                message.contains("Kernel process verification failed")
+                    || message.contains("Security Violation"),
+                "Expected kernel failure message, got '{}'",
+                message
+            );
+        }
+        _ => panic!("Expected AuthenticateResponse"),
+    }
+
+    std::env::remove_var("SECRETGUARD_DIR");
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_adversarial_ssrf_and_dns_rebinding_defense() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap();
+    let broker = secretguard::broker::SecurityBroker::new();
+    let agent = secretguard::identity::IdentityContext::mock(
+        "adversary-agent",
+        secretguard::identity::RequesterType::AutonomousAgent,
+        Some("org/repo"),
+        None,
+    );
+
+    let malicious_targets = [
+        (
+            "http://169.254.169.254/latest/meta-data/",
+            "AWS/Azure Metadata",
+        ),
+        (
+            "http://169.254.170.2/v2/credentials/",
+            "AWS ECS Task Metadata",
+        ),
+        (
+            "http://metadata.google.internal/computeMetadata/v1/",
+            "GCP Metadata",
+        ),
+        (
+            "http://[fd00:ec2::254]/latest/meta-data/",
+            "AWS IPv6 Metadata",
+        ),
+        ("https://10.0.0.1/admin", "RFC1918 Private 10.0.0.0/8"),
+        (
+            "https://172.16.0.1/internal",
+            "RFC1918 Private 172.16.0.0/12",
+        ),
+        (
+            "https://192.168.1.1/router",
+            "RFC1918 Private 192.168.0.0/16",
+        ),
+        (
+            "https://100.64.0.1/service",
+            "Carrier-Grade NAT 100.64.0.0/10",
+        ),
+    ];
+
+    for (target_url, desc) in malicious_targets {
+        let req = secretguard::policy::OperationRequest::new(
+            agent.clone(),
+            "TEST_KEY",
+            secretguard::policy::OperationType::HttpGet,
+            target_url,
+        );
+
+        let err = broker
+            .execute_delegated_call(&req, Some("mock-secret"))
+            .expect_err(&format!(
+                "Target '{}' ({}) must be blocked by SSRF defense",
+                target_url, desc
+            ));
+
+        assert!(
+            err.contains("SSRF")
+                || err.contains("private/restricted")
+                || err.contains("Cloud Metadata"),
+            "Expected SSRF error for '{}', got: {}",
+            target_url,
+            err
+        );
+    }
+}
