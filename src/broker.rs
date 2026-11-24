@@ -215,7 +215,11 @@ pub fn parse_canonical_url(url_str: &str) -> Result<CanonicalUrlAuthority, Strin
     }
 
     if scheme == "mock" || scheme == "test" {
-        let h = if authority.is_empty() { "mock" } else { authority };
+        let h = if authority.is_empty() {
+            "mock"
+        } else {
+            authority
+        };
         return Ok(CanonicalUrlAuthority {
             scheme,
             host: h.to_lowercase(),

@@ -25,8 +25,13 @@ impl UnicodeRadar {
         let mut threats = Vec::new();
 
         for (line_idx, line) in text.lines().enumerate() {
-            for c in line.chars() {
+            for (col_idx, c) in line.chars().enumerate() {
                 let u = c as u32;
+
+                // Ignore standard Unicode Byte Order Mark (BOM) at the start of a file
+                if line_idx == 0 && col_idx == 0 && u == 0xFEFF {
+                    continue;
+                }
 
                 // 1. Bidirectional Override Characters (Trojan Source - CVE-2021-42574)
                 if matches!(u, 0x202A..=0x202E | 0x2066..=0x2069) {
@@ -62,8 +67,9 @@ impl UnicodeRadar {
     pub fn scan_path(target_path: &Path) -> Result<UnicodeRadarReport, String> {
         let mut threats = Vec::new();
         let mut total_files = 0;
+        let ignores = Self::load_ignore_patterns(target_path);
 
-        Self::walk_and_scan(target_path, &mut threats, &mut total_files);
+        Self::walk_and_scan(target_path, &mut threats, &mut total_files, &ignores);
 
         let clean = threats.is_empty();
         Ok(UnicodeRadarReport {
@@ -73,7 +79,53 @@ impl UnicodeRadar {
         })
     }
 
-    fn walk_and_scan(dir: &Path, threats: &mut Vec<UnicodeThreatHit>, total_files: &mut usize) {
+    fn load_ignore_patterns(root: &Path) -> Vec<String> {
+        let mut ignores = vec![
+            "target".to_string(),
+            "node_modules".to_string(),
+            "dist".to_string(),
+            "build".to_string(),
+            ".git".to_string(),
+        ];
+        let ignore_file = root.join(".secretguardignore");
+        let content_res =
+            fs::read_to_string(&ignore_file).or_else(|_| fs::read_to_string(".secretguardignore"));
+        if let Ok(content) = content_res {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    ignores.push(
+                        trimmed
+                            .trim_end_matches('/')
+                            .trim_end_matches('\\')
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        ignores
+    }
+
+    fn is_ignored(path: &Path, name: &str, ignores: &[String]) -> bool {
+        if name == ".git" {
+            return true;
+        }
+        let p_str = path.to_string_lossy().replace('\\', "/");
+        ignores.iter().any(|ig| {
+            let ig_norm = ig.replace('\\', "/");
+            name == *ig
+                || p_str.ends_with(&ig_norm)
+                || p_str.contains(&format!("/{}/", ig_norm))
+                || p_str.starts_with(&format!("{}/", ig_norm))
+        })
+    }
+
+    fn walk_and_scan(
+        dir: &Path,
+        threats: &mut Vec<UnicodeThreatHit>,
+        total_files: &mut usize,
+        ignores: &[String],
+    ) {
         if dir.is_file() {
             *total_files += 1;
             if let Ok(content) = fs::read_to_string(dir) {
@@ -90,14 +142,17 @@ impl UnicodeRadar {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name == ".git" || name == "target" || name == "node_modules" {
-                    continue;
-                }
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+
+            if Self::is_ignored(&path, name, ignores) {
+                continue;
             }
 
             if path.is_dir() {
-                Self::walk_and_scan(&path, threats, total_files);
+                Self::walk_and_scan(&path, threats, total_files, ignores);
             } else if path.is_file() {
                 *total_files += 1;
                 if let Ok(content) = fs::read_to_string(&path) {

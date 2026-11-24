@@ -1,4 +1,4 @@
-﻿# SecretGuard PowerShell Integration Hook
+# SecretGuard PowerShell Integration Hook
 # Add to your $PROFILE:
 # . "path\to\secretguard.ps1"
 

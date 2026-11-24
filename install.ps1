@@ -1,4 +1,4 @@
-﻿# SecretGuard 1-Line Universal Installer for Windows PowerShell
+# SecretGuard 1-Line Universal Installer for Windows PowerShell
 # Usage: irm https://raw.githubusercontent.com/hemanathk636/secretguard/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
