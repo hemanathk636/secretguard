@@ -82,7 +82,7 @@
         </div>
         <div>
           <span class="prompt">➜  workspace </span>
-          <span class="cmd">curl -H "Authorization: Bearer <span class="secret">sk-proj-98a7sdf987asdf89...</span>" https://api.openai.com</span>
+          <span class="cmd">curl -H "Authorization: Bearer <span class="secret">sk-proj-DEMO_KEY_EXAMPLE...</span>" https://api.openai.com</span>
         </div>
         <div class="alert">
           [secretguard] 🚨 OpenAI API Key intercepted before execution!
