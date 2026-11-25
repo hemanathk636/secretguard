@@ -161,6 +161,35 @@ class TestReleasePackagerSecurity(unittest.TestCase):
             reason = pr.is_forbidden_member(bad_path)
             self.assertIsNotNone(reason, f"Expected rejection for case/Unicode path: {bad_path}")
 
+    def test_generic_comment_markers_cannot_exempt_real_tokens(self):
+        real_gh = "ghp_" + "RealLookingProdTokenAbCdEfGhIjKlMnOp"
+        real_aws = "AKIA" + "QAZXSWEDCVFRTGBN"
+        # Even inside tests/, trailing `// test`, `// Mock`, or `CANARY` must NEVER exempt
+        for line in [
+            f'let tok = "{real_gh}"; // test\n',
+            f'let tok = "{real_gh}"; // Mock\n',
+            f'let aws = "{real_aws}"; // CANARY\n',
+        ]:
+            errs = pr.scan_text_for_secrets("tests/some_unit_test.rs", line)
+            self.assertTrue(len(errs) > 0, f"Generic marker must not exempt: {line!r}")
+
+    def test_allowlisted_fixture_does_not_suppress_second_credential_on_same_line(self):
+        # `ghp_test1234567890abcdef` is allowlisted ONLY for `src/lifecycle.rs`
+        allowlisted = "ghp_" + "test1234567890abcdef"
+        real_second = "ghp_" + "RealSecretHiddenOnSameLine987654321"
+        line = f'let pair = ("{allowlisted}", "{real_second}");\n'
+        errs = pr.scan_text_for_secrets("src/lifecycle.rs", line)
+        self.assertEqual(len(errs), 1, f"Expected exactly 1 error for second token, got: {errs}")
+        self.assertIn("ghp_Real", errs[0])
+
+    def test_allowlisted_fixture_only_accepted_in_exact_file_context(self):
+        allowlisted = "ghp_" + "test1234567890abcdef"
+        # Accepted in its exact registered file (`src/lifecycle.rs`)
+        self.assertEqual(pr.scan_text_for_secrets("src/lifecycle.rs", f'"{allowlisted}"\n'), [])
+        # Rejected in an unrelated file (`tests/other_test.rs` or `src/config.rs`)
+        self.assertTrue(len(pr.scan_text_for_secrets("tests/other_test.rs", f'"{allowlisted}"\n')) > 0)
+        self.assertTrue(len(pr.scan_text_for_secrets("src/config.rs", f'"{allowlisted}"\n')) > 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -63,45 +63,76 @@ SECRET_ASSIGNMENT_RE = re.compile(
     r"""(?i)\b(?:password|passwd|secret_key|api_key|private_key|auth_token|master_key)\b\s*[:=]\s*["']([A-Za-z0-9+/=_-]{20,})["']"""
 )
 
-# Narrowly-scoped synthetic fixture markers permitted ONLY in test files/sources
-# that explicitly construct deterministic fake credentials for unit/integration tests.
-SYNTHETIC_FIXTURE_MARKERS = (
-    "EXAMPLE",
-    "FAKETOKEN",
-    "FAKETEST",
-    "Mock",
-    "mock",
-    "test",
-    "Test",
-    "1234567890abcdef",
-    "01234567890abcdef",
-    "9876543210abcdef",
-    "MIIEowIBAAKCAQEA0Y5k1v",
-    "MHQCAQEEI",
-    "b3BlbnNzaC1rZXktdjEA",
-    "CANARY",
-    "leakedToken",
-    "superSecretRealKey",
-    "prefixPart12345",
-    "998877",
-    "validTokenPrefix",
-    "abc12345678901234567890",
-    "12345678901234567890",
-    "FAKE000000000000",
-    "super-secret-production-openai-key",
-    "full_pem",
-    "pem_out",
-    "large_pem",
-    "combined.contains",
-    "let header = b\"-----" + "BEGIN",
-    "output_str.contains",
-    "let mut chunk1 = String::from(\"-----" + "BEGIN",
-    "total.contains",
-    "out1_str.contains",
-    "// Earlier",
-    "// treating the subsequent",
-    "\"-----" + "BEGIN RSA PRIVATE KEY-----\\n\",",
-)
+# Exact (repo_relative_path, sha256(exact_token)) allowlist for known synthetic test/demo fixtures.
+# Never uses substring matching, line-comment matching, or blanket file-path exemptions.
+EXACT_CREDENTIAL_FIXTURE_HASHES: set[tuple[str, str]] = {
+    ("docs/index.html", "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3"),
+    ("docs/index.html", "71964fc921dd311937749e35ce5aeba072feecf9c794bf927ce0a5eb0ee6b8a1"),
+    ("docs/index.html", "8841c2397d5af2017f16d8f94da2d34ce7e25b4992bbf8dadc4fef13b06e410e"),
+    ("src/immune.rs", "144ab26df98d362fb7f47d20d13a64ad65d8c3962c06e37eaf449ac30be8a196"),
+    ("src/lifecycle.rs", "46e973cfd54c145a2a5d33033c6c87c3e9fa4b25aa5eb33c6c9d3d5169d1569b"),
+    ("tests/adversarial_audit_test.rs", "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3"),
+    ("tests/adversarial_audit_test.rs", "1ca9aa038885384fc66d0f2fbe0473f39bf98df1c18fd874f0fd62fe7d52d5e3"),
+    ("tests/adversarial_audit_test.rs", "1ff82f4f862e802a39f72009b1d156d65890d89c6fd15a8d6d05a1710699b09a"),
+    ("tests/adversarial_audit_test.rs", "23af0ce2f924b6c354320ecbd20dfbdfaba3706a67d41c431c6b4c02b3dd23c9"),
+    ("tests/adversarial_audit_test.rs", "41054f4f064208786f73a55905cd390afa9d009ff7d0c3475b1db198ba4befc1"),
+    ("tests/adversarial_audit_test.rs", "7d7e24639d7fcdaf2c16838a49d40ba982da3a9d26b52212816602e0388db11c"),
+    ("tests/adversarial_audit_test.rs", "8841c2397d5af2017f16d8f94da2d34ce7e25b4992bbf8dadc4fef13b06e410e"),
+    ("tests/broker_test.rs", "148be1d13bfa307cf73859e12da79310ff3acd5d5d7c41a6670735b480216b3d"),
+    ("tests/clipboard_test.rs", "a0b83eae65546e7d171351576ca8a9498740ab2e79d21446cc258e5dcba8e165"),
+    ("tests/compliance_test.rs", "a0b83eae65546e7d171351576ca8a9498740ab2e79d21446cc258e5dcba8e165"),
+    ("tests/dashboard_test.rs", "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3"),
+    ("tests/docker_test.rs", "a0b83eae65546e7d171351576ca8a9498740ab2e79d21446cc258e5dcba8e165"),
+    ("tests/encoding_test.rs", "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3"),
+    ("tests/encoding_test.rs", "7d7e24639d7fcdaf2c16838a49d40ba982da3a9d26b52212816602e0388db11c"),
+    ("tests/futuristic_test.rs", "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3"),
+    ("tests/futuristic_test.rs", "3281a25da42d21f2a0d92547c054162ae132174eac0a2dfbbf2b133e2bd60e7a"),
+    ("tests/futuristic_test.rs", "4e32205ec6992c06217b43a5b6bad1ca84cb576123a1b2341d4ec74da4ff6063"),
+    ("tests/mcp_test.rs", "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3"),
+    ("tests/mcp_test.rs", "53bcf3371681c53a6aa07536d9432ea654124f5de8188adbff1112d22774accb"),
+    ("tests/mcp_test.rs", "8841c2397d5af2017f16d8f94da2d34ce7e25b4992bbf8dadc4fef13b06e410e"),
+    ("tests/mcp_test.rs", "d83e21c219f33ebe0fba99f8230b85b9c8956415da6933ad08001894b3621930"),
+    ("tests/panic_test.rs", "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3"),
+    ("tests/panic_test.rs", "8841c2397d5af2017f16d8f94da2d34ce7e25b4992bbf8dadc4fef13b06e410e"),
+    ("tests/panic_test.rs", "a0b83eae65546e7d171351576ca8a9498740ab2e79d21446cc258e5dcba8e165"),
+    ("tests/security_guarantees_test.rs", "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3"),
+    ("tests/security_guarantees_test.rs", "968fc7411df335652245d3fb4a9756f7b0ee295923c2134aae608eadc903ecd0"),
+    ("tests/shield_test.rs", "a0b83eae65546e7d171351576ca8a9498740ab2e79d21446cc258e5dcba8e165"),
+    ("tests/swapper_test.rs", "20a394da6f81d1c8d316a4693e959db145c402bcd347d3035411f9a6e06b4564"),
+    ("tests/vault_test.rs", "4a327996a82ee1c79d157c482d37778626251aea049570913e5379d69c0a7932"),
+    ("tests/vault_test.rs", "8841c2397d5af2017f16d8f94da2d34ce7e25b4992bbf8dadc4fef13b06e410e"),
+    ("tests/vault_test.rs", "92d60f0007d5938ffa23a6419ae8246af59939b32aafdb7fc0428332ee02ac8c"),
+    ("tests/vault_test.rs", "99c26238fb4afef8c3fbcf19ca8b0ced9f23de87a8704f389ab688d1dcfbc0ff"),
+    ("tests/vault_test.rs", "f23831a9dae8f307e06b33fbeaf4284fd6a3b6d32937e68d6de5ac925af41460"),
+    ("tests/verifier_test.rs", "563eb2eb728d2162afedaea6fb83787c145363f72886f19b502d9ade3adcb06c"),
+    ("tests/verifier_test.rs", "c5304f6f29f7834cf10b021827f71e81312321450333af20f1d3464719903c32"),
+    ("tests/verifier_test.rs", "dda2430bd4fd6e198aa6303d5a882595eb18359c1cc385450b9a11590173f68a"),
+}
+
+# Exact (repo_relative_path, sha256(stripped_line)) allowlist for synthetic PEM
+# stream-sanitizer test lines in `tests/vault_test.rs` (never real private keys).
+EXACT_PEM_LINE_FIXTURE_HASHES: set[tuple[str, str]] = {
+    ("tests/vault_test.rs", "00832ad52add789b11e387a8606ba5c76ef950fec25e0ebe4d3e61d64f2a2d0a"),
+    ("tests/vault_test.rs", "05718c3b0c5421b1d7aacf9783cd5db571ef90c44c94b8937705b1119b393b03"),
+    ("tests/vault_test.rs", "1a2f5f04dc97d7145cc097dd96037181f9bb1bd752a3e019fea04d54c85b56e8"),
+    ("tests/vault_test.rs", "2c8a0dccb8864c8bf3c03930138ff32f9aed86e9eef9d9b045bf9366d380dabc"),
+    ("tests/vault_test.rs", "3b2e59cacdb6faaf60367ab084b8e1ec923d6d35dcbd4490146c843a56da6385"),
+    ("tests/vault_test.rs", "45344ab799802b0896440358f6b224fa1f5019a25bc5a63b803efe1179f8be37"),
+    ("tests/vault_test.rs", "4f20afe58598a36d2a34bb228ffe650a986fd5df8a54e050fed20fbf8ff83f4b"),
+    ("tests/vault_test.rs", "692f9824adad2f4f96b856a7f0c0ed6a33643d2b59bb39980302757ae31aa9d3"),
+    ("tests/vault_test.rs", "772d21645cff08041014e9f1ce38e88e8013775e1af7b3a8ddc3e30fa7c70dd4"),
+    ("tests/vault_test.rs", "78ccbd330254e994656075d473e21e7de9f16c2a606bd019a04650fd02c85cfc"),
+    ("tests/vault_test.rs", "7bb6926482b52ed4a571c51db794874cfd0f9745292e51736bcbf8a2297ad814"),
+    ("tests/vault_test.rs", "8396d7e5dc9a8e3292764e9ecb5f6983721b59d4ad3197aaf3c1dd4a379f01ac"),
+    ("tests/vault_test.rs", "89c97a6a31bc2e5963085389b2aa8edca06b37fc90ad4e8eb65ea8e1b5686ce0"),
+    ("tests/vault_test.rs", "8be6d7d3ae5e47365aa9e3b1f07a04335e2f6bada13a09b4c6ef84a7fa6551da"),
+    ("tests/vault_test.rs", "acd22a86ddd1de4fbd4229b311b97600fdb78debf990e33cdb053b4e635e1dd6"),
+    ("tests/vault_test.rs", "b82ce7e261085bfd7f05816ec8734f1b68132d6a0089cc87b37121122fd03a48"),
+    ("tests/vault_test.rs", "cf45fec9cf2fd376d5f60bf2c83cd8966352202593d928e3326d0ef35d1330f2"),
+    ("tests/vault_test.rs", "d6c3a60f65d841d1508b9385b2ffce7f0908f7435d73f8d5ed65b5b4be409916"),
+    ("tests/vault_test.rs", "d89c8ff38668baa12b0e0c30b5f6719e49e934ff3a9b7735b906ff9629c45837"),
+    ("tests/vault_test.rs", "ddd3a5b6f707da1c31e8a20a1e02cbc4c47f1b1a22b9e24380df8470d7926eaa"),
+}
 
 
 def shannon_entropy(s: str) -> float:
@@ -151,20 +182,23 @@ def is_forbidden_member(rel_path: str) -> str | None:
     return None
 
 
-def is_narrow_synthetic_fixture(rel_path: str, matched_line: str) -> bool:
+def _strip_archive_prefix(rel_path: str) -> str:
     norm = rel_path.replace("\\", "/")
     if norm.startswith("secretguard-1.0.0/"):
-        norm = norm[len("secretguard-1.0.0/") :]
-    in_test_context = (
-        "/tests/" in f"/{norm}"
-        or norm.startswith("tests/")
-        or norm.endswith("_test.rs")
-        or norm.startswith("src/")
-        or norm == "docs/index.html"
-    )
-    if not in_test_context:
-        return False
-    return any(marker in matched_line for marker in SYNTHETIC_FIXTURE_MARKERS)
+        return norm[len("secretguard-1.0.0/") :]
+    return norm
+
+
+def is_exact_credential_fixture(rel_path: str, exact_token: str) -> bool:
+    repo_rel = _strip_archive_prefix(rel_path)
+    token_hash = hashlib.sha256(exact_token.encode("utf-8")).hexdigest()
+    return (repo_rel, token_hash) in EXACT_CREDENTIAL_FIXTURE_HASHES
+
+
+def is_exact_pem_line_fixture(rel_path: str, line: str) -> bool:
+    repo_rel = _strip_archive_prefix(rel_path)
+    line_hash = hashlib.sha256(line.strip().encode("utf-8")).hexdigest()
+    return (repo_rel, line_hash) in EXACT_PEM_LINE_FIXTURE_HASHES
 
 
 def scan_text_for_secrets(rel_path: str, text: str) -> list[str]:
@@ -172,23 +206,21 @@ def scan_text_for_secrets(rel_path: str, text: str) -> list[str]:
     lines = text.splitlines()
     for idx, line in enumerate(lines, start=1):
         if PRIVATE_KEY_HEADER_RE.search(line):
-            # Look at this line + next line for known fake PEM body markers
-            window = line + ("\n" + lines[idx] if idx < len(lines) else "")
-            if not is_narrow_synthetic_fixture(rel_path, window):
+            if not is_exact_pem_line_fixture(rel_path, line):
                 errors.append(
                     f"Unallowlisted private key header at '{rel_path}:{idx}'"
                 )
 
         for m in PROVIDER_CREDENTIAL_RE.finditer(line):
             token = m.group(0)
-            if not is_narrow_synthetic_fixture(rel_path, line):
+            if not is_exact_credential_fixture(rel_path, token):
                 errors.append(
                     f"Potential provider credential ({token[:8]}...) at '{rel_path}:{idx}'"
                 )
 
         for m in SECRET_ASSIGNMENT_RE.finditer(line):
             val = m.group(1)
-            if shannon_entropy(val) >= 3.5 and not is_narrow_synthetic_fixture(rel_path, line):
+            if shannon_entropy(val) >= 3.5:
                 errors.append(
                     f"High-entropy secret assignment at '{rel_path}:{idx}'"
                 )
