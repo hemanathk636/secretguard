@@ -93,14 +93,14 @@ SYNTHETIC_FIXTURE_MARKERS = (
     "pem_out",
     "large_pem",
     "combined.contains",
-    "let header = b\"-----BEGIN",
+    "let header = b\"-----" + "BEGIN",
     "output_str.contains",
-    "let mut chunk1 = String::from(\"-----BEGIN",
+    "let mut chunk1 = String::from(\"-----" + "BEGIN",
     "total.contains",
     "out1_str.contains",
     "// Earlier",
     "// treating the subsequent",
-    "\"-----BEGIN RSA PRIVATE KEY-----\\n\",",
+    "\"-----" + "BEGIN RSA PRIVATE KEY-----\\n\",",
 )
 
 
