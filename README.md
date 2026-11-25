@@ -34,6 +34,39 @@ SecretGuard adds a local, defense-in-depth layer across three pillars:
 2. **Encrypted Vault & Broker (`vault`)** — AES-256-GCM + Argon2id local keystore (`~/.secretguard/`), in-memory secret injection (`vault run`), serverless P2P team sharing (`mesh`), and an authenticated local Security Broker with policy enforcement and tamper-evident HMAC audit logs.
 3. **Auditing & Containment (`audit`)** — Repository/Git-history scanning (`scan`, `audit git`), Trojan Source / BiDi detection (`radar`), and incident containment (`immune`, `panic`) that quarantines keys locally first and optionally checks/revokes supported upstream provider APIs.
 
+```text
+                              ┌───────────────────────────────────────┐
+                              │          secretguard CLI              │
+                              │   (init / doctor / --version / help)  │
+                              └───────────────────┬───────────────────┘
+                                                  │
+            ┌─────────────────────────────────────┼─────────────────────────────────────┐
+            ▼                                     ▼                                     ▼
+┌───────────────────────┐             ┌───────────────────────┐             ┌───────────────────────┐
+│   PILLAR 1: SHIELD    │             │   PILLAR 2: VAULT     │             │   PILLAR 3: AUDIT     │
+│   (Runtime Defense)   │             │  (Storage & Broker)   │             │  (Scan & Containment) │
+└───────────┬───────────┘             └───────────┬───────────┘             └───────────┬───────────┘
+            │                                     │                                     │
+  ├─ hook (zsh/bash/fish/             ├─ init / set / run                       ├─ scan (files & repos)
+  │  nushell/powershell)              │  (AES-256-GCM + HKDF +                  │  (patterns.rs + entropy.rs)
+  │  └─ pre-exec redaction            │   O_NOFOLLOW / Win32 lock)              │
+  │                                   │                                         ├─ audit git (timemachine.rs)
+  ├─ wrap (stdout masking)            ├─ mesh (mesh.rs)                         │  └─ git log --all scan
+  │  └─ StreamSanitizer               │  └─ Argon2id P2P vault                  │
+  │                                   │                                         ├─ radar (radar.rs)
+  ├─ ghost (ghost.rs)                 ├─ ipc / mcp / broker                     │  └─ Trojan Source / BiDi
+  │  └─ decoy tokens in .env          │  (ipc.rs, mcp.rs, broker.rs,            │
+  │                                   │   policy.rs, identity.rs)               ├─ immune / panic
+  ├─ tun (swapper.rs)                 │  └─ kernel PID + bounded pool           │  (immune.rs, panic.rs,
+  │  └─ local swapper testbed         │     + SSRF/userinfo defense             │   lifecycle.rs)
+  │                                   │                                         │  └─ local quarantine +
+  ├─ firewall (firewall.rs)           └─ canary (canary.rs)                     │     optional upstream API
+  │  └─ agent command gate               └─ honeytoken tripwires                │
+  │                                                                             └─ audit-ledger (audit.rs)
+  └─ clipboard (clipboard.rs)                                                      └─ HMAC-SHA256 hash chain
+     └─ auto-clear timer
+```
+
 > **Privacy & Network Boundary:** Core scanning, shell line interception, local vault encryption, Ghost Token generation, and audit logging run **100% offline with zero telemetry**. Outbound HTTPS requests occur **only** when explicitly invoked for upstream provider revocation/status verification (`immune` / `panic`), delegated broker HTTP calls, or installer provenance verification.
 
 ---
