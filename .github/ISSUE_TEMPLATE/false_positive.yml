@@ -1,0 +1,42 @@
+name: 🔍 False Positive Report
+description: Report a non-secret string or file that SecretGuard incorrectly flagged or redacted.
+title: "[False Positive]: "
+labels: ["false-positive", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please **never** paste real credentials here. Use a synthetic/masked example that reproduces the false positive.
+  - type: input
+    id: version
+    attributes:
+      label: SecretGuard Version
+      description: Run `secretguard --version` and paste the output.
+      placeholder: e.g., SecretGuard v1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where Did It Trigger?
+      options:
+        - secretguard scan (file / repo scanner)
+        - Shell hook (Zsh / Bash / PowerShell preexec)
+        - secretguard vault run (stdout/stderr stream)
+        - AI agent / MCP firewall
+    validations:
+      required: true
+  - type: input
+    id: rule
+    attributes:
+      label: Triggered Rule / Pattern Name
+      description: Which pattern name did SecretGuard report (e.g., High-Entropy Generic Key, AWS Access Key)?
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Synthetic Example & Context
+      description: Provide a fake/masked example (same shape/length) and file type so we can reproduce safely.
+    validations:
+      required: true
