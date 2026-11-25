@@ -20,11 +20,20 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+/// Maximum allowed IPC JSON request line size (64 KiB) to prevent memory exhaustion DoS
+const MAX_IPC_REQUEST_BYTES: usize = 64 * 1024;
+/// Per-connection IPC read/write timeout in seconds to prevent slow-client blocking DoS
+const IPC_IO_TIMEOUT_SECS: u64 = 5;
+/// Maximum concurrent IPC handler threads spawned by the background listener
+const MAX_CONCURRENT_IPC_CONNECTIONS: usize = 32;
 
 /// IPC Message payload exchange
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,23 +133,68 @@ impl IpcServer {
     /// Derives or creates local IPC authentication token stored securely in .secretguard/ipc.token (0o600)
     pub fn get_or_create_token() -> Result<String, std::io::Error> {
         let dir = crate::vault::get_vault_dir().map_err(std::io::Error::other)?;
-        let _ = fs::create_dir_all(&dir);
+        if !dir.exists() {
+            fs::create_dir_all(&dir)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+            }
+        }
+        crate::vault::validate_secure_path(&dir, false)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
+
         let token_path = dir.join("ipc.token");
 
-        if token_path.exists() {
-            let meta = fs::symlink_metadata(&token_path)?;
+        // On Unix, reject an existing token file if its permissions were ever overly permissive,
+        // because another local user could already have read the token before tightening.
+        #[cfg(unix)]
+        if let Ok(meta) = fs::symlink_metadata(&token_path) {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
             if meta.file_type().is_symlink() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
                     "Security Error: IPC token path is an untrusted symlink!",
                 ));
             }
-            if let Ok(content) = fs::read_to_string(&token_path) {
-                let trimmed = content.trim();
-                if trimmed.len() >= 32 {
-                    return Ok(trimmed.to_string());
-                }
+            if !meta.is_file() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Security Error: IPC token path is not a regular file!",
+                ));
             }
+            let active_uid = unsafe { libc::getuid() };
+            if meta.uid() != active_uid {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Security Error: IPC token file is not owned by the active user!",
+                ));
+            }
+            if (meta.permissions().mode() & 0o077) != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Security Error: Existing IPC token '{}' has insecure permissions ({:o}); refusing potentially exposed token.",
+                        token_path.display(),
+                        meta.permissions().mode() & 0o777
+                    ),
+                ));
+            }
+        }
+
+        if let Some(file) = crate::vault::open_secure_file_for_read(&token_path)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?
+        {
+            let mut content = String::new();
+            file.take(256).read_to_string(&mut content)?;
+            let trimmed = content.trim();
+            if trimmed.len() >= 32 {
+                return Ok(trimmed.to_string());
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Security Error: Existing IPC token is malformed or too short.",
+            ));
         }
 
         // Generate 32-byte secure CSPRNG token
@@ -376,37 +430,54 @@ impl IpcServer {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
         let server = Arc::clone(&self);
+        let active_connections = Arc::new(AtomicUsize::new(0));
 
         std::thread::Builder::new()
             .name("secretguard-ipc-listener".to_string())
             .spawn(move || {
-                for mut stream in listener.incoming().flatten() {
-                    let peer_pid = match (stream.local_addr(), stream.peer_addr()) {
-                        (Ok(local), Ok(peer)) => {
-                            #[cfg(windows)]
-                            {
-                                get_tcp_peer_pid_tuple(local.port(), peer.port())
-                            }
-                            #[cfg(unix)]
-                            {
-                                get_unix_tcp_peer_pid(local.port(), peer.port())
-                            }
-                        }
-                        _ => None,
-                    };
+                for stream in listener.incoming().flatten() {
+                    if active_connections.load(Ordering::Acquire) >= MAX_CONCURRENT_IPC_CONNECTIONS
+                    {
+                        continue;
+                    }
+                    let server_ref = Arc::clone(&server);
+                    let conn_counter = Arc::clone(&active_connections);
+                    conn_counter.fetch_add(1, Ordering::AcqRel);
 
-                    let mut reader = BufReader::new(match stream.try_clone() {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    });
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) > 0 {
-                        if let Ok(req_msg) = serde_json::from_str::<IpcMessage>(line.trim()) {
-                            let resp_msg = server.handle_message_with_peer(&req_msg, peer_pid);
-                            let resp_json = serde_json::to_string(&resp_msg).unwrap_or_default();
-                            let _ = writeln!(stream, "{}", resp_json);
-                            let _ = stream.flush();
-                        }
+                    let spawn_res = std::thread::Builder::new()
+                        .name("secretguard-ipc-worker".to_string())
+                        .spawn(move || {
+                            struct ConnGuard(Arc<AtomicUsize>);
+                            impl Drop for ConnGuard {
+                                fn drop(&mut self) {
+                                    self.0.fetch_sub(1, Ordering::AcqRel);
+                                }
+                            }
+                            let _guard = ConnGuard(conn_counter);
+
+                            let timeout = Some(Duration::from_secs(IPC_IO_TIMEOUT_SECS));
+                            let _ = stream.set_read_timeout(timeout);
+                            let _ = stream.set_write_timeout(timeout);
+
+                            let peer_pid = match (stream.local_addr(), stream.peer_addr()) {
+                                (Ok(local), Ok(peer)) => {
+                                    #[cfg(windows)]
+                                    {
+                                        get_tcp_peer_pid_tuple(local.port(), peer.port())
+                                    }
+                                    #[cfg(unix)]
+                                    {
+                                        get_unix_tcp_peer_pid(local.port(), peer.port())
+                                    }
+                                }
+                                _ => None,
+                            };
+
+                            handle_ipc_stream(&server_ref, stream, peer_pid);
+                        });
+
+                    if spawn_res.is_err() {
+                        active_connections.fetch_sub(1, Ordering::AcqRel);
                     }
                 }
             })?;
@@ -422,7 +493,11 @@ impl IpcServer {
             port
         );
 
-        for mut stream in listener.incoming().flatten() {
+        let timeout = Some(Duration::from_secs(IPC_IO_TIMEOUT_SECS));
+        for stream in listener.incoming().flatten() {
+            let _ = stream.set_read_timeout(timeout);
+            let _ = stream.set_write_timeout(timeout);
+
             let peer_pid = match (stream.local_addr(), stream.peer_addr()) {
                 (Ok(local), Ok(peer)) => {
                     #[cfg(windows)]
@@ -437,16 +512,7 @@ impl IpcServer {
                 _ => None,
             };
 
-            let mut reader = BufReader::new(stream.try_clone()?);
-            let mut line = String::new();
-            if reader.read_line(&mut line)? > 0 {
-                if let Ok(req_msg) = serde_json::from_str::<IpcMessage>(line.trim()) {
-                    let resp_msg = self.handle_message_with_peer(&req_msg, peer_pid);
-                    let resp_json = serde_json::to_string(&resp_msg).unwrap_or_default();
-                    let _ = writeln!(stream, "{}", resp_json);
-                    let _ = stream.flush();
-                }
-            }
+            handle_ipc_stream(self, stream, peer_pid);
         }
         Ok(())
     }
@@ -464,20 +530,62 @@ impl IpcServer {
             socket_path.display()
         );
 
-        for mut stream in listener.incoming().flatten() {
+        let timeout = Some(Duration::from_secs(IPC_IO_TIMEOUT_SECS));
+        for stream in listener.incoming().flatten() {
+            let _ = stream.set_read_timeout(timeout);
+            let _ = stream.set_write_timeout(timeout);
             let peer_pid = get_unix_domain_peer_pid(&stream);
-            let mut reader = BufReader::new(stream.try_clone()?);
-            let mut line = String::new();
-            if reader.read_line(&mut line)? > 0 {
-                if let Ok(req_msg) = serde_json::from_str::<IpcMessage>(line.trim()) {
-                    let resp_msg = self.handle_message_with_peer(&req_msg, peer_pid);
-                    let resp_json = serde_json::to_string(&resp_msg).unwrap_or_default();
-                    let _ = writeln!(stream, "{}", resp_json);
-                    let _ = stream.flush();
-                }
-            }
+            handle_ipc_stream(self, stream, peer_pid);
         }
         Ok(())
+    }
+}
+
+/// Reads a single newline-delimited IPC JSON request bounded to `max_bytes`.
+fn read_bounded_ipc_line<R: Read>(reader: R, max_bytes: usize) -> std::io::Result<Option<String>> {
+    let mut limited = BufReader::new(reader.take((max_bytes + 1) as u64));
+    let mut line = String::new();
+    let bytes_read = limited.read_line(&mut line)?;
+    if bytes_read == 0 {
+        return Ok(None);
+    }
+    if line.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "IPC request exceeds maximum allowed size of {} bytes",
+                max_bytes
+            ),
+        ));
+    }
+    Ok(Some(line))
+}
+
+/// Handles a single IPC client stream with bounded request size and explicit error responses.
+fn handle_ipc_stream<S: Read + Write>(server: &IpcServer, mut stream: S, peer_pid: Option<u32>) {
+    match read_bounded_ipc_line(&mut stream, MAX_IPC_REQUEST_BYTES) {
+        Ok(Some(line)) => {
+            let resp_msg = match serde_json::from_str::<IpcMessage>(line.trim()) {
+                Ok(req_msg) => server.handle_message_with_peer(&req_msg, peer_pid),
+                Err(_) => IpcMessage::Error {
+                    code: -32700,
+                    message: "Invalid IPC JSON request.".to_string(),
+                },
+            };
+            let resp_json = serde_json::to_string(&resp_msg).unwrap_or_default();
+            let _ = writeln!(stream, "{}", resp_json);
+            let _ = stream.flush();
+        }
+        Ok(None) => {}
+        Err(e) => {
+            let resp_msg = IpcMessage::Error {
+                code: -32600,
+                message: format!("IPC request rejected: {}", e),
+            };
+            let resp_json = serde_json::to_string(&resp_msg).unwrap_or_default();
+            let _ = writeln!(stream, "{}", resp_json);
+            let _ = stream.flush();
+        }
     }
 }
 
@@ -758,6 +866,9 @@ mod tests {
 
     #[test]
     fn test_ipc_authentication_handshake_and_session_registration() {
+        let _lock = crate::vault::TERMINAL_INPUT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp_dir = std::env::temp_dir().join(format!("sg_ipc_unit_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp_dir);
         std::env::set_var("SECRETGUARD_DIR", &temp_dir);
@@ -864,5 +975,17 @@ mod tests {
 
         std::env::remove_var("SECRETGUARD_DIR");
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ipc_bounded_request_line_rejects_oversized_payload() {
+        let valid = b"{\"hello\":1}\n";
+        let ok = read_bounded_ipc_line(&valid[..], 64).expect("Valid line should succeed");
+        assert_eq!(ok.as_deref(), Some("{\"hello\":1}\n"));
+
+        let oversized = [b'A'; 128];
+        let err = read_bounded_ipc_line(&oversized[..], 64)
+            .expect_err("Oversized line without newline must be rejected");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
 }

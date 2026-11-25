@@ -61,12 +61,11 @@ echo "🔒 Verifying SHA-256 checksum..."
   fi
 )
 
-# Optional cryptographic provenance / Minisign signature check if available
-if command -v minisign >/dev/null 2>&1; then
+# Optional cryptographic Minisign check when an official public key is explicitly configured
+if [ -n "${SECRETGUARD_MINISIGN_PUBKEY:-}" ] && command -v minisign >/dev/null 2>&1; then
   if curl -fsSL "${URL}.minisig" -o "${TMP_DIR}/${ARCHIVE}.minisig" 2>/dev/null; then
     echo "🔏 Verifying Minisign cryptographic signature..."
-    MINISIGN_PUBKEY="RWQG4Q8WzK8aI1F3iX9Ea4p6h5j3k2l1m0n9o8p7q6r5s4t3u2v1"
-    minisign -Vm "${TMP_DIR}/${ARCHIVE}" -P "$MINISIGN_PUBKEY" || {
+    minisign -Vm "${TMP_DIR}/${ARCHIVE}" -P "$SECRETGUARD_MINISIGN_PUBKEY" || {
       echo "❌ Security Error: Minisign signature verification failed! Untrusted binary. Aborting." >&2
       exit 1
     }

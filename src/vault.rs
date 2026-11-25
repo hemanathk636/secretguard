@@ -1203,6 +1203,104 @@ pub fn anchor_ancestor_directories(resolved_path: &Path) -> Result<AncestorGuard
     Ok(ancestor_guards)
 }
 
+#[cfg(unix)]
+fn validate_and_tighten_unix_file_fd(
+    file: fs::File,
+    resolved_path: &Path,
+    active_uid: u32,
+) -> Result<fs::File, String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let meta = file.metadata().map_err(|e| {
+        format!(
+            "Security Error: Cannot stat target file descriptor '{}': {}",
+            resolved_path.display(),
+            e
+        )
+    })?;
+
+    if !meta.is_file() {
+        return Err(format!(
+            "Security Error: Target path '{}' is not a regular file (symlink or special device).",
+            resolved_path.display()
+        ));
+    }
+
+    if meta.uid() != active_uid {
+        return Err(format!(
+            "Security Error: Target file descriptor '{}' is owned by UID {} but active user is UID {}. Aborting.",
+            resolved_path.display(),
+            meta.uid(),
+            active_uid
+        ));
+    }
+
+    let mode = meta.permissions().mode();
+    if (mode & 0o077) != 0 {
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|e| {
+                format!(
+                    "Security Error: Failed to tighten file permissions on '{}': {}",
+                    resolved_path.display(),
+                    e
+                )
+            })?;
+        let re_meta = file.metadata().map_err(|e| {
+            format!(
+                "Security Error: Failed to re-verify permissions on '{}': {}",
+                resolved_path.display(),
+                e
+            )
+        })?;
+        if (re_meta.permissions().mode() & 0o077) != 0 {
+            return Err(format!(
+                "Security Error: File permissions on '{}' remain insecure ({:o}).",
+                resolved_path.display(),
+                re_meta.permissions().mode() & 0o777
+            ));
+        }
+    }
+
+    Ok(file)
+}
+
+#[cfg(target_os = "macos")]
+fn open_macos_fallback_no_follow(
+    resolved_path: &Path,
+    active_uid: u32,
+) -> Result<Option<fs::File>, String> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::FromRawFd;
+
+    // Validate every ancestor directory component before opening
+    validate_secure_path(resolved_path, true)?;
+
+    let path_cstr =
+        std::ffi::CString::new(resolved_path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    let fd = unsafe {
+        open(
+            path_cstr.as_ptr(),
+            unix_flags::O_RDONLY | unix_flags::O_NOFOLLOW | unix_flags::O_CLOEXEC,
+            0,
+        )
+    };
+    if fd < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(format!(
+            "Security Error: Failed to open target file '{}' with O_NOFOLLOW: {}. Aborting.",
+            resolved_path.display(),
+            err
+        ));
+    }
+
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    let validated = validate_and_tighten_unix_file_fd(file, resolved_path, active_uid)?;
+    Ok(Some(validated))
+}
+
 /// Opens a file securely for reading, guaranteeing immunity against symlink and TOCTOU directory swap attacks:
 /// - On Unix: walks all ancestor directories descriptor-relatively using `openat` with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`,
 ///   verifying UID ownership and non-writable permissions on each descriptor, and opens the target file relative to the
@@ -1218,8 +1316,6 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
-        use std::os::unix::fs::MetadataExt;
-        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::io::FromRawFd;
 
         let parent = match resolved_path.parent() {
@@ -1291,31 +1387,11 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
                         #[cfg(target_os = "macos")]
                         {
                             // In macOS sandbox (/private/var/folders/...), descriptor-relative openat with O_NOFOLLOW
-                            // on intermediate directories can fail with EACCES (13). Fallback to secure direct open.
+                            // on intermediate directories can fail with EACCES (13). Fallback to O_NOFOLLOW direct open.
                             if err.kind() == io::ErrorKind::PermissionDenied
                                 || err.raw_os_error() == Some(13)
                             {
-                                if let Ok(meta) = fs::symlink_metadata(&resolved_path) {
-                                    if !meta.file_type().is_symlink()
-                                        && meta.is_file()
-                                        && meta.uid() == active_uid
-                                    {
-                                        if let Ok(direct_file) = fs::File::open(&resolved_path) {
-                                            if let Ok(fd_meta) = direct_file.metadata() {
-                                                if fd_meta.is_file() && fd_meta.uid() == active_uid
-                                                {
-                                                    let mode = fd_meta.permissions().mode();
-                                                    if (mode & 0o077) != 0 {
-                                                        let _ = direct_file.set_permissions(
-                                                            fs::Permissions::from_mode(0o600),
-                                                        );
-                                                    }
-                                                    return Ok(Some(direct_file));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                return open_macos_fallback_no_follow(&resolved_path, active_uid);
                             }
                         }
                         return Err(format!(
@@ -1360,27 +1436,10 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
                 return Ok(None);
             }
 
-            // On some Unix platforms (such as macOS sandbox /private/var/folders/ temporary directories),
-            // descriptor-relative openat(curr_guard.0, ...) on dynamically created files can return EACCES (os error 13).
-            // When EACCES occurs, fallback to direct open ONLY after strictly validating with symlink_metadata
-            // that the file is not a symlink, is a regular file, and is owned by active_uid.
-            if err.kind() == io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(13) {
-                if let Ok(meta) = fs::symlink_metadata(&resolved_path) {
-                    if !meta.file_type().is_symlink() && meta.is_file() && meta.uid() == active_uid
-                    {
-                        if let Ok(direct_file) = fs::File::open(&resolved_path) {
-                            if let Ok(fd_meta) = direct_file.metadata() {
-                                if fd_meta.is_file() && fd_meta.uid() == active_uid {
-                                    let mode = fd_meta.permissions().mode();
-                                    if (mode & 0o077) != 0 {
-                                        let _ = direct_file
-                                            .set_permissions(fs::Permissions::from_mode(0o600));
-                                    }
-                                    return Ok(Some(direct_file));
-                                }
-                            }
-                        }
-                    }
+            #[cfg(target_os = "macos")]
+            {
+                if err.kind() == io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(13) {
+                    return open_macos_fallback_no_follow(&resolved_path, active_uid);
                 }
             }
 
@@ -1392,57 +1451,8 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
         }
 
         let file = unsafe { fs::File::from_raw_fd(file_fd) };
-        let meta = file.metadata().map_err(|e| {
-            format!(
-                "Security Error: Cannot stat target file descriptor '{}': {}",
-                resolved_path.display(),
-                e
-            )
-        })?;
-
-        if !meta.is_file() {
-            return Err(format!(
-                "Security Error: Target path '{}' is not a regular file (symlink or special device).",
-                resolved_path.display()
-            ));
-        }
-
-        if meta.uid() != active_uid {
-            return Err(format!(
-                "Security Error: Target file descriptor '{}' is owned by UID {} but active user is UID {}. Aborting.",
-                resolved_path.display(),
-                meta.uid(),
-                active_uid
-            ));
-        }
-
-        let mode = meta.permissions().mode();
-        if (mode & 0o077) != 0 {
-            file.set_permissions(fs::Permissions::from_mode(0o600))
-                .map_err(|e| {
-                    format!(
-                        "Security Error: Failed to tighten file permissions on '{}': {}",
-                        resolved_path.display(),
-                        e
-                    )
-                })?;
-            let re_meta = file.metadata().map_err(|e| {
-                format!(
-                    "Security Error: Failed to re-verify permissions on '{}': {}",
-                    resolved_path.display(),
-                    e
-                )
-            })?;
-            if (re_meta.permissions().mode() & 0o077) != 0 {
-                return Err(format!(
-                    "Security Error: File permissions on '{}' remain insecure ({:o}).",
-                    resolved_path.display(),
-                    re_meta.permissions().mode() & 0o777
-                ));
-            }
-        }
-
-        Ok(Some(file))
+        let validated = validate_and_tighten_unix_file_fd(file, &resolved_path, active_uid)?;
+        Ok(Some(validated))
     }
 
     #[cfg(windows)]

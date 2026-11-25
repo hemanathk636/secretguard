@@ -624,6 +624,9 @@ mod tests {
 
     #[test]
     fn test_audit_hash_chain_verification() {
+        let _lock = crate::vault::TERMINAL_INPUT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut ledger = AuditLedger::new();
         let human = IdentityContext::mock(
             "bash",
@@ -656,6 +659,9 @@ mod tests {
 
     #[test]
     fn test_audit_tampering_detected_loudly() {
+        let _lock = crate::vault::TERMINAL_INPUT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut ledger = AuditLedger::new();
         let agent = IdentityContext::mock(
             "claude",
