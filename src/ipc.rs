@@ -1049,14 +1049,13 @@ mod tests {
         // 2. A fast client sending an oversized payload must still be served concurrently and rejected
         let mut fast_client = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
         let _ = fast_client.set_read_timeout(Some(Duration::from_secs(3)));
-        let big = vec![b'X'; MAX_IPC_REQUEST_BYTES + 1024];
+        let big = vec![b'X'; MAX_IPC_REQUEST_BYTES + 1];
         let _ = fast_client.write_all(&big);
-        let _ = fast_client.write_all(b"\n");
         let _ = fast_client.flush();
 
         let mut resp_line = String::new();
         let mut reader = BufReader::new(fast_client);
-        reader.read_line(&mut resp_line).unwrap();
+        let _ = reader.read_line(&mut resp_line);
         assert!(
             resp_line.contains("-32600") && resp_line.contains("exceeds maximum allowed size"),
             "Expected oversized rejection error, got: {}",
