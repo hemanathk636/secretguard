@@ -153,6 +153,8 @@ def is_forbidden_member(rel_path: str) -> str | None:
 
 def is_narrow_synthetic_fixture(rel_path: str, matched_line: str) -> bool:
     norm = rel_path.replace("\\", "/")
+    if norm.startswith("secretguard-1.0.0/"):
+        norm = norm[len("secretguard-1.0.0/") :]
     in_test_context = (
         "/tests/" in f"/{norm}"
         or norm.startswith("tests/")
