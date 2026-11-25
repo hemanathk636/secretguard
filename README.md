@@ -451,26 +451,28 @@ secretguard doctor
 ✓ History Storage:  Clean (No exposed default history files)
 ✓ AI Agent Shield:  Active (Claude Code, Cursor, MCP configurations checked)
 ✓ Binary Footprint: ~1.56 MB (Optimized native Rust with LTO)
-✓ Privacy Status:   100% Offline (Zero telemetry, zero network calls)
+✓ Privacy Status:   Local-First (Zero telemetry; core engine 100% offline)
 ────────────────────────────────────────────────────
 ✨ Status: SecretGuard is operational and ready to protect your terminal!
 ```
 
+> **Privacy & Network Boundary:** Core scanning, shell line interception, local AES-256-GCM + Argon2id vault operations, Ghost Token generation, and audit logging run **100% offline with zero telemetry**. Outbound HTTPS requests occur **only** when explicitly invoked for upstream provider revocation/status verification (`secretguard immune` / `secretguard panic`), delegated broker HTTP calls, or installer provenance verification.
+
 ---
 
-## 📊 Benchmark Results
+## 📊 Synthetic Benchmark Results
 
-Benchmarked across a synthetic test suite of **1,000 commands** (500 positive credential samples + 500 clean commands):
+Benchmarked across a **synthetic test suite of 1,000 commands** (500 synthetic credential samples + 500 clean commands):
 
-| Metric | Result | Benchmark Target |
+| Metric | Synthetic Result | Target |
 | :--- | :--- | :--- |
-| **Detection Recall** | **100.0%** (500/500) | > 99.0% |
-| **False Positive Rate** | **0.0%** (0/500) | < 0.1% |
+| **Synthetic Recall** | **100.0%** (500/500) | > 99.0% |
+| **Synthetic False Positive Rate** | **0.0%** (0/500) | < 0.1% |
 | **Average Scan Latency** | **15.68 µs** (0.016 ms) | < 1,000 µs (1.0 ms) |
 | **Memory Footprint** | **~1.5 MB** | < 20 MB |
 | **External Dependencies** | **Zero** (Pure Native Rust) | Self-contained |
 
-*> **Note on Benchmarks:** Synthetic command benchmark measured on optimized release builds on an Apple M-series / AMD Ryzen workstation. Actual real-world performance depends on command length, file I/O, and system load.*
+*> **Note on Benchmarks & Limitations:** These numbers come from a controlled synthetic benchmark on optimized release builds (Apple M-series / AMD Ryzen workstation). They do **not** guarantee 100% detection recall or 0% false positives on arbitrary real-world repositories, custom secret formats, or obfuscated inputs. SecretGuard is a defense-in-depth tool.*
 
 ---
 
@@ -508,7 +510,7 @@ SecretGuard v1.0.0 marks the official production General Availability release, c
 * **Hermetic Ghost & Mesh Persistence:** Unifies atomic storage across `ghost` and `mesh` modules with `create_secure_file_exclusive(0o600)` and `atomic_replace_file()`, guaranteeing `O_EXCL` creation, symlink rejection, ancestor directory traversal defense, Unix parent directory `fsync`, and Windows `ReplaceFileW`.
 * **Hardened Simulation Swapper:** Features 5-second socket timeouts, clean EOF handling, reverse response payload scrubbing (`swap_response_payload`), and safe HTTP 400 responses on malformed/non-HTTP requests without leaking mapped tokens.
 * **Binary Media & Noise Filtering in Codebase Scanner:** Fast-paths binary media assets (`.png`, `.svg`, `.vsix`, etc.) and honors `.secretguardignore` rules, guaranteeing fail-closed scans (exit code 2 on read errors) with zero false-positives across full production codebases.
-* **Cryptographic Attestation & Minisign Provenance:** Integrates Sigstore SLSA build provenance attestations (`actions/attest-build-provenance`) and Minisign verification into official release workflows and universal installers (`install.sh`, `install.ps1`).
+* **Mandatory Cryptographic Provenance Verification:** Integrates Sigstore/SLSA build provenance attestations (`actions/attest-build-provenance`) into official GitHub Releases; `install.sh` enforces fail-closed verification via `gh attestation verify` (or an explicitly pinned `SECRETGUARD_MINISIGN_PUBKEY`).
 
 ---
 
