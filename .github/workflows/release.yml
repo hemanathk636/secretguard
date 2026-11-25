@@ -101,7 +101,7 @@ jobs:
           "$hash  ${{ matrix.archive }}" | Set-Content -Path "${{ matrix.archive }}.sha256"
 
       - name: Generate build provenance attestation (Sigstore / SLSA)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: ${{ matrix.archive }}
 
