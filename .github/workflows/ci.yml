@@ -63,12 +63,12 @@ jobs:
         if: steps.test_suite.outcome == 'failure'
         shell: bash
         run: |
-          echo "=== FAILED TESTS ==="
-          grep -E "test .* \.\.\. FAILED" test_output.log || true
-          echo "=== PANICS ==="
-          grep -C 3 -E "panicked at" test_output.log || true
-          echo "=== LAST 50 LINES OF TEST OUTPUT ==="
-          tail -n 50 test_output.log
+          FAILED_TESTS=$(grep -E "test .* \.\.\. FAILED" test_output.log | head -n 5 || echo "No FAILED line")
+          PANIC_INFO=$(grep -E "panicked at" test_output.log | head -n 5 || echo "No panic line")
+          LAST_LINES=$(tail -n 10 test_output.log | tr '\n' ' ' | tr '"' "'")
+          echo "::error title=FailedTest::$FAILED_TESTS"
+          echo "::error title=PanicLocation::$PANIC_INFO"
+          echo "::error title=OutputTail::$LAST_LINES"
           exit 1
 
       - name: Run Diagnostics (secretguard doctor)
