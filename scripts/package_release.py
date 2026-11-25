@@ -141,6 +141,7 @@ def is_narrow_synthetic_fixture(rel_path: str, matched_line: str) -> bool:
         or norm.startswith("tests/")
         or norm.endswith("_test.rs")
         or norm.startswith("src/")
+        or norm == "docs/index.html"
     )
     if not in_test_context:
         return False

@@ -1207,7 +1207,7 @@ Scanning 148 files for invisible characters &amp; prompt injections...
         <div class="cmd-terminal-box"><span style="color: #60a5fa;">$ secretguard vault init</span>
 <span style="color: #34d399;">🔐 Vault initialized. Protected by Argon2id + AES-256-GCM.</span>
 
-<span style="color: #60a5fa;">$ secretguard vault set STRIPE_SECRET_KEY sk_live_89712398a7sdf</span>
+<span style="color: #60a5fa;">$ secretguard vault set STRIPE_SECRET_KEY sk_live_&lt;DEMO_KEY&gt;</span>
 <span style="color: #34d399;">✓ Encrypted key 'STRIPE_SECRET_KEY' stored in hardware keystore</span>
 
 <span style="color: #60a5fa;">$ secretguard vault run -- npm start</span>
@@ -1633,7 +1633,7 @@ Inspecting Dockerfile layers and ARG/ENV instructions...
             type="text" 
             id="testInput" 
             class="sandbox-input" 
-            value="curl -H 'Authorization: Bearer sk-proj-98a7sdf987asdf897asdf897asdf897asdf897asdf' https://api.openai.com"
+            value="curl -H 'Authorization: Bearer sk-proj-EXAMPLE000000000000000000000000000000000000' https://api.openai.com"
           />
 
           <div class="preset-row">
@@ -1977,7 +1977,7 @@ Inspecting Dockerfile layers and ARG/ENV instructions...
     }
 
     const testPresets = {
-      openai: "curl -H 'Authorization: Bearer sk-proj-98a7sdf987asdf897asdf897asdf897asdf897asdf' https://api.openai.com",
+      openai: "curl -H 'Authorization: Bearer sk-proj-EXAMPLE000000000000000000000000000000000000' https://api.openai.com",
       aws: "aws s3 sync . s3://production-data --profile AKIAIOSFODNN7EXAMPLE",
       postgres: "psql postgresql://postgres:X9#kLm!2$pQ8wZ10_live@db.prod.internal:5432/main",
       github: "git push https://ghp_1234567890abcdef1234567890abcdef1234@github.com/repo.git",
