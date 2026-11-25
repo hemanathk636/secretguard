@@ -44,8 +44,8 @@ extern "C" {
     fn signal(signum: i32, handler: usize) -> usize;
     fn siginterrupt(signum: i32, flag: i32) -> i32;
     fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-    fn open(path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
-    fn openat(dirfd: i32, path: *const std::os::raw::c_char, oflag: i32, mode: u32) -> i32;
+    fn open(path: *const std::os::raw::c_char, oflag: i32, ...) -> i32;
+    fn openat(dirfd: i32, path: *const std::os::raw::c_char, oflag: i32, ...) -> i32;
     fn close(fd: i32) -> i32;
     fn sigemptyset(set: *mut sigset_t) -> i32;
     fn sigaddset(set: *mut sigset_t, signum: i32) -> i32;
