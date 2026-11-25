@@ -86,6 +86,21 @@ SYNTHETIC_FIXTURE_MARKERS = (
     "998877",
     "validTokenPrefix",
     "abc12345678901234567890",
+    "12345678901234567890",
+    "FAKE000000000000",
+    "super-secret-production-openai-key",
+    "full_pem",
+    "pem_out",
+    "large_pem",
+    "combined.contains",
+    "let header = b\"-----BEGIN",
+    "output_str.contains",
+    "let mut chunk1 = String::from(\"-----BEGIN",
+    "total.contains",
+    "out1_str.contains",
+    "// Earlier",
+    "// treating the subsequent",
+    "\"-----BEGIN RSA PRIVATE KEY-----\\n\",",
 )
 
 
