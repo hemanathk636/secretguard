@@ -84,6 +84,7 @@ SYNTHETIC_FIXTURE_MARKERS = (
     "superSecretRealKey",
     "prefixPart12345",
     "998877",
+    "validTokenPrefix",
 )
 
 
