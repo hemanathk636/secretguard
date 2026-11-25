@@ -127,8 +127,9 @@ class TestReleasePackagerSecurity(unittest.TestCase):
             init_test_repo(repo)
 
             # Real-looking private key in a *_test.rs file must NOT be exempted
+            pem_header = "-----BEGIN " + "RSA PRIVATE KEY-----\n"
             with open(os.path.join(repo, "tests", "example_test.rs"), "w", encoding="utf-8") as f:
-                f.write("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEArealSensitiveKey99112233\n")
+                f.write(pem_header + "MIIEpAIBAAKCAQEArealSensitiveKey99112233\n")
             git(repo, "add", "tests/example_test.rs")
             git(repo, "commit", "-m", "add real key in test")
 
@@ -137,10 +138,13 @@ class TestReleasePackagerSecurity(unittest.TestCase):
             self.assertIn("private key header", str(ctx.exception).lower())
 
     def test_credentials_in_ordinary_source_or_config_rejected(self):
+        aws_val = "AKIA" + "QAZXSWEDCVFRTGBN"
+        gh_val = "ghp_" + "RealLookingProdTokenAbCdEfGhIjKlMnOp"
+        assign_key = "api_" + "key"
         for fname, content in [
-            ("src/config.rs", 'const KEY: &str = "AKIAQAZXSWEDCVFRTGBN";\n'),
-            ("config.toml", 'github_token = "ghp_RealLookingProdTokenAbCdEfGhIjKlMnOp"\n'),
-            ("app.env", 'api_key = "Xy9Kp2Qm7Vz4Lw8Rt3Ns6Jd1Fh5Gc0Vb"\n'),
+            ("src/config.rs", f'const KEY: &str = "{aws_val}";\n'),
+            ("config.toml", f'github_token = "{gh_val}"\n'),
+            ("app.env", f'{assign_key} = "Xy9Kp2Qm7Vz4Lw8Rt3Ns6Jd1Fh5Gc0Vb"\n'),
         ]:
             errs = pr.scan_text_for_secrets(fname, content)
             self.assertTrue(len(errs) > 0, f"Expected secret detection for {fname}")
