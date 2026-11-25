@@ -255,7 +255,24 @@ impl ImmuneEngine {
     /// - Returns truthful remediation instructions (NEVER claiming automatic rotation unless confirmed by provider)
     pub fn trigger_containment(
         token: &str,
+        engine: &SecretGuardEngine,
+    ) -> Result<ImmuneIncidentReport, String> {
+        Self::trigger_containment_with_options(token, engine, true)
+    }
+
+    /// Executes deterministic local-only containment (vault quarantine, lifecycle quarantine,
+    /// and HMAC-signed audit logging) without performing external network revocation calls.
+    pub fn trigger_containment_local(
+        token: &str,
+        engine: &SecretGuardEngine,
+    ) -> Result<ImmuneIncidentReport, String> {
+        Self::trigger_containment_with_options(token, engine, false)
+    }
+
+    fn trigger_containment_with_options(
+        token: &str,
         _engine: &SecretGuardEngine,
+        dispatch_upstream: bool,
     ) -> Result<ImmuneIncidentReport, String> {
         let start = std::time::Instant::now();
         let provider = Self::identify_provider(token);
@@ -361,8 +378,17 @@ impl ImmuneEngine {
         })?;
 
         // 4. Now that local barriers are strictly active, dispatch provider revocation / verification
-        let (revocation_status, lifecycle_state) =
-            Self::dispatch_provider_revocation(token, provider);
+        let (revocation_status, lifecycle_state) = if dispatch_upstream {
+            Self::dispatch_provider_revocation(token, provider)
+        } else {
+            (
+                format!(
+                    "LOCAL CIRCUIT-BREAKER ACTIVE: {} quarantined locally (upstream network check skipped).",
+                    provider
+                ),
+                "Quarantined".to_string(),
+            )
+        };
 
         // 5. Inspect actual git status if inside a git repository
         let git_status = if std::path::Path::new(".git").exists() {

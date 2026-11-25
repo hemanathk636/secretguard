@@ -1264,47 +1264,11 @@ fn validate_and_tighten_unix_file_fd(
     Ok(file)
 }
 
-#[cfg(target_os = "macos")]
-fn open_macos_fallback_no_follow(
-    resolved_path: &Path,
-    active_uid: u32,
-) -> Result<Option<fs::File>, String> {
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::io::FromRawFd;
-
-    // Validate every ancestor directory component before opening
-    validate_secure_path(resolved_path, true)?;
-
-    let path_cstr =
-        std::ffi::CString::new(resolved_path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
-    let fd = unsafe {
-        open(
-            path_cstr.as_ptr(),
-            unix_flags::O_RDONLY | unix_flags::O_NOFOLLOW | unix_flags::O_CLOEXEC,
-            0,
-        )
-    };
-    if fd < 0 {
-        let err = io::Error::last_os_error();
-        if err.kind() == io::ErrorKind::NotFound {
-            return Ok(None);
-        }
-        return Err(format!(
-            "Security Error: Failed to open target file '{}' with O_NOFOLLOW: {}. Aborting.",
-            resolved_path.display(),
-            err
-        ));
-    }
-
-    let file = unsafe { fs::File::from_raw_fd(fd) };
-    let validated = validate_and_tighten_unix_file_fd(file, resolved_path, active_uid)?;
-    Ok(Some(validated))
-}
-
 /// Opens a file securely for reading, guaranteeing immunity against symlink and TOCTOU directory swap attacks:
-/// - On Unix: walks all ancestor directories descriptor-relatively using `openat` with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`,
-///   verifying UID ownership and non-writable permissions on each descriptor, and opens the target file relative to the
-///   verified parent directory descriptor using `openat` with `O_NOFOLLOW | O_CLOEXEC`.
+/// - On Unix: walks all ancestor directories descriptor-relatively using `openat` with `O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC`
+///   (retrying with `O_SEARCH` on macOS for execute-only ancestor directories), verifying UID ownership and non-writable
+///   permissions on each descriptor, and opens the target file relative to the verified parent directory descriptor using
+///   `openat` with `O_NOFOLLOW | O_CLOEXEC`. Fails closed if any descriptor step is denied—never falls back to pathname-only opens.
 /// - On Windows: locks every ancestor directory by opening its handle WITHOUT `FILE_SHARE_DELETE` (so the Windows kernel
 ///   blocks any concurrent rename, move, unlink, or deletion of intermediate directories), verifies no reparse point,
 ///   opens the target file handle with `FILE_FLAG_OPEN_REPARSE_POINT` while ancestor handles are held, verifies non-reparse
@@ -1367,7 +1331,7 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
                     let c_bytes = c.as_bytes();
                     let c_str = std::ffi::CString::new(c_bytes).map_err(|e| e.to_string())?;
 
-                    let next_fd = unsafe {
+                    let mut next_fd = unsafe {
                         openat(
                             curr_guard.0,
                             c_str.as_ptr(),
@@ -1379,23 +1343,37 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
                         )
                     };
 
+                    #[cfg(target_os = "macos")]
+                    if next_fd < 0 {
+                        let err = io::Error::last_os_error();
+                        if err.kind() == io::ErrorKind::PermissionDenied
+                            || err.raw_os_error() == Some(13)
+                        {
+                            // On macOS, execute-only directories (e.g. 0o711 under /private/var/folders)
+                            // deny O_RDONLY but allow O_SEARCH (O_EXEC=0x40000000 | O_DIRECTORY) while
+                            // preserving strict descriptor-relative openat + O_NOFOLLOW guarantees.
+                            const MACOS_O_SEARCH: i32 = 0x4000_0000;
+                            next_fd = unsafe {
+                                openat(
+                                    curr_guard.0,
+                                    c_str.as_ptr(),
+                                    MACOS_O_SEARCH
+                                        | unix_flags::O_DIRECTORY
+                                        | unix_flags::O_NOFOLLOW
+                                        | unix_flags::O_CLOEXEC,
+                                    0,
+                                )
+                            };
+                        }
+                    }
+
                     if next_fd < 0 {
                         let err = io::Error::last_os_error();
                         if err.kind() == io::ErrorKind::NotFound {
                             return Ok(None);
                         }
-                        #[cfg(target_os = "macos")]
-                        {
-                            // In macOS sandbox (/private/var/folders/...), descriptor-relative openat with O_NOFOLLOW
-                            // on intermediate directories can fail with EACCES (13). Fallback to O_NOFOLLOW direct open.
-                            if err.kind() == io::ErrorKind::PermissionDenied
-                                || err.raw_os_error() == Some(13)
-                            {
-                                return open_macos_fallback_no_follow(&resolved_path, active_uid);
-                            }
-                        }
                         return Err(format!(
-                            "Security Error: Failed to open directory descriptor for component '{}' relative to parent (O_NOFOLLOW): {}. Aborting.",
+                            "Security Error: Failed to open directory descriptor for component '{}' relative to parent (O_NOFOLLOW): {}. Failing closed without pathname fallback.",
                             c.to_string_lossy(),
                             err
                         ));
@@ -1436,15 +1414,8 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
                 return Ok(None);
             }
 
-            #[cfg(target_os = "macos")]
-            {
-                if err.kind() == io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(13) {
-                    return open_macos_fallback_no_follow(&resolved_path, active_uid);
-                }
-            }
-
             return Err(format!(
-                "Security Error: Failed to open target file '{}' relative to parent descriptor (O_NOFOLLOW): {}. Aborting.",
+                "Security Error: Failed to open target file '{}' relative to parent descriptor (O_NOFOLLOW): {}. Failing closed without pathname fallback.",
                 resolved_path.display(),
                 err
             ));

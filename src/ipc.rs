@@ -25,15 +25,17 @@ use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::Duration;
 
 /// Maximum allowed IPC JSON request line size (64 KiB) to prevent memory exhaustion DoS
 const MAX_IPC_REQUEST_BYTES: usize = 64 * 1024;
 /// Per-connection IPC read/write timeout in seconds to prevent slow-client blocking DoS
 const IPC_IO_TIMEOUT_SECS: u64 = 5;
-/// Maximum concurrent IPC handler threads spawned by the background listener
-const MAX_CONCURRENT_IPC_CONNECTIONS: usize = 32;
+/// Fixed worker pool thread count shared across every IPC listener
+const IPC_WORKER_POOL_SIZE: usize = 16;
+/// Fixed bounded queue capacity for pending accepted IPC connections
+const IPC_QUEUE_CAPACITY: usize = 16;
 
 /// IPC Message payload exchange
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -426,66 +428,23 @@ impl IpcServer {
     }
 
     /// Starts the authenticated IPC listener on a local loopback port in the background
+    /// using a fixed-size bounded worker pool and bounded queue.
     pub fn start_background(self: Arc<Self>) -> Result<u16, std::io::Error> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
         let server = Arc::clone(&self);
-        let active_connections = Arc::new(AtomicUsize::new(0));
 
         std::thread::Builder::new()
             .name("secretguard-ipc-listener".to_string())
             .spawn(move || {
-                for stream in listener.incoming().flatten() {
-                    if active_connections.load(Ordering::Acquire) >= MAX_CONCURRENT_IPC_CONNECTIONS
-                    {
-                        continue;
-                    }
-                    let server_ref = Arc::clone(&server);
-                    let conn_counter = Arc::clone(&active_connections);
-                    conn_counter.fetch_add(1, Ordering::AcqRel);
-
-                    let spawn_res = std::thread::Builder::new()
-                        .name("secretguard-ipc-worker".to_string())
-                        .spawn(move || {
-                            struct ConnGuard(Arc<AtomicUsize>);
-                            impl Drop for ConnGuard {
-                                fn drop(&mut self) {
-                                    self.0.fetch_sub(1, Ordering::AcqRel);
-                                }
-                            }
-                            let _guard = ConnGuard(conn_counter);
-
-                            let timeout = Some(Duration::from_secs(IPC_IO_TIMEOUT_SECS));
-                            let _ = stream.set_read_timeout(timeout);
-                            let _ = stream.set_write_timeout(timeout);
-
-                            let peer_pid = match (stream.local_addr(), stream.peer_addr()) {
-                                (Ok(local), Ok(peer)) => {
-                                    #[cfg(windows)]
-                                    {
-                                        get_tcp_peer_pid_tuple(local.port(), peer.port())
-                                    }
-                                    #[cfg(unix)]
-                                    {
-                                        get_unix_tcp_peer_pid(local.port(), peer.port())
-                                    }
-                                }
-                                _ => None,
-                            };
-
-                            handle_ipc_stream(&server_ref, stream, peer_pid);
-                        });
-
-                    if spawn_res.is_err() {
-                        active_connections.fetch_sub(1, Ordering::AcqRel);
-                    }
-                }
+                run_bounded_ipc_pool(&server, listener.incoming().flatten(), process_tcp_stream);
             })?;
 
         Ok(port)
     }
 
     /// Runs local loopback TCP IPC transport listener with genuine OS peer verification
+    /// and a fixed-size bounded worker pool.
     pub fn run_listener(&self, port: u16) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port))?;
         println!(
@@ -493,32 +452,13 @@ impl IpcServer {
             port
         );
 
-        let timeout = Some(Duration::from_secs(IPC_IO_TIMEOUT_SECS));
-        for stream in listener.incoming().flatten() {
-            let _ = stream.set_read_timeout(timeout);
-            let _ = stream.set_write_timeout(timeout);
-
-            let peer_pid = match (stream.local_addr(), stream.peer_addr()) {
-                (Ok(local), Ok(peer)) => {
-                    #[cfg(windows)]
-                    {
-                        get_tcp_peer_pid_tuple(local.port(), peer.port())
-                    }
-                    #[cfg(unix)]
-                    {
-                        get_unix_tcp_peer_pid(local.port(), peer.port())
-                    }
-                }
-                _ => None,
-            };
-
-            handle_ipc_stream(self, stream, peer_pid);
-        }
+        run_bounded_ipc_pool(self, listener.incoming().flatten(), process_tcp_stream);
         Ok(())
     }
 
     #[cfg(unix)]
     /// Runs local Unix domain socket IPC transport listener with kernel-verified peer credentials
+    /// and a fixed-size bounded worker pool.
     pub fn run_unix_socket_listener(&self, socket_path: &Path) -> Result<(), std::io::Error> {
         use std::os::unix::net::UnixListener;
         if socket_path.exists() {
@@ -530,15 +470,105 @@ impl IpcServer {
             socket_path.display()
         );
 
-        let timeout = Some(Duration::from_secs(IPC_IO_TIMEOUT_SECS));
-        for stream in listener.incoming().flatten() {
+        run_bounded_ipc_pool(self, listener.incoming().flatten(), |server, stream| {
+            let timeout = Some(Duration::from_secs(IPC_IO_TIMEOUT_SECS));
             let _ = stream.set_read_timeout(timeout);
             let _ = stream.set_write_timeout(timeout);
             let peer_pid = get_unix_domain_peer_pid(&stream);
-            handle_ipc_stream(self, stream, peer_pid);
-        }
+            handle_ipc_stream(server, stream, peer_pid);
+        });
         Ok(())
     }
+}
+
+/// Processes an accepted loopback TCP stream with read/write timeouts and OS peer PID verification.
+fn process_tcp_stream(server: &IpcServer, stream: TcpStream) {
+    let timeout = Some(Duration::from_secs(IPC_IO_TIMEOUT_SECS));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+
+    let peer_pid = match (stream.local_addr(), stream.peer_addr()) {
+        (Ok(local), Ok(peer)) => {
+            #[cfg(windows)]
+            {
+                get_tcp_peer_pid_tuple(local.port(), peer.port())
+            }
+            #[cfg(unix)]
+            {
+                get_unix_tcp_peer_pid(local.port(), peer.port())
+            }
+        }
+        _ => None,
+    };
+
+    handle_ipc_stream(server, stream, peer_pid);
+}
+
+/// Shared bounded worker-pool dispatcher for all IPC listener transports.
+/// Guarantees fixed worker thread count, bounded queue capacity, leak-free RAII connection
+/// accounting, and safe non-blocking rejection when capacity is exceeded.
+fn run_bounded_ipc_pool<S, I, F>(server: &IpcServer, incoming: I, handler: F)
+where
+    S: Read + Write + Send,
+    I: Iterator<Item = S>,
+    F: Fn(&IpcServer, S) + Sync,
+{
+    let (tx, rx) = mpsc::sync_channel::<S>(IPC_QUEUE_CAPACITY);
+    let rx = Arc::new(Mutex::new(rx));
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let handler_ref = &handler;
+
+    std::thread::scope(|scope| {
+        for worker_id in 0..IPC_WORKER_POOL_SIZE {
+            let rx_clone = Arc::clone(&rx);
+            let active_clone = Arc::clone(&active_connections);
+            let _ = std::thread::Builder::new()
+                .name(format!("secretguard-ipc-worker-{}", worker_id))
+                .spawn_scoped(scope, move || {
+                    struct ConnGuard(Arc<AtomicUsize>);
+                    impl Drop for ConnGuard {
+                        fn drop(&mut self) {
+                            self.0.fetch_sub(1, Ordering::AcqRel);
+                        }
+                    }
+
+                    loop {
+                        let stream = {
+                            let guard = match rx_clone.lock() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            };
+                            match guard.recv() {
+                                Ok(s) => s,
+                                Err(_) => break,
+                            }
+                        };
+
+                        active_clone.fetch_add(1, Ordering::AcqRel);
+                        let _conn_guard = ConnGuard(Arc::clone(&active_clone));
+                        handler_ref(server, stream);
+                    }
+                });
+        }
+
+        for stream in incoming {
+            if let Err(
+                mpsc::TrySendError::Full(mut rejected)
+                | mpsc::TrySendError::Disconnected(mut rejected),
+            ) = tx.try_send(stream)
+            {
+                let err_msg = IpcMessage::Error {
+                    code: -32000,
+                    message: "Server busy: IPC worker pool capacity exceeded.".to_string(),
+                };
+                if let Ok(json) = serde_json::to_string(&err_msg) {
+                    let _ = writeln!(rejected, "{}", json);
+                    let _ = rejected.flush();
+                }
+            }
+        }
+        drop(tx);
+    });
 }
 
 /// Reads a single newline-delimited IPC JSON request bounded to `max_bytes`.
@@ -987,5 +1017,54 @@ mod tests {
         let err = read_bounded_ipc_line(&oversized[..], 64)
             .expect_err("Oversized line without newline must be rejected");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_ipc_listener_pool_concurrent_slow_client_and_oversized_rejection() {
+        let _lock = crate::vault::TERMINAL_INPUT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let temp_dir = std::env::temp_dir().join(format!("sg_ipc_pool_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&temp_dir, std::fs::Permissions::from_mode(0o700));
+        }
+        std::env::set_var("SECRETGUARD_DIR", &temp_dir);
+
+        let server = Arc::new(IpcServer::new());
+        let port = Arc::clone(&server)
+            .start_background()
+            .expect("Background IPC pool should bind");
+
+        // 1. Open slow clients that never send a newline (would stall a synchronous listener)
+        let mut slow_clients = Vec::new();
+        for _ in 0..3 {
+            let mut s = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+            let _ = s.write_all(b"{\"partial\":");
+            slow_clients.push(s);
+        }
+
+        // 2. A fast client sending an oversized payload must still be served concurrently and rejected
+        let mut fast_client = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+        let _ = fast_client.set_read_timeout(Some(Duration::from_secs(3)));
+        let big = vec![b'X'; MAX_IPC_REQUEST_BYTES + 1024];
+        let _ = fast_client.write_all(&big);
+        let _ = fast_client.write_all(b"\n");
+        let _ = fast_client.flush();
+
+        let mut resp_line = String::new();
+        let mut reader = BufReader::new(fast_client);
+        reader.read_line(&mut resp_line).unwrap();
+        assert!(
+            resp_line.contains("-32600") && resp_line.contains("exceeds maximum allowed size"),
+            "Expected oversized rejection error, got: {}",
+            resp_line
+        );
+
+        drop(slow_clients);
+        std::env::remove_var("SECRETGUARD_DIR");
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

@@ -742,3 +742,53 @@ fn test_adversarial_userinfo_credential_exfiltration_rejected() {
         "Exfiltration URL must be denied by policy engine"
     );
 }
+
+#[test]
+fn test_release_staging_excludes_runtime_secretguard_state() {
+    let output = Command::new("git")
+        .args(["ls-files"])
+        .output()
+        .expect("git ls-files should execute");
+    assert!(output.status.success(), "git ls-files must succeed");
+    let tracked = String::from_utf8_lossy(&output.stdout);
+    let forbidden = [
+        ".secretguard/",
+        ".master.key",
+        "audit.hmac.key",
+        "vault.enc",
+        "audit_ledger.json",
+        "lifecycle.json",
+        "quarantine.txt",
+        "ipc.token",
+    ];
+    for line in tracked.lines() {
+        for pattern in &forbidden {
+            assert!(
+                !line.contains(pattern),
+                "Tracked release file '{}' contains forbidden runtime secret pattern '{}'",
+                line,
+                pattern
+            );
+        }
+    }
+}
+
+#[test]
+fn test_open_secure_file_for_read_rejects_directory_target() {
+    let _lock = ADV_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let (temp_dir, _guard_dir) = setup_isolated_test_env("dir_target");
+
+    let subdir = temp_dir.join("not_a_regular_file");
+    fs::create_dir_all(&subdir).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&subdir, fs::Permissions::from_mode(0o700));
+    }
+
+    let res = secretguard::vault::open_secure_file_for_read(&subdir);
+    assert!(
+        res.is_err(),
+        "open_secure_file_for_read must fail closed when target is a directory"
+    );
+}

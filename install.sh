@@ -33,13 +33,19 @@ case "$OS" in
     ;;
 esac
 
-LATEST_TAG=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+LATEST_TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$LATEST_TAG" ]; then
   LATEST_TAG="v1.0.0"
 fi
 
+if ! echo "$LATEST_TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.]+)?$'; then
+  echo "❌ Security Error: Invalid release tag format '${LATEST_TAG}'. Aborting." >&2
+  exit 1
+fi
+
 ARCHIVE="secretguard-${TARGET}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${ARCHIVE}"
+EXPECTED_WORKFLOW="${REPO}/.github/workflows/release.yml"
 
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -48,7 +54,8 @@ echo "Downloading SecretGuard (${TARGET}) ${LATEST_TAG}..."
 curl -fsSL "$URL" -o "${TMP_DIR}/${ARCHIVE}"
 curl -fsSL "${URL}.sha256" -o "${TMP_DIR}/${ARCHIVE}.sha256"
 
-echo "🔒 Verifying SHA-256 checksum..."
+# 1. Integrity check (verifies download was not corrupted relative to release .sha256; NOT proof of authenticity)
+echo "🔒 Verifying SHA-256 download integrity checksum..."
 (
   cd "$TMP_DIR"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -56,30 +63,50 @@ echo "🔒 Verifying SHA-256 checksum..."
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 -c "${ARCHIVE}.sha256" || { echo "❌ Security Error: SHA-256 checksum verification failed! Aborting." >&2; exit 1; }
   else
-    echo "❌ Security Error: Neither sha256sum nor shasum is available. Cannot securely verify archive integrity!" >&2
+    echo "❌ Security Error: Neither sha256sum nor shasum is available. Cannot verify archive integrity!" >&2
     exit 1
   fi
 )
 
-# Optional cryptographic Minisign check when an official public key is explicitly configured
-if [ -n "${SECRETGUARD_MINISIGN_PUBKEY:-}" ] && command -v minisign >/dev/null 2>&1; then
-  if curl -fsSL "${URL}.minisig" -o "${TMP_DIR}/${ARCHIVE}.minisig" 2>/dev/null; then
-    echo "🔏 Verifying Minisign cryptographic signature..."
-    minisign -Vm "${TMP_DIR}/${ARCHIVE}" -P "$SECRETGUARD_MINISIGN_PUBKEY" || {
-      echo "❌ Security Error: Minisign signature verification failed! Untrusted binary. Aborting." >&2
-      exit 1
-    }
-    echo "✅ Minisign signature verified."
+# 2. Mandatory Authenticity & Provenance Verification (Fail-Closed: never skip)
+AUTHENTICITY_VERIFIED=0
+
+if [ -n "${SECRETGUARD_MINISIGN_PUBKEY:-}" ]; then
+  if ! command -v minisign >/dev/null 2>&1; then
+    echo "❌ Security Error: SECRETGUARD_MINISIGN_PUBKEY is set, but 'minisign' is not installed. Failing closed." >&2
+    exit 1
   fi
+  echo "🔏 Verifying Minisign cryptographic signature against pinned public key..."
+  curl -fsSL "${URL}.minisig" -o "${TMP_DIR}/${ARCHIVE}.minisig" || {
+    echo "❌ Security Error: Failed to download Minisign signature (${URL}.minisig). Unsigned release rejected." >&2
+    exit 1
+  }
+  minisign -Vm "${TMP_DIR}/${ARCHIVE}" -P "$SECRETGUARD_MINISIGN_PUBKEY" || {
+    echo "❌ Security Error: Minisign signature verification failed! Untrusted binary. Aborting." >&2
+    exit 1
+  }
+  echo "✅ Minisign cryptographic signature verified."
+  AUTHENTICITY_VERIFIED=1
 fi
 
 if command -v gh >/dev/null 2>&1; then
-  echo "🔍 Verifying GitHub build provenance attestation..."
-  gh attestation verify "${TMP_DIR}/${ARCHIVE}" --repo "$REPO" || {
-    echo "❌ Security Error: GitHub build provenance attestation verification failed! Aborting." >&2
+  echo "🔍 Verifying GitHub build provenance attestation (repo=${REPO}, workflow=${EXPECTED_WORKFLOW}, tag=${LATEST_TAG})..."
+  gh attestation verify "${TMP_DIR}/${ARCHIVE}" \
+    --repo "$REPO" \
+    --signer-workflow "$EXPECTED_WORKFLOW" \
+    --source-ref "refs/tags/${LATEST_TAG}" \
+    --deny-self-hosted-runners || {
+    echo "❌ Security Error: GitHub build provenance attestation verification failed! Untrusted or tampered release. Aborting." >&2
     exit 1
   }
-  echo "✅ GitHub build provenance verified."
+  echo "✅ GitHub build provenance attestation verified."
+  AUTHENTICITY_VERIFIED=1
+elif [ "$AUTHENTICITY_VERIFIED" -ne 1 ]; then
+  echo "❌ Security Error: Mandatory release authenticity verification cannot run because GitHub CLI ('gh') is not installed" >&2
+  echo "   and no pinned Minisign public key (SECRETGUARD_MINISIGN_PUBKEY) was provided." >&2
+  echo "   SHA-256 checksums alone do NOT prove release authenticity." >&2
+  echo "   Install 'gh' (https://cli.github.com/) and re-run this installer. Failing closed." >&2
+  exit 1
 fi
 
 tar -xzf "${TMP_DIR}/${ARCHIVE}" -C "$TMP_DIR"
