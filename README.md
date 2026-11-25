@@ -278,7 +278,7 @@ Instead of storing unencrypted API keys in plaintext `.env` files or exporting t
 
 ### 1. Store Secrets Encrypted Locally:
 ```bash
-secretguard vault set OPENAI_API_KEY "sk-proj-super-secret-key"
+secretguard vault set OPENAI_API_KEY "sk-proj-<YOUR_OPENAI_KEY>"
 ```
 
 ### 2. Inject Secrets in Memory (Zero Disk / Zero Shell History):
@@ -364,7 +364,7 @@ Accidentally exposed an API key or committed a live secret? Don't panic. One com
 secretguard panic
 
 # Target a specific compromised key for instant revocation
-secretguard panic "sk-proj-compromised-openai-key..."
+secretguard panic "sk-proj-<COMPROMISED_OPENAI_KEY>"
 ```
 
 ```
@@ -429,7 +429,7 @@ export OPENAI_API_KEY=sk-proj-[SYNTHETIC_MOCK_TOKEN]
 ```
 
 * **AWS Access Key:** `AKIA...` ➔ `AKIA[SYNTHETIC_MOCK]` *(exactly 20 characters)*
-* **GitHub Token:** `ghp_1234567890abcdef...` ➔ `ghp_TESTDUMMYMOCK00...` *(exactly 40 characters)*
+* **GitHub Token:** `ghp_<REAL_TOKEN_PREFIX>...` ➔ `ghp_TESTDUMMYMOCK00...` *(exactly 40 characters)*
 * **OpenAI Project Key:** `sk-proj-1234...` ➔ `sk-proj-TESTDUMMY...` *(exact length preserved)*
 
 ---
