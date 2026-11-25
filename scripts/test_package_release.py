@@ -135,7 +135,7 @@ class TestReleasePackagerSecurity(unittest.TestCase):
 
             with self.assertRaises(RuntimeError) as ctx:
                 pr.package_clean_release(repo, out, "v1.0.0-keytest")
-            self.assertIn("private key header", str(ctx.exception).lower())
+            self.assertIn("private key", str(ctx.exception).lower())
 
     def test_credentials_in_ordinary_source_or_config_rejected(self):
         aws_val = "AKIA" + "QAZXSWEDCVFRTGBN"
@@ -189,6 +189,20 @@ class TestReleasePackagerSecurity(unittest.TestCase):
         # Rejected in an unrelated file (`tests/other_test.rs` or `src/config.rs`)
         self.assertTrue(len(pr.scan_text_for_secrets("tests/other_test.rs", f'"{allowlisted}"\n')) > 0)
         self.assertTrue(len(pr.scan_text_for_secrets("src/config.rs", f'"{allowlisted}"\n')) > 0)
+
+    def test_allowlisted_pem_header_with_modified_body_is_rejected(self):
+        # Even using an allowlisted header line in `tests/vault_test.rs`, changing the block body
+        # must fail the full-block SHA-256 check.
+        header = "-----" + "BEGIN RSA PRIVATE KEY-----"
+        end_marker = "-----" + "END RSA PRIVATE KEY-----"
+        tampered_block = (
+            f'let mut full_pem = String::from("{header}\\n");\n'
+            'MIIEpAIBAAKCAQEArealInjectedPrivateKeyPayload998877665544=\n'
+            f'{end_marker}\n'
+        )
+        errs = pr.scan_text_for_secrets("tests/vault_test.rs", tampered_block)
+        self.assertTrue(len(errs) > 0, f"Modified PEM block must be rejected, got: {errs}")
+        self.assertIn("private key block", errs[0].lower())
 
 
 if __name__ == "__main__":

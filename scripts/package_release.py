@@ -47,6 +47,9 @@ FORBIDDEN_EXTENSIONS = {".key", ".enc", ".pem", ".p12", ".pfx"}
 PRIVATE_KEY_HEADER_RE = re.compile(
     r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"
 )
+PRIVATE_KEY_END_RE = re.compile(
+    r"-----END (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"
+)
 
 PROVIDER_CREDENTIAL_RE = re.compile(
     r"(?:"
@@ -109,23 +112,23 @@ EXACT_CREDENTIAL_FIXTURE_HASHES: set[tuple[str, str]] = {
     ("tests/verifier_test.rs", "dda2430bd4fd6e198aa6303d5a882595eb18359c1cc385450b9a11590173f68a"),
 }
 
-# Exact (repo_relative_path, sha256(stripped_line)) allowlist for synthetic PEM
-# stream-sanitizer test lines in `tests/vault_test.rs` (never real private keys).
-EXACT_PEM_LINE_FIXTURE_HASHES: set[tuple[str, str]] = {
-    ("tests/vault_test.rs", "00832ad52add789b11e387a8606ba5c76ef950fec25e0ebe4d3e61d64f2a2d0a"),
+# Exact (repo_relative_path, sha256(full_pem_block)) allowlist for synthetic PEM
+# stream-sanitizer test blocks in `tests/vault_test.rs` (never real private keys).
+EXACT_PEM_BLOCK_FIXTURE_HASHES: set[tuple[str, str]] = {
     ("tests/vault_test.rs", "05718c3b0c5421b1d7aacf9783cd5db571ef90c44c94b8937705b1119b393b03"),
-    ("tests/vault_test.rs", "1a2f5f04dc97d7145cc097dd96037181f9bb1bd752a3e019fea04d54c85b56e8"),
-    ("tests/vault_test.rs", "2c8a0dccb8864c8bf3c03930138ff32f9aed86e9eef9d9b045bf9366d380dabc"),
+    ("tests/vault_test.rs", "2435b1c5a74566a35f6315688f9fa688b17b89c8a2df48bc8e58d215362432fb"),
     ("tests/vault_test.rs", "3b2e59cacdb6faaf60367ab084b8e1ec923d6d35dcbd4490146c843a56da6385"),
     ("tests/vault_test.rs", "45344ab799802b0896440358f6b224fa1f5019a25bc5a63b803efe1179f8be37"),
-    ("tests/vault_test.rs", "4f20afe58598a36d2a34bb228ffe650a986fd5df8a54e050fed20fbf8ff83f4b"),
+    ("tests/vault_test.rs", "478cf9eb89e82f4e9be7c26152957fffe420a7372053fa9238e2b58e8878e97f"),
+    ("tests/vault_test.rs", "65cf037ff74797d1532d6352354fc2fc3cb07b8ef20ef55b560bf707f82f0aa6"),
     ("tests/vault_test.rs", "692f9824adad2f4f96b856a7f0c0ed6a33643d2b59bb39980302757ae31aa9d3"),
+    ("tests/vault_test.rs", "6cc8b7f5a30477092487c294df6f4074d61cd8b41bb999935790057ebed030d0"),
     ("tests/vault_test.rs", "772d21645cff08041014e9f1ce38e88e8013775e1af7b3a8ddc3e30fa7c70dd4"),
-    ("tests/vault_test.rs", "78ccbd330254e994656075d473e21e7de9f16c2a606bd019a04650fd02c85cfc"),
     ("tests/vault_test.rs", "7bb6926482b52ed4a571c51db794874cfd0f9745292e51736bcbf8a2297ad814"),
     ("tests/vault_test.rs", "8396d7e5dc9a8e3292764e9ecb5f6983721b59d4ad3197aaf3c1dd4a379f01ac"),
     ("tests/vault_test.rs", "89c97a6a31bc2e5963085389b2aa8edca06b37fc90ad4e8eb65ea8e1b5686ce0"),
     ("tests/vault_test.rs", "8be6d7d3ae5e47365aa9e3b1f07a04335e2f6bada13a09b4c6ef84a7fa6551da"),
+    ("tests/vault_test.rs", "989c600b0a5e9bb60896268c8971a91f48e29682a4526c477da29b6cb62ffbe8"),
     ("tests/vault_test.rs", "acd22a86ddd1de4fbd4229b311b97600fdb78debf990e33cdb053b4e635e1dd6"),
     ("tests/vault_test.rs", "b82ce7e261085bfd7f05816ec8734f1b68132d6a0089cc87b37121122fd03a48"),
     ("tests/vault_test.rs", "cf45fec9cf2fd376d5f60bf2c83cd8966352202593d928e3326d0ef35d1330f2"),
@@ -195,10 +198,31 @@ def is_exact_credential_fixture(rel_path: str, exact_token: str) -> bool:
     return (repo_rel, token_hash) in EXACT_CREDENTIAL_FIXTURE_HASHES
 
 
-def is_exact_pem_line_fixture(rel_path: str, line: str) -> bool:
+def extract_pem_block(lines: list[str], start_idx: int) -> str:
+    block: list[str] = []
+    for j in range(start_idx, min(start_idx + 25, len(lines))):
+        s = lines[j].strip()
+        block.append(s)
+        if j > start_idx and PRIVATE_KEY_END_RE.search(s):
+            break
+        if j > start_idx and (s == "" or s.endswith(";") or s == "];"):
+            break
+        if j == start_idx and PRIVATE_KEY_END_RE.search(s):
+            break
+        if j == start_idx and s.startswith("!") and ".contains(" in s:
+            break
+        if j == start_idx and s.startswith("//"):
+            break
+        if j == start_idx and s.endswith("\","):
+            break
+    return "\n".join(block)
+
+
+def is_exact_pem_block_fixture(rel_path: str, lines: list[str], start_idx: int) -> bool:
     repo_rel = _strip_archive_prefix(rel_path)
-    line_hash = hashlib.sha256(line.strip().encode("utf-8")).hexdigest()
-    return (repo_rel, line_hash) in EXACT_PEM_LINE_FIXTURE_HASHES
+    full_block = extract_pem_block(lines, start_idx)
+    block_hash = hashlib.sha256(full_block.encode("utf-8")).hexdigest()
+    return (repo_rel, block_hash) in EXACT_PEM_BLOCK_FIXTURE_HASHES
 
 
 def scan_text_for_secrets(rel_path: str, text: str) -> list[str]:
@@ -206,9 +230,9 @@ def scan_text_for_secrets(rel_path: str, text: str) -> list[str]:
     lines = text.splitlines()
     for idx, line in enumerate(lines, start=1):
         if PRIVATE_KEY_HEADER_RE.search(line):
-            if not is_exact_pem_line_fixture(rel_path, line):
+            if not is_exact_pem_block_fixture(rel_path, lines, idx - 1):
                 errors.append(
-                    f"Unallowlisted private key header at '{rel_path}:{idx}'"
+                    f"Unallowlisted private key block at '{rel_path}:{idx}'"
                 )
 
         for m in PROVIDER_CREDENTIAL_RE.finditer(line):
