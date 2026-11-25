@@ -1331,41 +1331,49 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
                     let c_bytes = c.as_bytes();
                     let c_str = std::ffi::CString::new(c_bytes).map_err(|e| e.to_string())?;
 
-                    let mut next_fd = unsafe {
-                        openat(
-                            curr_guard.0,
-                            c_str.as_ptr(),
-                            unix_flags::O_RDONLY
-                                | unix_flags::O_DIRECTORY
-                                | unix_flags::O_NOFOLLOW
-                                | unix_flags::O_CLOEXEC,
-                            0,
-                        )
-                    };
+                    let next_fd = {
+                        let fd = unsafe {
+                            openat(
+                                curr_guard.0,
+                                c_str.as_ptr(),
+                                unix_flags::O_RDONLY
+                                    | unix_flags::O_DIRECTORY
+                                    | unix_flags::O_NOFOLLOW
+                                    | unix_flags::O_CLOEXEC,
+                                0,
+                            )
+                        };
 
-                    #[cfg(target_os = "macos")]
-                    if next_fd < 0 {
-                        let err = io::Error::last_os_error();
-                        if err.kind() == io::ErrorKind::PermissionDenied
-                            || err.raw_os_error() == Some(13)
-                        {
-                            // On macOS, execute-only directories (e.g. 0o711 under /private/var/folders)
-                            // deny O_RDONLY but allow O_SEARCH (O_EXEC=0x40000000 | O_DIRECTORY) while
-                            // preserving strict descriptor-relative openat + O_NOFOLLOW guarantees.
-                            const MACOS_O_SEARCH: i32 = 0x4000_0000;
-                            next_fd = unsafe {
-                                openat(
-                                    curr_guard.0,
-                                    c_str.as_ptr(),
-                                    MACOS_O_SEARCH
-                                        | unix_flags::O_DIRECTORY
-                                        | unix_flags::O_NOFOLLOW
-                                        | unix_flags::O_CLOEXEC,
-                                    0,
-                                )
-                            };
-                        }
-                    }
+                        #[cfg(target_os = "macos")]
+                        let fd = if fd < 0 {
+                            let err = io::Error::last_os_error();
+                            if err.kind() == io::ErrorKind::PermissionDenied
+                                || err.raw_os_error() == Some(13)
+                            {
+                                // On macOS, execute-only directories (e.g. 0o711 under /private/var/folders)
+                                // deny O_RDONLY but allow O_SEARCH (O_EXEC=0x40000000 | O_DIRECTORY) while
+                                // preserving strict descriptor-relative openat + O_NOFOLLOW guarantees.
+                                const MACOS_O_SEARCH: i32 = 0x4000_0000;
+                                unsafe {
+                                    openat(
+                                        curr_guard.0,
+                                        c_str.as_ptr(),
+                                        MACOS_O_SEARCH
+                                            | unix_flags::O_DIRECTORY
+                                            | unix_flags::O_NOFOLLOW
+                                            | unix_flags::O_CLOEXEC,
+                                        0,
+                                    )
+                                }
+                            } else {
+                                fd
+                            }
+                        } else {
+                            fd
+                        };
+
+                        fd
+                    };
 
                     if next_fd < 0 {
                         let err = io::Error::last_os_error();
