@@ -115,26 +115,26 @@ EXACT_CREDENTIAL_FIXTURE_HASHES: set[tuple[str, str]] = {
 # Exact (repo_relative_path, sha256(full_pem_block)) allowlist for synthetic PEM
 # stream-sanitizer test blocks in `tests/vault_test.rs` (never real private keys).
 EXACT_PEM_BLOCK_FIXTURE_HASHES: set[tuple[str, str]] = {
-    ("tests/vault_test.rs", "05718c3b0c5421b1d7aacf9783cd5db571ef90c44c94b8937705b1119b393b03"),
-    ("tests/vault_test.rs", "2435b1c5a74566a35f6315688f9fa688b17b89c8a2df48bc8e58d215362432fb"),
+    ("tests/vault_test.rs", "00832ad52add789b11e387a8606ba5c76ef950fec25e0ebe4d3e61d64f2a2d0a"),
+    ("tests/vault_test.rs", "1a2f5f04dc97d7145cc097dd96037181f9bb1bd752a3e019fea04d54c85b56e8"),
+    ("tests/vault_test.rs", "2b5cdb0725696de5633778ac568f7a45d5c05342c32a80cef707ca7a6b19104a"),
+    ("tests/vault_test.rs", "350f4e23d888ab2fafc040c10360ee6e5d14ed0cdb431f8943a5c67ed353b73a"),
     ("tests/vault_test.rs", "3b2e59cacdb6faaf60367ab084b8e1ec923d6d35dcbd4490146c843a56da6385"),
-    ("tests/vault_test.rs", "45344ab799802b0896440358f6b224fa1f5019a25bc5a63b803efe1179f8be37"),
-    ("tests/vault_test.rs", "478cf9eb89e82f4e9be7c26152957fffe420a7372053fa9238e2b58e8878e97f"),
-    ("tests/vault_test.rs", "65cf037ff74797d1532d6352354fc2fc3cb07b8ef20ef55b560bf707f82f0aa6"),
-    ("tests/vault_test.rs", "692f9824adad2f4f96b856a7f0c0ed6a33643d2b59bb39980302757ae31aa9d3"),
-    ("tests/vault_test.rs", "6cc8b7f5a30477092487c294df6f4074d61cd8b41bb999935790057ebed030d0"),
+    ("tests/vault_test.rs", "429d7179e24153dc470ec5c3a84f24710a25871c039138bd10f47f11a358e136"),
+    ("tests/vault_test.rs", "4f20afe58598a36d2a34bb228ffe650a986fd5df8a54e050fed20fbf8ff83f4b"),
+    ("tests/vault_test.rs", "6a4e211025986c133351f139036025b573e94e2f3d7d9b2070ff72cbddbd0e32"),
     ("tests/vault_test.rs", "772d21645cff08041014e9f1ce38e88e8013775e1af7b3a8ddc3e30fa7c70dd4"),
-    ("tests/vault_test.rs", "7bb6926482b52ed4a571c51db794874cfd0f9745292e51736bcbf8a2297ad814"),
     ("tests/vault_test.rs", "8396d7e5dc9a8e3292764e9ecb5f6983721b59d4ad3197aaf3c1dd4a379f01ac"),
     ("tests/vault_test.rs", "89c97a6a31bc2e5963085389b2aa8edca06b37fc90ad4e8eb65ea8e1b5686ce0"),
     ("tests/vault_test.rs", "8be6d7d3ae5e47365aa9e3b1f07a04335e2f6bada13a09b4c6ef84a7fa6551da"),
-    ("tests/vault_test.rs", "989c600b0a5e9bb60896268c8971a91f48e29682a4526c477da29b6cb62ffbe8"),
+    ("tests/vault_test.rs", "8d68e13344444b131f8cf10680eff89e166661e09b64cccc4c03e1b406fc0eb4"),
     ("tests/vault_test.rs", "acd22a86ddd1de4fbd4229b311b97600fdb78debf990e33cdb053b4e635e1dd6"),
-    ("tests/vault_test.rs", "b82ce7e261085bfd7f05816ec8734f1b68132d6a0089cc87b37121122fd03a48"),
+    ("tests/vault_test.rs", "cb1a98c8b58a5b9a385178f28c15d29de7c8ecc6341672594fad8e4413e6722d"),
     ("tests/vault_test.rs", "cf45fec9cf2fd376d5f60bf2c83cd8966352202593d928e3326d0ef35d1330f2"),
-    ("tests/vault_test.rs", "d6c3a60f65d841d1508b9385b2ffce7f0908f7435d73f8d5ed65b5b4be409916"),
+    ("tests/vault_test.rs", "d708aaa7aed6c96c24ee03571d9f8943526494bef62cafc7416c312a7de14301"),
     ("tests/vault_test.rs", "d89c8ff38668baa12b0e0c30b5f6719e49e934ff3a9b7735b906ff9629c45837"),
     ("tests/vault_test.rs", "ddd3a5b6f707da1c31e8a20a1e02cbc4c47f1b1a22b9e24380df8470d7926eaa"),
+    ("tests/vault_test.rs", "fc598ebf2053df1b578b837b8cfcbaaa6cd5595a5ce65b47efb29130e51148c6"),
 }
 
 
