@@ -18,10 +18,67 @@ We actively maintain and provide security patches for the following versions:
 
 ## Core Security Tenets
 
-1. **Zero-Knowledge Architecture:** SecretGuard never transmits your raw credentials, shell history, or encryption keys to any external servers or telemetry backends.
-2. **Sub-Millisecond In-Memory Execution:** All regex evaluation, entropy computation, and redaction occur in volatile process RAM with zero persistent intermediate disk logging.
-3. **Ghost Token Air-Gap:** AI coding agents (Claude Code, Cursor, Aider, Devin) are fed polymorphic decoy tokens; LLM provider prompt contexts are strictly air-gapped from production credentials.
-4. **Hardware-Isolated Cryptography:** Keystores are encrypted using AES-256-GCM authenticated encryption paired with Argon2id key derivation.
+1. **Local-First & Zero Telemetry:** Core scanning, shell line interception, local vault encryption, Ghost Token generation, and audit logging run 100% offline with zero telemetry. Outbound HTTPS calls occur only when explicitly invoked (`immune`/`panic` upstream checks, delegated broker calls, or installer verification).
+2. **In-Memory Execution:** Regex evaluation, entropy computation, and redaction occur in process memory without writing plaintext secrets to intermediate logs.
+3. **Ghost Token Air-Gap:** AI coding agents are fed format-preserving decoy tokens; raw credentials are kept out of LLM prompt contexts and mediated through the local Security Broker.
+4. **Authenticated Encryption:** Keystores are encrypted using AES-256-GCM authenticated encryption paired with Argon2id / HKDF-SHA256 key derivation.
+
+---
+
+## Threat Model & Trust Boundaries
+
+### What SecretGuard Defends Against
+- **Accidental Terminal & Shell History Leaks:** Intercepts credentials in shell buffers (`zsh`, `bash`, `powershell`) and `vault run` output streams before they hit history files or terminal logs.
+- **Git & Codebase Leaks:** Pre-commit and repository scanning (`scan`, `audit git`) catch secrets before commits reach remotes.
+- **AI Agent & MCP Context Exposure:** Isolates raw secrets behind Ghost Tokens, policy-enforced broker operations, repository allowlists, and kernel-verified IPC peer identity (`SO_PEERCRED` / `GetExtendedTcpTable`).
+- **SSRF & URL Userinfo Spoofing:** Parses URLs once, rejects `@` userinfo, blocks private/loopback/metadata IPs, and pins resolved DNS destinations.
+- **Filesystem Symlink / TOCTOU Races:** Uses descriptor-relative `openat(..., O_NOFOLLOW)` traversal on Unix and ancestor directory handle anchoring (`FILE_SHARE_DELETE` omitted) on Windows.
+
+### What SecretGuard Does NOT Defend Against
+- **Root / Administrator Compromise:** A privileged `root` or `Administrator` attacker can read process memory, replace binaries, or bypass OS file permissions.
+- **Same-UID Kernel Debugging / Process Injection:** Processes running under the same OS user without separate OS-user isolation can attach debuggers (`ptrace`, `ReadProcessMemory`) unless restricted by OS-level policies.
+- **Zero-Day / Unknown Custom Formats:** SecretGuard is a **defense-in-depth** tool; regex + entropy heuristics cannot guarantee 100% detection of arbitrary or custom-encoded secrets.
+
+---
+
+## Known Limitations
+
+- **Installer Authenticity Verification (`install.sh`):** `install.sh` **fails closed** if `gh` CLI is unavailable (unless `SECRETGUARD_MINISIGN_PUBKEY` is explicitly pinned). SHA-256 checksums verify download integrity only, not release authenticity.
+- **Continuous Agent Containment:** The agent firewall (`firewall`) inspects the wrapped command and output streams, but cannot intercept every subsequent child syscall or network packet outside the broker without OS sandboxing.
+- **Upstream Revocation (`immune` / `panic`):** Local vault/lifecycle quarantine is immediate and offline, whereas upstream provider revocation/status checks require outbound HTTPS connectivity and provider API support.
+
+---
+
+## Release Verification Guide
+
+Verify both **integrity** (SHA-256) and **authenticity/provenance** (Sigstore SLSA via GitHub CLI) before running any downloaded release binary:
+
+### Linux / macOS
+```bash
+# 1. Integrity check
+sha256sum -c secretguard-<TARGET>.tar.gz.sha256   # or: shasum -a 256 -c ...
+
+# 2. Authenticity & SLSA provenance check
+gh attestation verify secretguard-<TARGET>.tar.gz \
+  --repo hemanathk636/secretguard \
+  --signer-workflow hemanathk636/secretguard/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.0.0 \
+  --deny-self-hosted-runners
+```
+
+### Windows (PowerShell)
+```powershell
+# 1. Integrity check
+Get-FileHash .\secretguard-x86_64-pc-windows-msvc.zip -Algorithm SHA256
+Get-Content .\secretguard-x86_64-pc-windows-msvc.zip.sha256
+
+# 2. Authenticity & SLSA provenance check
+gh attestation verify .\secretguard-x86_64-pc-windows-msvc.zip `
+  --repo hemanathk636/secretguard `
+  --signer-workflow hemanathk636/secretguard/.github/workflows/release.yml `
+  --source-ref refs/tags/v1.0.0 `
+  --deny-self-hosted-runners
+```
 
 ---
 

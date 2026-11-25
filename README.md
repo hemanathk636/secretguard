@@ -501,6 +501,17 @@ Download the compiled binary directly from [**GitHub Releases**](https://github.
 * **Linux (x86_64):** `secretguard-x86_64-unknown-linux-gnu.tar.gz`
 * **Windows (x86_64):** `secretguard-x86_64-pc-windows-msvc.zip`
 
+### 5. Verify Release Integrity & Authenticity
+Verify both the `.sha256` checksum and the Sigstore/SLSA provenance attestation (requires `gh` CLI; `install.sh` enforces this automatically and fails closed if `gh` is absent):
+```bash
+gh attestation verify secretguard-<TARGET>.tar.gz \
+  --repo hemanathk636/secretguard \
+  --signer-workflow hemanathk636/secretguard/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.0.0 \
+  --deny-self-hosted-runners
+```
+See [SECURITY.md](SECURITY.md) for the full **Threat Model, Trust Boundaries, Known Limitations**, and Windows PowerShell verification commands.
+
 ---
 
 ## 📦 What's New in v1.0.0 (Production General Availability & Cryptographic Attestation)
