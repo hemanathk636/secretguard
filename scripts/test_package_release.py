@@ -174,7 +174,7 @@ class TestReleasePackagerSecurity(unittest.TestCase):
             self.assertTrue(len(errs) > 0, f"Generic marker must not exempt: {line!r}")
 
     def test_allowlisted_fixture_does_not_suppress_second_credential_on_same_line(self):
-        # `ghp_test1234567890abcdef` is allowlisted ONLY for `src/lifecycle.rs`
+        # The synthetic fixture below is allowlisted ONLY for `src/lifecycle.rs`
         allowlisted = "ghp_" + "test1234567890abcdef"
         real_second = "ghp_" + "RealSecretHiddenOnSameLine987654321"
         line = f'let pair = ("{allowlisted}", "{real_second}");\n'
