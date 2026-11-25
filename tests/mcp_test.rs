@@ -79,7 +79,14 @@ fn test_authenticated_ipc_and_lifecycle_integration() {
     use secretguard::lifecycle::LifecycleManager;
 
     let test_dir = std::env::temp_dir().join(format!("sg_ipc_test_{}", std::process::id()));
+    let test_dir =
+        secretguard::vault::resolve_canonical_security_path(&test_dir).unwrap_or(test_dir);
     let _ = std::fs::create_dir_all(&test_dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&test_dir, std::fs::Permissions::from_mode(0o700));
+    }
     std::env::set_var("SECRETGUARD_DIR", &test_dir);
 
     let server = IpcServer::new();
@@ -145,7 +152,14 @@ fn test_unauthenticated_ipc_and_invalid_tokens_rejected() {
     use secretguard::ipc::{IpcMessage, IpcServer};
 
     let test_dir = std::env::temp_dir().join(format!("sg_ipc_reject_test_{}", std::process::id()));
+    let test_dir =
+        secretguard::vault::resolve_canonical_security_path(&test_dir).unwrap_or(test_dir);
     let _ = std::fs::create_dir_all(&test_dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&test_dir, std::fs::Permissions::from_mode(0o700));
+    }
     std::env::set_var("SECRETGUARD_DIR", &test_dir);
 
     let server = IpcServer::new();
