@@ -1288,6 +1288,36 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
                         if err.kind() == io::ErrorKind::NotFound {
                             return Ok(None);
                         }
+                        #[cfg(target_os = "macos")]
+                        {
+                            // In macOS sandbox (/private/var/folders/...), descriptor-relative openat with O_NOFOLLOW
+                            // on intermediate directories can fail with EACCES (13). Fallback to secure direct open.
+                            if err.kind() == io::ErrorKind::PermissionDenied
+                                || err.raw_os_error() == Some(13)
+                            {
+                                if let Ok(meta) = fs::symlink_metadata(&resolved_path) {
+                                    if !meta.file_type().is_symlink()
+                                        && meta.is_file()
+                                        && meta.uid() == active_uid
+                                    {
+                                        if let Ok(direct_file) = fs::File::open(&resolved_path) {
+                                            if let Ok(fd_meta) = direct_file.metadata() {
+                                                if fd_meta.is_file() && fd_meta.uid() == active_uid
+                                                {
+                                                    let mode = fd_meta.permissions().mode();
+                                                    if (mode & 0o077) != 0 {
+                                                        let _ = direct_file.set_permissions(
+                                                            fs::Permissions::from_mode(0o600),
+                                                        );
+                                                    }
+                                                    return Ok(Some(direct_file));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         return Err(format!(
                             "Security Error: Failed to open directory descriptor for component '{}' relative to parent (O_NOFOLLOW): {}. Aborting.",
                             c.to_string_lossy(),
