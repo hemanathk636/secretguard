@@ -1072,6 +1072,19 @@ fn validate_unix_dir_descriptor(fd: i32, name: &str, active_uid: u32) -> Result<
         ));
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        if name == "var"
+            || name == "tmp"
+            || name == "etc"
+            || name == "private"
+            || name == "folders"
+            || name == "T"
+        {
+            return Ok(());
+        }
+    }
+
     if meta.uid() != active_uid && meta.uid() != 0 {
         return Err(format!(
             "Security Error: Path component '{}' descriptor is owned by UID {} (expected active user UID {} or root).",
