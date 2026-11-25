@@ -85,6 +85,7 @@ SYNTHETIC_FIXTURE_MARKERS = (
     "prefixPart12345",
     "998877",
     "validTokenPrefix",
+    "abc12345678901234567890",
 )
 
 
