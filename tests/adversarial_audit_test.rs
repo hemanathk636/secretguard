@@ -19,6 +19,11 @@ fn setup_isolated_test_env(test_name: &str) -> (std::path::PathBuf, impl Drop) {
     let temp_dir =
         secretguard::vault::resolve_canonical_security_path(&temp_dir).unwrap_or(temp_dir);
     let _ = fs::create_dir_all(&temp_dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&temp_dir, fs::Permissions::from_mode(0o700));
+    }
     std::env::set_var("SECRETGUARD_DIR", &temp_dir);
 
     struct Guard(std::path::PathBuf);

@@ -1316,6 +1316,31 @@ pub fn open_secure_file_for_read(path: &Path) -> Result<Option<fs::File>, String
             if err.kind() == io::ErrorKind::NotFound {
                 return Ok(None);
             }
+
+            // On some Unix platforms (such as macOS sandbox /private/var/folders/ temporary directories),
+            // descriptor-relative openat(curr_guard.0, ...) on dynamically created files can return EACCES (os error 13).
+            // When EACCES occurs, fallback to direct open ONLY after strictly validating with symlink_metadata
+            // that the file is not a symlink, is a regular file, and is owned by active_uid.
+            if err.kind() == io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(13) {
+                if let Ok(meta) = fs::symlink_metadata(&resolved_path) {
+                    if !meta.file_type().is_symlink() && meta.is_file() && meta.uid() == active_uid
+                    {
+                        if let Ok(direct_file) = fs::File::open(&resolved_path) {
+                            if let Ok(fd_meta) = direct_file.metadata() {
+                                if fd_meta.is_file() && fd_meta.uid() == active_uid {
+                                    let mode = fd_meta.permissions().mode();
+                                    if (mode & 0o077) != 0 {
+                                        let _ = direct_file
+                                            .set_permissions(fs::Permissions::from_mode(0o600));
+                                    }
+                                    return Ok(Some(direct_file));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             return Err(format!(
                 "Security Error: Failed to open target file '{}' relative to parent descriptor (O_NOFOLLOW): {}. Aborting.",
                 resolved_path.display(),
