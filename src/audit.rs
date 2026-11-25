@@ -44,15 +44,12 @@ pub fn get_or_create_audit_key() -> Result<[u8; 32], std::io::Error> {
         }
     }
 
-    if key_path.exists() {
-        let meta = fs::symlink_metadata(&key_path)?;
-        if meta.file_type().is_symlink() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "Security Alert: audit.hmac.key is an untrusted symlink",
-            ));
-        }
-        let data = fs::read(&key_path)?;
+    if let Some(mut file) = crate::vault::open_secure_file_for_read(&key_path)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?
+    {
+        use std::io::Read;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
         if data.len() == 32 {
             let mut k = [0u8; 32];
             k.copy_from_slice(&data);
@@ -474,31 +471,38 @@ impl AuditLedger {
             .map(PathBuf::from)
             .unwrap_or_else(Self::get_default_path);
         let path = crate::vault::resolve_canonical_security_path(&path).unwrap_or(path);
-        if !path.exists() {
-            return Ok(Self::new());
-        }
 
-        let meta = fs::symlink_metadata(&path)
-            .map_err(|e| format!("Failed to read audit metadata: {}", e))?;
-        if meta.file_type().is_symlink() {
-            return Err("Security Error: Audit ledger is an untrusted symlink!".to_string());
-        }
-
+        use std::io::Read;
         let mut attempts = 0;
-        let data = loop {
-            match fs::read(&path) {
-                Ok(d) => break d,
+        let file_opt = loop {
+            match crate::vault::open_secure_file_for_read(&path) {
+                Ok(f) => break f,
                 Err(e)
                     if attempts < 5
-                        && (e.kind() == std::io::ErrorKind::PermissionDenied
-                            || e.raw_os_error() == Some(32)) =>
+                        && (e.contains("Permission denied")
+                            || e.contains("Win32 error: 32")
+                            || e.contains("os error 13")) =>
                 {
                     attempts += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(15));
+                    std::thread::sleep(std::time::Duration::from_millis(20));
                 }
                 Err(e) => return Err(format!("Failed to read audit ledger: {}", e)),
             }
         };
+
+        let mut file = match file_opt {
+            Some(f) => f,
+            None => return Ok(Self::new()),
+        };
+
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .map_err(|e| format!("Failed to read audit ledger: {}", e))?;
+
+        if data.is_empty() {
+            return Ok(Self::new());
+        }
+
         let ledger: Self = serde_json::from_slice(&data)
             .map_err(|e| format!("Invalid audit JSON format: {}", e))?;
 

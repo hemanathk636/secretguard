@@ -199,18 +199,28 @@ impl LifecycleManager {
         let path = custom_path
             .map(PathBuf::from)
             .unwrap_or_else(Self::get_default_path);
-        if !path.exists() {
-            return Ok(Self::new());
+        let path = crate::vault::resolve_canonical_security_path(&path).unwrap_or(path);
+        if let Some(mut file) = crate::vault::open_secure_file_for_read(&path)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?
+        {
+            use std::io::Read;
+            let mut data = String::new();
+            file.read_to_string(&mut data)?;
+            if data.trim().is_empty() {
+                return Ok(Self::new());
+            }
+            serde_json::from_str(&data)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        } else {
+            Ok(Self::new())
         }
-        let data = fs::read_to_string(&path)?;
-        serde_json::from_str(&data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     pub fn save(&self, custom_path: Option<&Path>) -> Result<(), std::io::Error> {
         let path = custom_path
             .map(PathBuf::from)
             .unwrap_or_else(Self::get_default_path);
+        let path = crate::vault::resolve_canonical_security_path(&path).unwrap_or(path);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let _ = fs::create_dir_all(parent);
 
@@ -225,7 +235,7 @@ impl LifecycleManager {
             let _ = fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600));
         }
 
-        fs::rename(tmp_path, path)
+        crate::vault::atomic_replace_file(&tmp_path, &path).map_err(std::io::Error::other)
     }
 
     pub fn record_usage(&mut self, name: &str) -> bool {
