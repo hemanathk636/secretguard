@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: |
           FAILED_TESTS=$(grep -E "test .* \.\.\. FAILED" test_output.log | head -n 5 || echo "No FAILED line")
-          PANIC_INFO=$(grep -E "panicked at" test_output.log | head -n 5 || echo "No panic line")
+          PANIC_INFO=$(grep -A 4 -E "panicked at" test_output.log | head -n 10 | tr '\n' ' ' | tr '"' "'" || echo "No panic line")
           LAST_LINES=$(tail -n 10 test_output.log | tr '\n' ' ' | tr '"' "'")
           echo "::error title=FailedTest::$FAILED_TESTS"
           echo "::error title=PanicLocation::$PANIC_INFO"
