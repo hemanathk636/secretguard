@@ -219,6 +219,7 @@ pub mod win32 {
     pub const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
     pub const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x00000400;
     pub const SE_FILE_OBJECT: i32 = 1;
+    pub const ACL_REVISION: u32 = 2;
 
     #[repr(C)]
     #[derive(Default, Debug)]
@@ -356,6 +357,162 @@ pub mod win32 {
             pOwner: *mut *mut c_void,
             lpbOwnerDefaulted: *mut i32,
         ) -> i32;
+
+        pub fn GetLengthSid(pSid: *const c_void) -> u32;
+        pub fn InitializeAcl(pAcl: *mut c_void, nAclLength: u32, dwAclRevision: u32) -> i32;
+        pub fn AddAccessAllowedAce(
+            pAcl: *mut c_void,
+            dwAceRevision: u32,
+            AccessMask: u32,
+            pSid: *const c_void,
+        ) -> i32;
+        pub fn SetSecurityInfo(
+            handle: *mut c_void,
+            ObjectType: i32,
+            SecurityInfo: u32,
+            psidOwner: *const c_void,
+            psidGroup: *const c_void,
+            pDacl: *const c_void,
+            pSacl: *const c_void,
+        ) -> u32;
+    }
+
+    /// Applies an explicit, protected NTFS DACL on an open file handle, disabling inheritance
+    /// and granting GENERIC_ALL only to the current user, BUILTIN\Administrators, and NT AUTHORITY\SYSTEM.
+    ///
+    /// # Safety
+    /// `h_file` must be a valid open Windows file handle with `WRITE_DAC` access.
+    pub unsafe fn set_restricted_handle_dacl(
+        h_file: *mut c_void,
+        path: &Path,
+    ) -> Result<(), String> {
+        let mut h_token: *mut c_void = std::ptr::null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut h_token) } == 0
+            || h_token.is_null()
+        {
+            return Err(format!(
+                "Security Error: Failed to open current process token while restricting ACL on '{}'.",
+                path.display()
+            ));
+        }
+
+        let mut token_len = 0u32;
+        unsafe {
+            GetTokenInformation(h_token, TokenUser, std::ptr::null_mut(), 0, &mut token_len);
+        }
+        if token_len == 0 {
+            unsafe {
+                CloseHandle(h_token);
+            }
+            return Err(format!(
+                "Security Error: Failed to size process token user while restricting ACL on '{}'.",
+                path.display()
+            ));
+        }
+
+        let mut token_buf = vec![0u8; token_len as usize];
+        let ok = unsafe {
+            GetTokenInformation(
+                h_token,
+                TokenUser,
+                token_buf.as_mut_ptr() as *mut c_void,
+                token_len,
+                &mut token_len,
+            )
+        };
+        unsafe {
+            CloseHandle(h_token);
+        }
+        if ok == 0 {
+            return Err(format!(
+                "Security Error: Failed to read process token user while restricting ACL on '{}'.",
+                path.display()
+            ));
+        }
+
+        let token_user = unsafe { &*(token_buf.as_ptr() as *const TOKEN_USER) };
+        let current_user_sid = token_user.User.Sid;
+
+        let mut admin_sid_buf = [0u8; 68];
+        let mut admin_sid_len = admin_sid_buf.len() as u32;
+        if unsafe {
+            CreateWellKnownSid(
+                WinBuiltinAdministratorsSid,
+                std::ptr::null(),
+                admin_sid_buf.as_mut_ptr() as *mut c_void,
+                &mut admin_sid_len,
+            )
+        } == 0
+        {
+            return Err("Security Error: Failed to build Administrators SID.".to_string());
+        }
+
+        let mut system_sid_buf = [0u8; 68];
+        let mut system_sid_len = system_sid_buf.len() as u32;
+        if unsafe {
+            CreateWellKnownSid(
+                WinLocalSystemSid,
+                std::ptr::null(),
+                system_sid_buf.as_mut_ptr() as *mut c_void,
+                &mut system_sid_len,
+            )
+        } == 0
+        {
+            return Err("Security Error: Failed to build SYSTEM SID.".to_string());
+        }
+
+        let sids: [*const c_void; 3] = [
+            current_user_sid as *const c_void,
+            admin_sid_buf.as_ptr() as *const c_void,
+            system_sid_buf.as_ptr() as *const c_void,
+        ];
+
+        let mut acl_size: usize = 8; // sizeof(ACL)
+        let ace_overhead = std::mem::size_of::<ACCESS_ALLOWED_ACE>() - std::mem::size_of::<u32>();
+        for &sid in &sids {
+            acl_size += ace_overhead + unsafe { GetLengthSid(sid) } as usize;
+        }
+        // Align to 4 bytes
+        acl_size = (acl_size + 3) & !3;
+
+        let mut acl_buf = vec![0u8; acl_size];
+        let p_acl = acl_buf.as_mut_ptr() as *mut c_void;
+        if unsafe { InitializeAcl(p_acl, acl_size as u32, ACL_REVISION) } == 0 {
+            return Err(format!(
+                "Security Error: InitializeAcl failed for '{}'.",
+                path.display()
+            ));
+        }
+
+        for &sid in &sids {
+            if unsafe { AddAccessAllowedAce(p_acl, ACL_REVISION, GENERIC_ALL, sid) } == 0 {
+                return Err(format!(
+                    "Security Error: AddAccessAllowedAce failed for '{}'.",
+                    path.display()
+                ));
+            }
+        }
+
+        let status = unsafe {
+            SetSecurityInfo(
+                h_file,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null(),
+                std::ptr::null(),
+                p_acl,
+                std::ptr::null(),
+            )
+        };
+        if status != 0 {
+            return Err(format!(
+                "Security Error: SetSecurityInfo failed to restrict DACL on '{}' (Win32 error: {}).",
+                path.display(),
+                status
+            ));
+        }
+
+        Ok(())
     }
 
     pub fn to_wide_null(path: &Path) -> Vec<u16> {
@@ -1717,7 +1874,7 @@ pub fn create_secure_file_exclusive(path: &Path, mode: u32) -> Result<fs::File, 
         let h_target = unsafe {
             win32::CreateFileW(
                 wide_target.as_ptr(),
-                win32::GENERIC_READ | win32::GENERIC_WRITE | win32::READ_CONTROL,
+                win32::GENERIC_READ | win32::GENERIC_WRITE | win32::READ_CONTROL | win32::WRITE_DAC,
                 0, // Exclusive access: no sharing
                 std::ptr::null_mut(),
                 win32::CREATE_NEW,
@@ -1733,6 +1890,14 @@ pub fn create_secure_file_exclusive(path: &Path, mode: u32) -> Result<fs::File, 
                 resolved_path.display(),
                 err
             ));
+        }
+
+        if let Err(e) = unsafe { win32::set_restricted_handle_dacl(h_target, &resolved_path) } {
+            unsafe {
+                win32::CloseHandle(h_target);
+            }
+            let _ = fs::remove_file(&resolved_path);
+            return Err(e);
         }
 
         let val_res =
@@ -2023,6 +2188,7 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
 
             let mut key = [0u8; 32];
             key.copy_from_slice(&bytes);
+            volatile_zeroize(&mut bytes);
             return Ok(key);
         }
 
@@ -2066,6 +2232,27 @@ pub fn get_or_generate_master_key() -> Result<[u8; 32], String> {
     ))
 }
 
+/// Compiler-resistant best-effort zeroization of sensitive byte buffers.
+/// Note: OS paging, allocator copies, or compiler register spills prior to drop cannot be guaranteed erased.
+#[inline(never)]
+pub fn volatile_zeroize(buf: &mut [u8]) {
+    for b in buf.iter_mut() {
+        unsafe {
+            std::ptr::write_volatile(b, 0);
+        }
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Compiler-resistant best-effort zeroization of a String buffer before clearing.
+#[inline(never)]
+pub fn volatile_zeroize_str(s: &mut String) {
+    unsafe {
+        volatile_zeroize(s.as_bytes_mut());
+    }
+    s.clear();
+}
+
 /// RFC 5869 HKDF-SHA256 (Extract and Expand) using official audited `hkdf` crate
 pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], length: usize) -> Vec<u8> {
     let hk = Hkdf::<Sha256>::new(if salt.is_empty() { None } else { Some(salt) }, ikm);
@@ -2076,15 +2263,17 @@ pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], length: usize) -> Vec<u
 }
 
 pub fn derive_vault_key(passphrase: Option<&str>) -> Result<[u8; 32], String> {
-    let master = get_or_generate_master_key()?;
+    let mut master = get_or_generate_master_key()?;
     let salt = match passphrase {
         Some(pass) => pass.as_bytes(),
         None => b"secretguard_vault_rfc5869_salt_v3",
     };
     let info = b"SECRETGUARD_RFC5869_HKDF_AES256GCM_KEY";
-    let derived = hkdf_sha256(salt, &master, info, 32);
+    let mut derived = hkdf_sha256(salt, &master, info, 32);
+    volatile_zeroize(&mut master);
     let mut key = [0u8; 32];
     key.copy_from_slice(&derived[..32]);
+    volatile_zeroize(&mut derived);
     Ok(key)
 }
 
@@ -2134,11 +2323,14 @@ pub fn load_vault(passphrase: Option<&str>) -> Result<VaultStore, String> {
         )
     })?;
 
-    let key = derive_vault_key(passphrase)?;
-    let decrypted = decrypt_vault_payload(&data, &key)?;
-    let store: VaultStore = serde_json::from_slice(&decrypted)
-        .map_err(|e| format!("Failed to parse decrypted vault data: {}", e))?;
-    Ok(store)
+    let mut key = derive_vault_key(passphrase)?;
+    let decrypt_res = decrypt_vault_payload(&data, &key);
+    volatile_zeroize(&mut key);
+    let mut decrypted = decrypt_res?;
+    let store_res = serde_json::from_slice::<VaultStore>(&decrypted)
+        .map_err(|e| format!("Failed to parse decrypted vault data: {}", e));
+    volatile_zeroize(&mut decrypted);
+    store_res
 }
 
 pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), String> {
@@ -2152,10 +2344,15 @@ pub fn save_vault(store: &VaultStore, passphrase: Option<&str>) -> Result<(), St
         )
     })?;
 
-    let json_bytes =
+    let mut json_bytes =
         serde_json::to_vec(store).map_err(|e| format!("Failed to serialize vault: {}", e))?;
-    let key = derive_vault_key(passphrase)?;
-    let encrypted = encrypt_vault_payload(&json_bytes, &key)?;
+    let mut key = derive_vault_key(passphrase).inspect_err(|_| {
+        volatile_zeroize(&mut json_bytes);
+    })?;
+    let encrypt_res = encrypt_vault_payload(&json_bytes, &key);
+    volatile_zeroize(&mut json_bytes);
+    volatile_zeroize(&mut key);
+    let encrypted = encrypt_res?;
 
     // Unpredictable unique temporary file to eliminate race conditions and symlink replacement vulnerabilities
     let pid = process::id();
@@ -2945,31 +3142,19 @@ SUBCOMMANDS:
             // Security Defense: Restrict direct raw secret retrieval to interactive human developers.
             // AI coding assistants (Claude Code, Cursor, Aider, Copilot, etc.) and non-interactive scripts
             // are strictly prohibited from dumping raw secrets. AI agents must use SecretGuard Delegated Execution.
-            let my_pid = std::process::id();
-            let parent_pid = crate::identity::get_parent_pid(my_pid).unwrap_or(my_pid);
-            let caller_identity = crate::identity::IdentityContext::from_pid(parent_pid)
-                .or_else(|_| crate::identity::IdentityContext::from_pid(my_pid));
-
-            if let Ok(ref id) = caller_identity {
-                if id.requester_type == crate::identity::RequesterType::AutonomousAgent
-                    || id.requester_type == crate::identity::RequesterType::ApprovedIde
-                    || id.requester_type == crate::identity::RequesterType::McpServer
-                    || id.trust_tier < crate::identity::TrustTier::Tier3Privileged
-                {
-                    eprintln!("🛑 Security Violation: Direct raw credential retrieval via 'vault get' is restricted to interactive human developers.");
-                    eprintln!(
-                        "   Requester '{}' classified as {:?} (Tier: {:?}).",
-                        id.executable_name, id.requester_type, id.trust_tier
-                    );
-                    eprintln!("   AI agents and automated tools must perform operations using SecretGuard Broker Delegated Execution.");
-                    process::exit(1);
-                }
-            }
-
-            // Require an interactive terminal to prevent automated script scraping
             use std::io::IsTerminal;
             if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-                eprintln!("🛑 Security Violation: 'vault get' requires an interactive terminal TTY session.");
+                eprintln!("🛑 Security Violation: 'vault get' requires an interactive terminal TTY session (pipes and redirections are blocked).");
+                process::exit(1);
+            }
+
+            if let Err(reason) = crate::broker::SecurityBroker::authorize_local_secret_access(
+                crate::policy::OperationType::RawCredentialAccess,
+                key_name,
+                "vault://local",
+                true,
+            ) {
+                eprintln!("🛑 Security Violation: {}", reason);
                 process::exit(1);
             }
 
@@ -2979,14 +3164,16 @@ SUBCOMMANDS:
                 key_name
             );
             let mut confirm = String::new();
-            if std::io::stdin().read_line(&mut confirm).is_err()
-                || (confirm.trim() != "y" && confirm.trim() != "Y" && confirm.trim() != "yes")
-            {
+            let read_ok = std::io::stdin().read_line(&mut confirm).is_ok();
+            let approved =
+                read_ok && matches!(confirm.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+            volatile_zeroize_str(&mut confirm);
+            if !approved {
                 eprintln!("❌ Operation aborted by user.");
                 process::exit(1);
             }
 
-            let store = match load_vault(None) {
+            let mut store = match load_vault(None) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("❌ {}", e);
@@ -2994,9 +3181,16 @@ SUBCOMMANDS:
                 }
             };
 
-            if let Some(val) = store.secrets.get(key_name) {
+            if let Some(mut val) = store.secrets.remove(key_name) {
                 println!("{}", val);
+                volatile_zeroize_str(&mut val);
+                for (_, mut v) in store.secrets.drain() {
+                    volatile_zeroize_str(&mut v);
+                }
             } else {
+                for (_, mut v) in store.secrets.drain() {
+                    volatile_zeroize_str(&mut v);
+                }
                 eprintln!("❌ Secret '{}' not found in vault.", key_name);
                 process::exit(1);
             }
@@ -3061,6 +3255,34 @@ SUBCOMMANDS:
             let pos = split_pos.unwrap();
             let key_names = &args[1..pos];
             let cmd_parts = &args[pos + 1..];
+
+            use std::io::IsTerminal;
+            let is_tty = std::io::stdin().is_terminal();
+            if key_names.is_empty() {
+                if let Err(reason) = crate::broker::SecurityBroker::authorize_local_secret_access(
+                    crate::policy::OperationType::DelegatedProcessExec,
+                    "*",
+                    &cmd_parts[0],
+                    is_tty,
+                ) {
+                    eprintln!("🛑 Security Violation: {}", reason);
+                    process::exit(1);
+                }
+            } else {
+                for key in key_names {
+                    if let Err(reason) =
+                        crate::broker::SecurityBroker::authorize_local_secret_access(
+                            crate::policy::OperationType::DelegatedProcessExec,
+                            key,
+                            &cmd_parts[0],
+                            is_tty,
+                        )
+                    {
+                        eprintln!("🛑 Security Violation: {}", reason);
+                        process::exit(1);
+                    }
+                }
+            }
 
             let store = match load_vault(None) {
                 Ok(s) => s,

@@ -25,6 +25,7 @@ pub mod pii;
 pub mod policy;
 pub mod proxy;
 pub mod radar;
+pub mod scanner;
 pub mod self_test;
 pub mod shield;
 pub mod swapper;
@@ -33,9 +34,21 @@ pub mod timemachine;
 pub mod vault;
 pub mod verifier;
 
-use entropy::scan_contextual_entropy;
-use patterns::{get_high_confidence_patterns, SecretPattern};
+use entropy::{scan_contextual_entropy, scan_contextual_entropy_detailed};
+use patterns::get_high_confidence_patterns;
+pub use patterns::{Confidence, SecretPattern, Severity};
 use synthetic::generate_synthetic_token;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FindingMatch {
+    pub rule_id: String,
+    pub rule_name: String,
+    pub severity: Severity,
+    pub confidence: Confidence,
+    pub reason: String,
+    pub start: usize,
+    pub end: usize,
+}
 
 #[derive(Debug, Clone)]
 pub struct ScanResult {
@@ -44,17 +57,13 @@ pub struct ScanResult {
     pub synthetic_text: String,
     pub matched_rules: Vec<String>,
     pub redacted_pairs: Vec<(String, String)>,
+    pub findings: Vec<FindingMatch>,
 }
 
 #[derive(Clone)]
 pub struct SecretGuardEngine {
     patterns: Vec<SecretPattern>,
     whitelist: Vec<String>,
-}
-
-#[inline]
-fn safe_prefix(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
 }
 
 /// Strips standard ANSI terminal control and color sequences (e.g., \x1b[31m, \x1b[0m)
@@ -93,10 +102,12 @@ impl SecretGuardEngine {
         for cp in &cfg.custom_patterns {
             if let Ok(re) = regex::Regex::new(&cp.regex) {
                 patterns.push(SecretPattern {
+                    rule_id: "SG900",
                     name: Box::leak(cp.name.clone().into_boxed_str()),
                     description: Box::leak(
                         cp.description.clone().unwrap_or_default().into_boxed_str(),
                     ),
+                    severity: Severity::High,
                     regex: re,
                 });
             }
@@ -123,6 +134,7 @@ impl SecretGuardEngine {
                     synthetic_text: input.to_string(),
                     matched_rules: Vec::new(),
                     redacted_pairs: Vec::new(),
+                    findings: Vec::new(),
                 };
             }
         }
@@ -131,31 +143,26 @@ impl SecretGuardEngine {
         let mut synthetic = input.to_string();
         let mut matched_rules = Vec::new();
         let mut redacted_pairs = Vec::new();
+        let mut findings = Vec::new();
 
         // Tier 1: High-confidence structured patterns
         for p in &self.patterns {
             if p.regex.is_match(&sanitized) {
                 matched_rules.push(p.name.to_string());
-                for caps in p.regex.captures_iter(&sanitized) {
-                    let matched = caps[0].to_string();
-                    let replacement = if matched.chars().count() > 10 {
-                        format!("{}[REDACTED]", safe_prefix(&matched, 4))
-                    } else {
-                        "[REDACTED]".to_string()
-                    };
-                    redacted_pairs.push((matched, replacement));
+                for m in p.regex.find_iter(&sanitized) {
+                    let matched = m.as_str().to_string();
+                    redacted_pairs.push((matched, "[REDACTED]".to_string()));
+                    findings.push(FindingMatch {
+                        rule_id: p.rule_id.to_string(),
+                        rule_name: p.name.to_string(),
+                        severity: p.severity,
+                        confidence: Confidence::High,
+                        reason: format!("Matched provider pattern: {}", p.description),
+                        start: m.start(),
+                        end: m.end(),
+                    });
                 }
-                sanitized = p
-                    .regex
-                    .replace_all(&sanitized, |caps: &regex::Captures| {
-                        let matched = &caps[0];
-                        if matched.chars().count() > 10 {
-                            format!("{}[REDACTED]", safe_prefix(matched, 4))
-                        } else {
-                            "[REDACTED]".to_string()
-                        }
-                    })
-                    .to_string();
+                sanitized = p.regex.replace_all(&sanitized, "[REDACTED]").to_string();
 
                 synthetic = p
                     .regex
@@ -168,19 +175,36 @@ impl SecretGuardEngine {
         }
 
         // Tier 2: Contextual entropy (catches passwords, random JWTs, unknown tokens)
-        let entropy_hits = scan_contextual_entropy(&sanitized);
+        let mut entropy_hits = scan_contextual_entropy_detailed(&sanitized);
         if !entropy_hits.is_empty() {
             matched_rules.push("Contextual Entropy Password/Token".to_string());
-            for (secret_val, _, _) in entropy_hits {
-                let mock_val = generate_synthetic_token("Entropy", &secret_val);
-                let masked = if secret_val.chars().count() > 8 {
-                    format!("{}[REDACTED]", safe_prefix(&secret_val, 3))
-                } else {
-                    "[REDACTED]".to_string()
+            // Sort descending by start byte offset so in-place range replacements don't shift earlier offsets
+            entropy_hits.sort_by_key(|a| std::cmp::Reverse(a.start));
+            let mut prev_start = usize::MAX;
+            for hit in entropy_hits {
+                if hit.end > prev_start || hit.end > sanitized.len() || hit.start > hit.end {
+                    continue;
+                }
+                prev_start = hit.start;
+                let mock_val = generate_synthetic_token("Entropy", &hit.value);
+                let masked = "[REDACTED]".to_string();
+                redacted_pairs.push((hit.value.clone(), masked.clone()));
+                sanitized.replace_range(hit.start..hit.end, &masked);
+                synthetic = synthetic.replace(&hit.value, &mock_val);
+                let sev = match hit.confidence {
+                    Confidence::High => Severity::High,
+                    Confidence::Medium => Severity::Medium,
+                    Confidence::Low => Severity::Low,
                 };
-                redacted_pairs.push((secret_val.clone(), masked.clone()));
-                sanitized = sanitized.replace(&secret_val, &masked);
-                synthetic = synthetic.replace(&secret_val, &mock_val);
+                findings.push(FindingMatch {
+                    rule_id: "SG100".to_string(),
+                    rule_name: "Contextual Entropy Password/Token".to_string(),
+                    severity: sev,
+                    confidence: hit.confidence,
+                    reason: hit.reason,
+                    start: hit.start,
+                    end: hit.end,
+                });
             }
         }
 
@@ -188,9 +212,11 @@ impl SecretGuardEngine {
         let encoded_candidates = encoding::find_encoded_candidates(input);
         for (encoded_str, decoded_str) in encoded_candidates {
             let mut detected_rule = None;
+            let mut detected_conf = Confidence::Medium;
             for p in &self.patterns {
                 if p.regex.is_match(&decoded_str) {
                     detected_rule = Some(format!("Encoded ({})", p.name));
+                    detected_conf = Confidence::High;
                     break;
                 }
             }
@@ -225,15 +251,23 @@ impl SecretGuardEngine {
             }
 
             if let Some(rule) = detected_rule {
-                matched_rules.push(rule);
-                let mask = if encoded_str.chars().count() > 10 {
-                    format!("{}[REDACTED_ENCODED_SECRET]", safe_prefix(&encoded_str, 4))
-                } else {
-                    "[REDACTED_ENCODED_SECRET]".to_string()
-                };
+                matched_rules.push(rule.clone());
+                let mask = "[REDACTED_ENCODED_SECRET]".to_string();
+                let start = input.find(&encoded_str).unwrap_or(0);
+                let end = start + encoded_str.len();
                 redacted_pairs.push((encoded_str.clone(), mask.clone()));
                 sanitized = sanitized.replace(&encoded_str, &mask);
                 synthetic = synthetic.replace(&encoded_str, "[SYNTHETIC_MOCK_ENCODED_TOKEN]");
+                findings.push(FindingMatch {
+                    rule_id: "SG200".to_string(),
+                    rule_name: rule,
+                    severity: Severity::High,
+                    confidence: detected_conf,
+                    reason: "Encoded payload decoded to credential pattern or high-entropy secret"
+                        .to_string(),
+                    start,
+                    end,
+                });
             }
         }
 
@@ -244,9 +278,20 @@ impl SecretGuardEngine {
                 if p.regex.is_match(&stripped_ansi)
                     && !matched_rules.iter().any(|r| r.contains(p.name))
                 {
-                    matched_rules.push(format!("ANSI-Obfuscated ({})", p.name));
+                    let rule_name = format!("ANSI-Obfuscated ({})", p.name);
+                    matched_rules.push(rule_name.clone());
                     sanitized = "[REDACTED_ANSI_SECRET]".to_string();
                     synthetic = "[SYNTHETIC_MOCK_ANSI_TOKEN]".to_string();
+                    findings.push(FindingMatch {
+                        rule_id: "SG300".to_string(),
+                        rule_name,
+                        severity: Severity::High,
+                        confidence: Confidence::High,
+                        reason: "ANSI escape sequence obfuscating structured credential"
+                            .to_string(),
+                        start: 0,
+                        end: input.len(),
+                    });
                     break;
                 }
             }
@@ -260,6 +305,7 @@ impl SecretGuardEngine {
             synthetic_text: synthetic,
             matched_rules,
             redacted_pairs,
+            findings,
         }
     }
 }

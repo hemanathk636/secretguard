@@ -622,383 +622,101 @@ exit 0
     println!("🔒 Every 'git commit' in this repo is now shielded in <0.02ms with zero perceptible delay.\n");
 }
 
-#[derive(Default)]
-struct ScanStats {
-    files_scanned: usize,
-    lines_scanned: usize,
-    leaks_found: usize,
-    errors_encountered: usize,
-    symlinks_skipped: usize,
-    files_ignored: usize,
-    binary_files_skipped: usize,
-}
-
-fn scan_file(
-    path: &Path,
-    engine: &SecretGuardEngine,
-    json_mode: bool,
-) -> Result<(usize, usize), String> {
-    let mut file =
-        File::open(path).map_err(|e| format!("Failed to open '{}': {}", path.display(), e))?;
-
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)
-        .map_err(|e| format!("Failed to read '{}': {}", path.display(), e))?;
-
-    let is_binary = buffer.iter().take(1024).any(|&b| b == 0);
-    let mut lines_count = 0;
-    let mut leaks_count = 0;
-
-    if is_binary {
-        // Binary stream scan: scan line chunks safely without failing on invalid UTF-8
-        for (idx, chunk) in buffer.split(|&b| b == b'\n').enumerate() {
-            lines_count += 1;
-            let text = String::from_utf8_lossy(chunk);
-            let res = engine.scan_and_sanitize(&text);
-            if res.has_secret {
-                leaks_count += 1;
-                if !json_mode {
-                    println!(
-                        "⚠️  [{}:{}] Found {:?} (binary stream)\n   Redacted: {}\n",
-                        path.display(),
-                        idx + 1,
-                        res.matched_rules,
-                        res.sanitized_text.trim()
-                    );
+fn parse_scan_options(raw_args: &[String]) -> Result<secretguard::scanner::ScanOptions, String> {
+    let mut opts = secretguard::scanner::ScanOptions::default();
+    let mut target_set = false;
+    let mut i = 0;
+    while i < raw_args.len() {
+        match raw_args[i].as_str() {
+            "--json" => opts.json_mode = true,
+            "--compact" => opts.compact = true,
+            "--quiet" | "-q" => opts.quiet = true,
+            "--verbose" | "-v" => opts.verbose = true,
+            "--all" | "--all-files" | "--comprehensive" => opts.all_files = true,
+            "--exclude" => {
+                i += 1;
+                if i >= raw_args.len() {
+                    return Err("--exclude requires a pattern argument".to_string());
                 }
+                opts.excludes.push(raw_args[i].clone());
             }
-        }
-    } else {
-        let text = match std::str::from_utf8(&buffer) {
-            Ok(s) => s.to_string(),
-            Err(_) => String::from_utf8_lossy(&buffer).to_string(),
-        };
-
-        for (idx, line) in text.lines().enumerate() {
-            lines_count += 1;
-            let res = engine.scan_and_sanitize(line);
-            if res.has_secret {
-                leaks_count += 1;
-                if !json_mode {
-                    println!(
-                        "⚠️  [{}:{}] Found {:?}\n   Redacted: {}\n",
-                        path.display(),
-                        idx + 1,
-                        res.matched_rules,
-                        res.sanitized_text.trim()
-                    );
+            arg if arg.starts_with("--exclude=") => {
+                opts.excludes
+                    .push(arg.trim_start_matches("--exclude=").to_string());
+            }
+            "--include" => {
+                i += 1;
+                if i >= raw_args.len() {
+                    return Err("--include requires a pattern argument".to_string());
                 }
+                opts.includes.push(raw_args[i].clone());
             }
+            arg if arg.starts_with("--include=") => {
+                opts.includes
+                    .push(arg.trim_start_matches("--include=").to_string());
+            }
+            "--max-file-size" => {
+                i += 1;
+                if i >= raw_args.len() {
+                    return Err("--max-file-size requires a size argument (e.g. 5MB)".to_string());
+                }
+                opts.max_file_size = secretguard::scanner::parse_size_arg(&raw_args[i])?;
+            }
+            arg if arg.starts_with("--max-file-size=") => {
+                let val = arg.trim_start_matches("--max-file-size=");
+                opts.max_file_size = secretguard::scanner::parse_size_arg(val)?;
+            }
+            "--max-findings" => {
+                i += 1;
+                if i >= raw_args.len() {
+                    return Err("--max-findings requires an integer argument".to_string());
+                }
+                opts.max_findings = raw_args[i]
+                    .parse::<usize>()
+                    .map_err(|_| format!("Invalid --max-findings value '{}'", raw_args[i]))?;
+            }
+            arg if arg.starts_with("--max-findings=") => {
+                let val = arg.trim_start_matches("--max-findings=");
+                opts.max_findings = val
+                    .parse::<usize>()
+                    .map_err(|_| format!("Invalid --max-findings value '{}'", val))?;
+            }
+            arg if !arg.starts_with('-') && !target_set => {
+                opts.target = PathBuf::from(arg);
+                target_set = true;
+            }
+            unknown if unknown.starts_with('-') => {
+                return Err(format!("Unknown scan option '{}'", unknown));
+            }
+            _ => {}
         }
+        i += 1;
     }
-    Ok((lines_count, leaks_count))
+    Ok(opts)
 }
 
-fn load_ignore_patterns() -> Vec<String> {
-    let mut ignores = vec![
-        "target".to_string(),
-        "node_modules".to_string(),
-        "vendor".to_string(),
-        "dist".to_string(),
-        "build".to_string(),
-        ".git".to_string(),
-    ];
-    if let Ok(content) = std::fs::read_to_string(".secretguardignore") {
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                ignores.push(
-                    trimmed
-                        .trim_end_matches('/')
-                        .trim_end_matches('\\')
-                        .to_string(),
-                );
-            }
-        }
-    }
-    ignores
-}
-
-fn scan_dir_recursive(
-    dir: &Path,
-    engine: &SecretGuardEngine,
-    stats: &mut ScanStats,
-    json_mode: bool,
-    ignores: &[String],
-    comprehensive_mode: bool,
-) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => {
-            stats.errors_encountered += 1;
-            if !json_mode {
-                eprintln!("❌ Error reading directory '{}': {}", dir.display(), e);
-            }
-            return;
-        }
-    };
-
-    for entry_res in entries {
-        let entry = match entry_res {
-            Ok(e) => e,
-            Err(e) => {
-                stats.errors_encountered += 1;
-                if !json_mode {
-                    eprintln!(
-                        "❌ Error reading directory entry in '{}': {}",
-                        dir.display(),
-                        e
-                    );
-                }
-                continue;
-            }
-        };
-
-        let p = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        // Always skip internal .git metadata directory to prevent false alerts on git object packs
-        if name == ".git" {
-            stats.files_ignored += 1;
-            continue;
-        }
-
-        let p_str = p.to_string_lossy().replace('\\', "/");
-        if ignores.iter().any(|ig| {
-            let ig_norm = ig.replace('\\', "/");
-            name == *ig
-                || p_str.ends_with(&ig_norm)
-                || p_str.contains(&format!("/{}/", ig_norm))
-                || p_str.starts_with(&format!("{}/", ig_norm))
-        }) {
-            stats.files_ignored += 1;
-            continue;
-        }
-
-        // Strictly avoid following symlinks to prevent directory traversal loops or escapes
-        let meta = match std::fs::symlink_metadata(&p) {
-            Ok(m) => m,
-            Err(e) => {
-                stats.errors_encountered += 1;
-                if !json_mode {
-                    eprintln!("❌ Error inspecting metadata for '{}': {}", p.display(), e);
-                }
-                continue;
-            }
-        };
-
-        if meta.file_type().is_symlink() {
-            stats.symlinks_skipped += 1;
-            continue;
-        }
-
-        if meta.is_dir() {
-            scan_dir_recursive(&p, engine, stats, json_mode, ignores, comprehensive_mode);
-        } else if meta.is_file() {
-            if !comprehensive_mode {
-                if let Some(ext) = p.extension().and_then(|s| s.to_str()) {
-                    let ext_lower = ext.to_ascii_lowercase();
-                    if matches!(
-                        ext_lower.as_str(),
-                        "png"
-                            | "jpg"
-                            | "jpeg"
-                            | "gif"
-                            | "ico"
-                            | "svg"
-                            | "webp"
-                            | "bmp"
-                            | "tiff"
-                            | "pdf"
-                            | "zip"
-                            | "tar"
-                            | "gz"
-                            | "bz2"
-                            | "xz"
-                            | "7z"
-                            | "woff"
-                            | "woff2"
-                            | "ttf"
-                            | "eot"
-                            | "otf"
-                            | "mp4"
-                            | "webm"
-                            | "mp3"
-                            | "wav"
-                            | "ogg"
-                            | "exe"
-                            | "dll"
-                            | "so"
-                            | "dylib"
-                            | "bin"
-                            | "vsix"
-                            | "lock"
-                    ) {
-                        stats.binary_files_skipped += 1;
-                        continue;
-                    }
-                }
-            }
-
-            stats.files_scanned += 1;
-            match scan_file(&p, engine, json_mode) {
-                Ok((lines, leaks)) => {
-                    stats.lines_scanned += lines;
-                    stats.leaks_found += leaks;
-                }
-                Err(err) => {
-                    stats.errors_encountered += 1;
-                    if !json_mode {
-                        eprintln!("❌ {}", err);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn run_scan(
-    target_path: Option<&str>,
-    engine: &SecretGuardEngine,
-    json_mode: bool,
-    comprehensive_mode: bool,
-) {
-    let path = PathBuf::from(target_path.unwrap_or("."));
-    if !json_mode {
+fn run_scan_with_options(opts: secretguard::scanner::ScanOptions, engine: &SecretGuardEngine) {
+    if !opts.json_mode && !opts.quiet {
         println!(
             "🔍 SecretGuard Advanced Scanner: Inspecting '{}'{}...\n",
-            path.display(),
-            if comprehensive_mode {
-                " [Comprehensive Mode: inspecting all documents/archives]"
+            opts.target.display(),
+            if opts.all_files {
+                " [All Files Mode]"
             } else {
                 ""
             }
         );
     }
 
-    let mut stats = ScanStats::default();
-    let start_scan = std::time::Instant::now();
-    let ignores = load_ignore_patterns();
-
-    if path.is_file() {
-        stats.files_scanned = 1;
-        match scan_file(&path, engine, json_mode) {
-            Ok((lines, leaks)) => {
-                stats.lines_scanned = lines;
-                stats.leaks_found = leaks;
-            }
-            Err(err) => {
-                stats.errors_encountered += 1;
-                eprintln!("❌ {}", err);
-            }
+    match secretguard::scanner::execute_scan(engine, &opts) {
+        Ok(report) => {
+            let code = secretguard::scanner::render_report_and_exit_code(&report, &opts);
+            process::exit(code);
         }
-    } else if path.is_dir() {
-        scan_dir_recursive(
-            &path,
-            engine,
-            &mut stats,
-            json_mode,
-            &ignores,
-            comprehensive_mode,
-        );
-    } else {
-        eprintln!("❌ Target path '{}' does not exist.", path.display());
-        process::exit(1);
-    }
-
-    let elapsed = start_scan.elapsed();
-    let status_str = if stats.errors_encountered > 0 {
-        "incomplete"
-    } else if stats.leaks_found > 0 {
-        "findings"
-    } else {
-        "clean"
-    };
-
-    if json_mode {
-        let json_output = serde_json::json!({
-            "target": path.display().to_string(),
-            "status": status_str,
-            "clean": stats.leaks_found == 0 && stats.errors_encountered == 0,
-            "files_scanned": stats.files_scanned,
-            "files_ignored": stats.files_ignored,
-            "binary_files_skipped": stats.binary_files_skipped,
-            "symlinks_skipped": stats.symlinks_skipped,
-            "lines_scanned": stats.lines_scanned,
-            "leaks_found": stats.leaks_found,
-            "errors_encountered": stats.errors_encountered,
-            "scan_duration_ms": elapsed.as_millis(),
-            "comprehensive_mode": comprehensive_mode
-        });
-        println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
-        if stats.errors_encountered > 0 {
-            process::exit(2);
-        } else if stats.leaks_found > 0 {
+        Err(err) => {
+            eprintln!("❌ {}", err);
             process::exit(1);
-        } else {
-            process::exit(0);
         }
-    }
-
-    println!("────────────────────────────────────────────");
-    println!("Files Scanned:       {}", stats.files_scanned);
-    println!("Lines Scanned:       {}", stats.lines_scanned);
-    if stats.files_ignored > 0 {
-        println!(
-            "Files Ignored:       {} (via .secretguardignore / .git)",
-            stats.files_ignored
-        );
-    }
-    if stats.binary_files_skipped > 0 {
-        println!(
-            "Binary Files Skipped:{} (media/binary formats)",
-            stats.binary_files_skipped
-        );
-    }
-    if stats.symlinks_skipped > 0 {
-        println!(
-            "Symlinks Skipped:    {} (unfollowed)",
-            stats.symlinks_skipped
-        );
-    }
-    if stats.errors_encountered > 0 {
-        println!(
-            "Scan Errors:         {} (uninspected)",
-            stats.errors_encountered
-        );
-    }
-    println!(
-        "Scan Status:         {}",
-        match status_str {
-            "clean" => "✅ Clean (Zero unmasked credentials detected)",
-            "findings" => "🚨 Findings (Exposed credentials detected)",
-            _ => "⚠️ Incomplete (Encountered read or permission errors)",
-        }
-    );
-    println!(
-        "Execution Time:      {:.2} ms ({:.0} lines/sec)",
-        elapsed.as_secs_f64() * 1000.0,
-        if elapsed.as_secs_f64() > 0.0 {
-            stats.lines_scanned as f64 / elapsed.as_secs_f64()
-        } else {
-            0.0
-        }
-    );
-    if stats.leaks_found == 0 && stats.errors_encountered == 0 {
-        println!("✅ Clean! Zero unmasked secrets found across codebase.");
-        process::exit(0);
-    } else if stats.errors_encountered > 0 {
-        eprintln!(
-            "🚨 Scan incomplete: Encountered {} error(s) during inspection ({} leaks detected). Aborting fail-closed.",
-            stats.errors_encountered, stats.leaks_found
-        );
-        process::exit(2);
-    } else {
-        println!(
-            "🚨 Found {} exposed credentials across scanned files!",
-            stats.leaks_found
-        );
-        process::exit(1);
     }
 }
 
@@ -1087,15 +805,29 @@ $env.config.hooks.pre_execution = ($env.config.hooks.pre_execution | default [] 
             "{}",
             r#"# SecretGuard PowerShell Zero-History Hook
 # Add to $PROFILE: secretguard hook pwsh | Out-String | Invoke-Expression
+# Limitation: Excludes secrets from PSReadLine history; does not prevent visibility in Start-Transcript, process listings, or .ps1 script files.
 if (Get-Command Set-PSReadLineOption -ErrorAction SilentlyContinue) {
     Set-PSReadLineOption -AddToHistoryHandler {
         param([string]$line)
-        if ([string]::IsNullOrWhiteSpace($line) -or $line.Length -lt 15) { return $true }
-        $check = $line | secretguard check - 2>$null
-        if ($LASTEXITCODE -ne 0) {
+        if ([string]::IsNullOrWhiteSpace($line)) { return $true }
+        $sgCmd = Get-Command -CommandType Application secretguard -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $sgCmd) {
+            [Console]::Error.WriteLine("`n[secretguard] ⚠️ secretguard binary not found; excluding command from PowerShell history to fail safely.")
+            return $false
+        }
+        $prevExit = $global:LASTEXITCODE
+        $global:LASTEXITCODE = 0
+        $null = $line | & $sgCmd.Source check - 2>$null
+        $code = $LASTEXITCODE
+        $global:LASTEXITCODE = $prevExit
+        if ($code -eq 1) {
             [Console]::ForegroundColor = [ConsoleColor]::Yellow
             [Console]::Error.WriteLine("`n[secretguard] 🚨 Secret intercepted! Excluded from PowerShell history file.")
             [Console]::ResetColor()
+            return $false
+        }
+        if ($code -ne 0) {
+            [Console]::Error.WriteLine("`n[secretguard] ⚠️ SecretGuard check failed (exit $code); excluding command from PowerShell history to fail safely.")
             return $false
         }
         return $true
@@ -1312,19 +1044,21 @@ fn main() {
             }
             let sub = args[2].as_str();
             match sub {
-                "scan" => {
-                    let json_mode = args.iter().any(|a| a == "--json");
-                    let comprehensive_mode =
-                        args.iter().any(|a| a == "--all" || a == "--comprehensive");
-                    let mut target = None;
-                    for arg in &args[3..] {
-                        if arg != "--json" && arg != "--all" && arg != "--comprehensive" {
-                            target = Some(arg.as_str());
-                            break;
-                        }
-                    }
-                    run_scan(target, &engine, json_mode, comprehensive_mode);
+                "ledger" | "audit-ledger" => {
+                    let target_args = if args.len() >= 4 {
+                        args[3..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    secretguard::audit::AuditLedger::run_cli(&target_args);
                 }
+                "scan" => match parse_scan_options(&args[3..]) {
+                    Ok(opts) => run_scan_with_options(opts, &engine),
+                    Err(e) => {
+                        eprintln!("❌ {}", e);
+                        process::exit(2);
+                    }
+                },
                 "git" | "time-machine" | "timemachine" => {
                     let target_args = if args.len() >= 4 {
                         args[3..].to_vec()
@@ -1578,18 +1312,13 @@ fn main() {
             };
             secretguard::config::SecretGuardConfig::run_cli(&target_args);
         }
-        "scan" => {
-            let json_mode = args.iter().any(|a| a == "--json");
-            let comprehensive_mode = args.iter().any(|a| a == "--all" || a == "--comprehensive");
-            let mut target = None;
-            for arg in &args[2..] {
-                if arg != "--json" && arg != "--all" && arg != "--comprehensive" {
-                    target = Some(arg.as_str());
-                    break;
-                }
+        "scan" => match parse_scan_options(&args[2..]) {
+            Ok(opts) => run_scan_with_options(opts, &engine),
+            Err(e) => {
+                eprintln!("❌ {}", e);
+                process::exit(2);
             }
-            run_scan(target, &engine, json_mode, comprehensive_mode);
-        }
+        },
         "install-pre-commit" | "pre-commit" => {
             let target = if args.len() >= 3 {
                 Some(args[2].as_str())

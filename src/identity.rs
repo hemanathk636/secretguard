@@ -103,6 +103,11 @@ impl IdentityContext {
     /// Derives IdentityContext directly from the operating system kernel for a given process ID (PID)
     /// Performs non-forgeable process image query and binary hash verification.
     pub fn from_pid(pid: u32) -> Result<Self, String> {
+        Self::from_pid_with_tty(pid, false)
+    }
+
+    /// Derives IdentityContext for `pid` using an explicit verified interactive-TTY flag.
+    pub fn from_pid_with_tty(pid: u32, is_interactive_tty: bool) -> Result<Self, String> {
         let (current_exe, exe_name) = query_process_info_by_pid(pid)?;
         let binary_hash = compute_file_sha256(&current_exe);
         let (working_dir, env_hints) = if pid == std::process::id() {
@@ -118,7 +123,7 @@ impl IdentityContext {
                         .map(|p| p.to_path_buf())
                         .unwrap_or_else(|| PathBuf::from("."))
                 });
-                let mut hints = HashMap::new();
+                let mut hints = collect_environment_hints();
                 if let Ok(env_data) = std::fs::read(format!("/proc/{}/environ", pid)) {
                     for entry in env_data.split(|&b| b == 0) {
                         if let Ok(s) = std::str::from_utf8(entry) {
@@ -132,18 +137,17 @@ impl IdentityContext {
             }
             #[cfg(not(all(unix, target_os = "linux")))]
             {
-                // On Windows and macOS: External process does not inherit broker process environment or working directory
                 let cwd = current_exe
                     .parent()
                     .map(|p| p.to_path_buf())
                     .unwrap_or_else(|| PathBuf::from("."));
-                let hints = HashMap::new();
+                // Inherit current process env hints (CI, CLAUDECODE, CURSOR_AGENT, etc.) so
+                // subshells spawned by AI agents or CI runners cannot escalate to HumanInteractive.
+                let hints = collect_environment_hints();
                 (cwd, hints)
             }
         };
         let git_repo = detect_current_git_repo(&working_dir);
-
-        let is_interactive_tty = false;
 
         let lineage = collect_process_lineage(pid);
         let ppid = get_parent_pid(pid).ok();
@@ -524,6 +528,7 @@ fn collect_environment_hints() -> HashMap<String, String> {
         "VSCODE_PID",
         "CURSOR_APP_ID",
         "CLAUDE_CODE",
+        "CLAUDECODE",
         "AIDER_MODEL",
         "MCP_SERVER_NAME",
         "CI",
@@ -554,6 +559,7 @@ pub fn classify_requester_with_hash(
         || lower_exe.contains("cline")
         || lower_exe.contains("goose");
     let has_agent_env = env_hints.contains_key("CLAUDE_CODE")
+        || env_hints.contains_key("CLAUDECODE")
         || env_hints.contains_key("AIDER_MODEL")
         || env_hints.contains_key("COPILOT_AGENT")
         || env_hints.contains_key("GOOSE_PROVIDER");
@@ -604,7 +610,18 @@ pub fn classify_requester_with_hash(
         );
     }
 
-    // 4. Check for interactive human developer session or native SecretGuard executable
+    // 4. Automated build systems or CI runners must never escalate to HumanInteractive even with a pseudo-TTY
+    if env_hints.contains_key("CI")
+        || env_hints.contains_key("GITHUB_ACTIONS")
+        || lower_exe.contains("cargo")
+        || lower_exe.contains("npm")
+        || lower_exe.contains("pnpm")
+        || lower_exe.contains("python")
+    {
+        return (RequesterType::BuildOrScript, TrustTier::Tier1Restricted, 40);
+    }
+
+    // 5. Check for interactive human developer session or native SecretGuard executable
     // SECURITY: Separate executable trust from human interactive privilege!
     // A matching cryptographic binary hash establishes executable integrity, but NEVER automatically
     // grants HumanInteractive / Tier3Privileged without an actual verified interactive terminal TTY.
@@ -653,17 +670,6 @@ pub fn classify_requester_with_hash(
             TrustTier::Tier3Privileged,
             90,
         );
-    }
-
-    // 5. Automated build systems or scripts
-    if env_hints.contains_key("CI")
-        || env_hints.contains_key("GITHUB_ACTIONS")
-        || lower_exe.contains("cargo")
-        || lower_exe.contains("npm")
-        || lower_exe.contains("pnpm")
-        || lower_exe.contains("python")
-    {
-        return (RequesterType::BuildOrScript, TrustTier::Tier1Restricted, 40);
     }
 
     // 6. Unknown process

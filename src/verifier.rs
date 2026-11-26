@@ -21,11 +21,7 @@ impl KeyVerifier {
     /// Inspect and verify status of detected secrets
     pub fn verify_key(secret: &str) -> KeyVerificationResult {
         let start = std::time::Instant::now();
-        let masked = if secret.len() > 10 {
-            format!("{}[REDACTED]{}", &secret[..4], &secret[secret.len() - 3..])
-        } else {
-            "[REDACTED]".to_string()
-        };
+        let masked = "[REDACTED]".to_string();
 
         if secret.starts_with("sk-proj-") || secret.starts_with("sk-") {
             // Check OpenAI key format & structure

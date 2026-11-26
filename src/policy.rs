@@ -16,6 +16,7 @@ pub enum OperationType {
     GitPush,
     McpToolCall(String),
     RawCredentialAccess,
+    DelegatedProcessExec,
 }
 
 impl OperationType {
@@ -30,6 +31,7 @@ impl OperationType {
             OperationType::GitPush => "git:push",
             OperationType::McpToolCall(_) => "mcp:call",
             OperationType::RawCredentialAccess => "raw:read",
+            OperationType::DelegatedProcessExec => "exec:inject",
         }
     }
 }
@@ -113,6 +115,25 @@ pub struct PolicyRule {
     pub denied_operations: Vec<String>,
     pub approval_required_for: Vec<String>,
     pub delegate_only: bool,
+}
+
+/// Detailed policy evaluation trace for auditability and `policy explain`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyExplanation {
+    pub decision: AuthorizationDecision,
+    pub matched_rule_ids: Vec<String>,
+    pub denied_by: Vec<String>,
+    pub approval_required_by: Vec<String>,
+    pub allowed_by: Vec<String>,
+    pub explanation: String,
+}
+
+/// Validation result for `PolicyEngine::validate` and `secretguard policy validate`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PolicyValidationReport {
+    pub valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 /// Central Policy Engine evaluating operation requests
@@ -201,126 +222,228 @@ impl PolicyEngine {
                 approval_required_for: vec![],
                 delegate_only: true,
             },
+            // 4. Local Delegated Subprocess Injection (`vault run`) for Build/CI
+            PolicyRule {
+                id: "rule-local-delegated-exec".to_string(),
+                name: "Local Delegated Subprocess Secret Injection".to_string(),
+                allowed_roles: vec![RequesterType::BuildOrScript],
+                min_trust_tier: TrustTier::Tier1Restricted,
+                allowed_credentials: vec!["*".to_string()],
+                allowed_repositories: vec!["*".to_string()],
+                allowed_domains: vec!["*".to_string()],
+                allowed_operations: vec!["exec:inject".to_string()],
+                denied_operations: vec!["raw:read".to_string()],
+                approval_required_for: vec![],
+                delegate_only: true,
+            },
         ];
 
         Self { rules }
     }
 
-    /// Evaluates an OperationRequest against active policy rules
-    pub fn evaluate(&self, req: &OperationRequest) -> AuthorizationDecision {
-        // 0. Quarantined Credential Block
+    fn rule_matches_scope(rule: &PolicyRule, req: &OperationRequest) -> bool {
+        if !rule.allowed_roles.contains(&req.requester.requester_type) {
+            return false;
+        }
+        if req.requester.trust_tier < rule.min_trust_tier {
+            return false;
+        }
+        if !rule
+            .allowed_credentials
+            .iter()
+            .any(|c| c == "*" || c.eq_ignore_ascii_case(&req.credential_name))
+        {
+            return false;
+        }
+        if !rule.allowed_domains.iter().any(|d| d == "*") {
+            match &req.target_domain {
+                Some(dom) => {
+                    if !rule
+                        .allowed_domains
+                        .iter()
+                        .any(|d| d.eq_ignore_ascii_case(dom))
+                    {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        if !rule.allowed_repositories.iter().any(|r| r == "*") {
+            match &req.repository {
+                Some(repo) => {
+                    let repo_allowed = rule.allowed_repositories.iter().any(|r| {
+                        if r == "$CURRENT_REPO" || r == "$ACTIVE_REPO" {
+                            req.requester
+                                .git_repo
+                                .as_ref()
+                                .is_some_and(|caller_repo| caller_repo.eq_ignore_ascii_case(repo))
+                        } else {
+                            r.eq_ignore_ascii_case(repo)
+                        }
+                    });
+                    if !repo_allowed {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        true
+    }
+
+    /// Validates rule definitions and detects conflicting or malformed policies.
+    pub fn validate(&self) -> PolicyValidationReport {
+        let mut errors = Vec::new();
+        let mut warnings = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+
+        if self.rules.is_empty() {
+            warnings
+                .push("PolicyEngine has 0 rules; all requests will hit Default Deny.".to_string());
+        }
+
+        for rule in &self.rules {
+            if rule.id.trim().is_empty() {
+                errors.push(format!("Rule '{}' has an empty rule ID.", rule.name));
+            } else if !seen_ids.insert(rule.id.clone()) {
+                errors.push(format!("Duplicate policy rule ID '{}'.", rule.id));
+            }
+            if rule.allowed_roles.is_empty() {
+                errors.push(format!("Rule '{}' has empty allowed_roles.", rule.id));
+            }
+            if rule.allowed_operations.is_empty() && rule.denied_operations.is_empty() {
+                warnings.push(format!(
+                    "Rule '{}' specifies neither allowed_operations nor denied_operations.",
+                    rule.id
+                ));
+            }
+            for op in &rule.allowed_operations {
+                if rule.denied_operations.iter().any(|d| d == op || d == "*") {
+                    warnings.push(format!(
+                        "Rule '{}' lists '{}' in both allowed_operations and denied_operations (Deny takes precedence).",
+                        rule.id, op
+                    ));
+                }
+            }
+        }
+
+        // Cross-rule conflict detection
+        for (i, r1) in self.rules.iter().enumerate() {
+            for r2 in self.rules.iter().skip(i + 1) {
+                let roles_overlap = r1
+                    .allowed_roles
+                    .iter()
+                    .any(|role| r2.allowed_roles.contains(role));
+                let creds_overlap = r1.allowed_credentials.iter().any(|c1| {
+                    r2.allowed_credentials
+                        .iter()
+                        .any(|c2| c1 == "*" || c2 == "*" || c1.eq_ignore_ascii_case(c2))
+                });
+                if !roles_overlap || !creds_overlap {
+                    continue;
+                }
+                for op in &r1.allowed_operations {
+                    if r2.denied_operations.iter().any(|d| d == op || d == "*") {
+                        warnings.push(format!(
+                            "Cross-rule precedence: '{}' allows '{}' while '{}' denies '{}' (Deny overrides Allow).",
+                            r1.id, op, r2.id, op
+                        ));
+                    }
+                }
+            }
+        }
+
+        PolicyValidationReport {
+            valid: errors.is_empty(),
+            errors,
+            warnings,
+        }
+    }
+
+    /// Evaluates an OperationRequest across all matching rules with deterministic precedence:
+    /// Quarantined / Tier0 / Raw-Agent Guard > Explicit Deny > RequireHumanApproval > Allow > Default Deny.
+    pub fn evaluate_with_explanation(&self, req: &OperationRequest) -> PolicyExplanation {
         if req.credential_name.starts_with("QUARANTINED_") {
-            return AuthorizationDecision::Deny {
-                reason: format!(
-                    "Security Circuit-Breaker: Credential '{}' is in QUARANTINED state and permanently blocked from use.",
-                    req.credential_name
-                ),
+            let reason = format!(
+                "Security Circuit-Breaker: Credential '{}' is in QUARANTINED state and permanently blocked from use.",
+                req.credential_name
+            );
+            return PolicyExplanation {
+                decision: AuthorizationDecision::Deny {
+                    reason: reason.clone(),
+                },
+                matched_rule_ids: Vec::new(),
+                denied_by: vec!["circuit-breaker-quarantine".to_string()],
+                approval_required_by: Vec::new(),
+                allowed_by: Vec::new(),
+                explanation: reason,
             };
         }
 
-        // 1. Absolute Trust Tier 0 Block
         if req.requester.trust_tier == TrustTier::Tier0Blocked {
-            return AuthorizationDecision::Deny {
-                reason: format!(
-                    "Security Violation: Process '{}' (PID {}) is classified as untrusted or blocked.",
-                    req.requester.executable_name, req.requester.pid
-                ),
+            let reason = format!(
+                "Security Violation: Process '{}' (PID {}) is classified as untrusted or blocked.",
+                req.requester.executable_name, req.requester.pid
+            );
+            return PolicyExplanation {
+                decision: AuthorizationDecision::Deny {
+                    reason: reason.clone(),
+                },
+                matched_rule_ids: Vec::new(),
+                denied_by: vec!["trust-tier0-block".to_string()],
+                approval_required_by: Vec::new(),
+                allowed_by: Vec::new(),
+                explanation: reason,
             };
         }
 
-        // 2. Strict Raw Credential Guard: Never hand raw secrets to autonomous agents or MCP
         if req.operation == OperationType::RawCredentialAccess
             && req.requester.requester_type != RequesterType::HumanInteractive
         {
-            return AuthorizationDecision::Deny {
-                reason: format!(
-                    "Zero-Trust Policy: Raw credential exposure strictly prohibited for {:?}. Use delegated broker execution.",
-                    req.requester.requester_type
-                ),
+            let reason = format!(
+                "Zero-Trust Policy: Raw credential exposure strictly prohibited for {:?}. Use delegated broker execution.",
+                req.requester.requester_type
+            );
+            return PolicyExplanation {
+                decision: AuthorizationDecision::Deny {
+                    reason: reason.clone(),
+                },
+                matched_rule_ids: Vec::new(),
+                denied_by: vec!["zero-trust-raw-guard".to_string()],
+                approval_required_by: Vec::new(),
+                allowed_by: Vec::new(),
+                explanation: reason,
             };
         }
 
         let op_str = req.operation.as_str();
+        let mut matched_rule_ids = Vec::new();
+        let mut denied_by = Vec::new();
+        let mut deny_reasons = Vec::new();
+        let mut approval_required_by = Vec::new();
+        let mut allowed_by = Vec::new();
+        let mut any_delegate_only = false;
 
-        // 3. Evaluate configured rules
         for rule in &self.rules {
-            // Match Role
-            if !rule.allowed_roles.contains(&req.requester.requester_type) {
+            if !Self::rule_matches_scope(rule, req) {
                 continue;
             }
+            matched_rule_ids.push(rule.id.clone());
 
-            // Match Trust Tier
-            if req.requester.trust_tier < rule.min_trust_tier {
-                continue;
-            }
-
-            // Match Credential
-            if !rule
-                .allowed_credentials
-                .iter()
-                .any(|c| c == "*" || c.eq_ignore_ascii_case(&req.credential_name))
-            {
-                continue;
-            }
-
-            // Match Domain (fail closed if rule restricts domains but target has no valid parsed domain)
-            if !rule.allowed_domains.iter().any(|d| d == "*") {
-                match &req.target_domain {
-                    Some(dom) => {
-                        if !rule
-                            .allowed_domains
-                            .iter()
-                            .any(|d| d.eq_ignore_ascii_case(dom))
-                        {
-                            continue;
-                        }
-                    }
-                    None => {
-                        // Domain missing or unparseable: fail closed
-                        continue;
-                    }
-                }
-            }
-
-            // Match Repository Context (fail closed if rule restricts repositories)
-            if !rule.allowed_repositories.iter().any(|r| r == "*") {
-                match &req.repository {
-                    Some(repo) => {
-                        let repo_allowed = rule.allowed_repositories.iter().any(|r| {
-                            if r == "$CURRENT_REPO" || r == "$ACTIVE_REPO" {
-                                req.requester.git_repo.as_ref().is_some_and(|caller_repo| {
-                                    caller_repo.eq_ignore_ascii_case(repo)
-                                })
-                            } else {
-                                r.eq_ignore_ascii_case(repo)
-                            }
-                        });
-                        if !repo_allowed {
-                            continue;
-                        }
-                    }
-                    None => {
-                        // Caller or target has no git repository context: fail closed
-                        continue;
-                    }
-                }
-            }
-
-            // Check Denied Operations (higher priority than allowed)
             if rule
                 .denied_operations
                 .iter()
                 .any(|d| d == "*" || d == op_str)
             {
-                return AuthorizationDecision::Deny {
-                    reason: format!(
-                        "Operation '{}' is explicitly forbidden by policy rule '{}'.",
-                        op_str, rule.name
-                    ),
-                };
+                denied_by.push(rule.id.clone());
+                deny_reasons.push(format!(
+                    "Operation '{}' is explicitly forbidden by policy rule '{}'.",
+                    op_str, rule.name
+                ));
+                continue;
             }
 
-            // Check Allowed Operations
             if !rule
                 .allowed_operations
                 .iter()
@@ -329,41 +452,105 @@ impl PolicyEngine {
                 continue;
             }
 
-            // Check if interactive human approval is required
+            if rule.delegate_only {
+                any_delegate_only = true;
+            }
+
             if rule
                 .approval_required_for
                 .iter()
                 .any(|appr| appr == "*" || appr == op_str)
             {
-                return AuthorizationDecision::RequireHumanApproval {
-                    prompt: format!(
-                        "AI Agent '{}' requests permission to perform '{}' on '{}' using credential '{}'. Approve?",
-                        req.requester.executable_name, op_str, req.target_resource, req.credential_name
-                    ),
-                    risk_level: if op_str == "DELETE" || op_str == "git:push" {
-                        "HIGH".to_string()
-                    } else {
-                        "MEDIUM".to_string()
-                    },
-                };
-            }
-
-            // Allowed Decision
-            if rule.delegate_only || req.requester.requester_type != RequesterType::HumanInteractive
-            {
-                return AuthorizationDecision::AllowDelegated;
+                approval_required_by.push(rule.id.clone());
             } else {
-                return AuthorizationDecision::AllowRaw;
+                allowed_by.push(rule.id.clone());
             }
         }
 
-        // 4. Default Fail-Closed
-        AuthorizationDecision::Deny {
-            reason: format!(
-                "Default Deny: No policy permits {:?} to perform '{}' using credential '{}' against '{}'.",
-                req.requester.requester_type, op_str, req.credential_name, req.target_resource
-            ),
+        if !denied_by.is_empty() {
+            let reason = deny_reasons.join(" | ");
+            return PolicyExplanation {
+                decision: AuthorizationDecision::Deny {
+                    reason: reason.clone(),
+                },
+                matched_rule_ids,
+                denied_by,
+                approval_required_by,
+                allowed_by,
+                explanation: reason,
+            };
         }
+
+        if !approval_required_by.is_empty() {
+            let prompt = format!(
+                "Caller '{}' (PID {}) requests permission to perform '{}' on '{}' using credential '{}'. Approve?",
+                req.requester.executable_name,
+                req.requester.pid,
+                op_str,
+                req.target_resource,
+                req.credential_name
+            );
+            let risk_level = if op_str == "DELETE" || op_str == "git:push" || op_str == "raw:read" {
+                "HIGH".to_string()
+            } else {
+                "MEDIUM".to_string()
+            };
+            let explanation = format!(
+                "Human approval required by rule(s) [{}].",
+                approval_required_by.join(", ")
+            );
+            return PolicyExplanation {
+                decision: AuthorizationDecision::RequireHumanApproval { prompt, risk_level },
+                matched_rule_ids,
+                denied_by,
+                approval_required_by,
+                allowed_by,
+                explanation,
+            };
+        }
+
+        if !allowed_by.is_empty() {
+            let decision = if any_delegate_only
+                || req.requester.requester_type != RequesterType::HumanInteractive
+            {
+                AuthorizationDecision::AllowDelegated
+            } else {
+                AuthorizationDecision::AllowRaw
+            };
+            let explanation = format!(
+                "Permitted ({:?}) by rule(s) [{}].",
+                decision,
+                allowed_by.join(", ")
+            );
+            return PolicyExplanation {
+                decision,
+                matched_rule_ids,
+                denied_by,
+                approval_required_by,
+                allowed_by,
+                explanation,
+            };
+        }
+
+        let reason = format!(
+            "Default Deny: No policy permits {:?} to perform '{}' using credential '{}' against '{}'.",
+            req.requester.requester_type, op_str, req.credential_name, req.target_resource
+        );
+        PolicyExplanation {
+            decision: AuthorizationDecision::Deny {
+                reason: reason.clone(),
+            },
+            matched_rule_ids,
+            denied_by,
+            approval_required_by,
+            allowed_by,
+            explanation: reason,
+        }
+    }
+
+    /// Evaluates an OperationRequest against active policy rules
+    pub fn evaluate(&self, req: &OperationRequest) -> AuthorizationDecision {
+        self.evaluate_with_explanation(req).decision
     }
 
     /// CLI handler for `secretguard policy`
@@ -377,9 +564,11 @@ USAGE:
     secretguard policy <SUBCOMMAND>
 
 SUBCOMMANDS:
-    list                         List active policy rules, roles, and allowed operations
-    check <KEY> <OP> [RESOURCE]  Evaluate policy for the calling terminal process
-    eval <ROLE> <KEY> <OP> [URL] Test policy decision for a simulated role and operation
+    list                            List active policy rules, roles, and allowed operations
+    validate                        Validate policy rule definitions and detect conflicts
+    explain <KEY> <OP> [RESOURCE]   Evaluate policy and show rule matching & precedence trace
+    check <KEY> <OP> [RESOURCE]     Evaluate policy for the calling terminal process
+    eval <ROLE> <KEY> <OP> [URL]    Test policy decision for a simulated role and operation
 "#
             );
             return;
@@ -387,6 +576,50 @@ SUBCOMMANDS:
 
         let engine = Self::default();
         match args[0].as_str() {
+            "validate" => {
+                let report = engine.validate();
+                println!(
+                    "Policy Validation: {} ({} rule(s), {} error(s), {} warning(s))",
+                    if report.valid { "VALID" } else { "INVALID" },
+                    engine.rules.len(),
+                    report.errors.len(),
+                    report.warnings.len()
+                );
+                for err in &report.errors {
+                    eprintln!("  ❌ Error: {}", err);
+                }
+                for warn in &report.warnings {
+                    println!("  ⚠️  Warning: {}", warn);
+                }
+                if !report.valid {
+                    std::process::exit(1);
+                }
+            }
+            "explain" => {
+                let key = args.get(1).map(|s| s.as_str()).unwrap_or("GITHUB_TOKEN");
+                let op_str = args.get(2).map(|s| s.as_str()).unwrap_or("GET");
+                let resource = args
+                    .get(3)
+                    .map(|s| s.as_str())
+                    .unwrap_or("https://api.github.com");
+                let op = match op_str.to_uppercase().as_str() {
+                    "GET" => OperationType::HttpGet,
+                    "POST" => OperationType::HttpPost,
+                    "PUT" => OperationType::HttpPut,
+                    "DELETE" => OperationType::HttpDelete,
+                    "RAW" => OperationType::RawCredentialAccess,
+                    _ => OperationType::HttpGet,
+                };
+                let caller = IdentityContext::current();
+                let req = OperationRequest::new(caller, key, op, resource);
+                let trace = engine.evaluate_with_explanation(&req);
+                println!("Matched Rules:    {:?}", trace.matched_rule_ids);
+                println!("Denied By:        {:?}", trace.denied_by);
+                println!("Approval By:      {:?}", trace.approval_required_by);
+                println!("Allowed By:       {:?}", trace.allowed_by);
+                println!("Decision:         {:?}", trace.decision);
+                println!("Explanation:      {}", trace.explanation);
+            }
             "list" => {
                 println!("🛡️  SecretGuard Active Authorization Policy Rules");
                 println!("──────────────────────────────────────────────────────────────────");

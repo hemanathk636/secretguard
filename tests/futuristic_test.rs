@@ -141,7 +141,7 @@ fn test_cli_dispatch_futuristic_commands() {
         .output()
         .expect("Failed to run ghost inspect");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("SecretGuard Zero-Knowledge Ghost Session Table"));
+    assert!(stdout.contains("SecretGuard Ghost Session Table"));
 
     // 3. immune status
     let output = Command::new(cargo_bin)

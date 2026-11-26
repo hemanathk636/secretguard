@@ -26,7 +26,7 @@ impl SetupWizard {
             let ps_dir = home_path.join("Documents").join("WindowsPowerShell");
             let ps_profile = ps_dir.join("Microsoft.PowerShell_profile.ps1");
 
-            let hook_code = "\n# SecretGuard Terminal Hook\nif (Get-Command secretguard -ErrorAction SilentlyContinue) { Invoke-Expression (& secretguard hook powershell) }\n";
+            let hook_code = "\n# SecretGuard Terminal Hook\nif (Get-Command secretguard -ErrorAction SilentlyContinue) { secretguard hook powershell | Out-String | Invoke-Expression }\n";
 
             let mut already_installed = false;
             if ps_profile.exists() {
@@ -39,18 +39,28 @@ impl SetupWizard {
 
             if already_installed {
                 actions_taken.push("✓ PowerShell: Hook already active in $PROFILE".to_string());
+            } else if let Err(e) = fs::create_dir_all(&ps_dir) {
+                actions_taken.push(format!(
+                    "⚠️ PowerShell: Failed to create profile dir '{}': {}",
+                    ps_dir.display(),
+                    e
+                ));
             } else {
-                let _ = fs::create_dir_all(&ps_dir);
-                if let Ok(mut file) = OpenOptions::new()
+                match OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(&ps_profile)
+                    .and_then(|mut file| file.write_all(hook_code.as_bytes()))
                 {
-                    let _ = file.write_all(hook_code.as_bytes());
-                    actions_taken.push(format!(
+                    Ok(()) => actions_taken.push(format!(
                         "✓ PowerShell: Attached interceptor to {}",
                         ps_profile.display()
-                    ));
+                    )),
+                    Err(e) => actions_taken.push(format!(
+                        "⚠️ PowerShell: Failed to attach hook to {}: {}",
+                        ps_profile.display(),
+                        e
+                    )),
                 }
             }
         } else if shell_env.contains("zsh") || home_path.join(".zshrc").exists() {

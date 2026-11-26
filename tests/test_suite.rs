@@ -30,7 +30,8 @@ fn test_openai_key_redaction() {
     );
     let res = engine.scan_and_sanitize(&raw);
     assert!(res.has_secret);
-    assert!(res.sanitized_text.contains("sk-p[REDACTED]"));
+    assert!(res.sanitized_text.contains("[REDACTED]"));
+    assert!(!res.sanitized_text.contains("sk-proj"));
     assert!(!res
         .sanitized_text
         .contains("1234567890abcdef1234567890abcdef"));
@@ -44,7 +45,8 @@ fn test_aws_key_redaction() {
     let raw = format!("aws s3 sync . s3://mybucket --profile default # {}", token);
     let res = engine.scan_and_sanitize(&raw);
     assert!(res.has_secret);
-    assert!(res.sanitized_text.contains("AKIA[REDACTED]"));
+    assert!(res.sanitized_text.contains("[REDACTED]"));
+    assert!(!res.sanitized_text.contains("AKIA"));
 }
 
 #[test]
@@ -55,7 +57,8 @@ fn test_github_token_redaction() {
     let raw = format!("git push https://{}@github.com/repo.git", token);
     let res = engine.scan_and_sanitize(&raw);
     assert!(res.has_secret);
-    assert!(res.sanitized_text.contains("ghp_[REDACTED]"));
+    assert!(res.sanitized_text.contains("[REDACTED]"));
+    assert!(!res.sanitized_text.contains("ghp_"));
 }
 
 #[test]

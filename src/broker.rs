@@ -5,9 +5,14 @@
 use crate::audit::AuditLedger;
 use crate::identity::{IdentityContext, RequesterType};
 use crate::policy::{AuthorizationDecision, OperationRequest, OperationType, PolicyEngine};
+use hmac::{Hmac, Mac};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Checks if an IP address belongs to loopback, link-local, private RFC1918, CGNAT, multicast, or broadcast ranges
 pub fn is_private_or_restricted_ip(ip: &IpAddr) -> bool {
@@ -428,10 +433,335 @@ pub struct DelegatedResponse {
     pub audit_sequence: u64,
 }
 
+pub const DEFAULT_APPROVAL_TTL_SECS: u64 = 60;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalChallenge {
+    pub nonce: String,
+    pub request_fingerprint: String,
+    pub expires_at_epoch_secs: u64,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalToken {
+    pub nonce: String,
+    pub request_fingerprint: String,
+    pub expires_at_epoch_secs: u64,
+    #[serde(default)]
+    pub signature: String,
+}
+
+#[derive(Default)]
+pub struct ApprovalManager {
+    consumed_nonces: Mutex<HashSet<String>>,
+}
+
+impl ApprovalManager {
+    pub fn compute_request_fingerprint(req: &OperationRequest) -> String {
+        let exe_path = req
+            .requester
+            .executable_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| req.requester.executable_name.clone());
+        let bin_hash = req.requester.binary_hash.as_deref().unwrap_or("");
+        let mut hasher = Sha256::new();
+        for part in [
+            &req.requester.pid.to_string(),
+            &exe_path,
+            bin_hash,
+            req.operation.as_str(),
+            &req.credential_name,
+            &req.target_resource,
+        ] {
+            hasher.update(part.as_bytes());
+            hasher.update(b"|");
+        }
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
+    }
+
+    fn get_approval_hmac_key() -> Result<[u8; 32], String> {
+        crate::vault::derive_vault_key(Some("secretguard_approval_hmac_v1")).map_err(|e| {
+            format!(
+                "Security Fail-Closed: Persistent approval signing key unavailable ({}).",
+                e
+            )
+        })
+    }
+
+    fn compute_token_signature(
+        nonce: &str,
+        request_fingerprint: &str,
+        expires_at_epoch_secs: u64,
+    ) -> Result<String, String> {
+        let mut key = Self::get_approval_hmac_key()?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(&key)
+            .map_err(|e| format!("Failed to initialize approval HMAC: {}", e))?;
+        crate::vault::volatile_zeroize(&mut key);
+
+        mac.update(b"secretguard-approval-token-v1|");
+        mac.update(nonce.as_bytes());
+        mac.update(b"|");
+        mac.update(request_fingerprint.as_bytes());
+        mac.update(b"|");
+        mac.update(expires_at_epoch_secs.to_string().as_bytes());
+
+        let result = mac.finalize().into_bytes();
+        Ok(result.iter().map(|b| format!("{:02x}", b)).collect())
+    }
+
+    fn verify_token_signature(token: &ApprovalToken) -> Result<(), String> {
+        if token.signature.is_empty() || token.signature.len() != 64 {
+            return Err("Approval token is missing a valid cryptographic signature.".to_string());
+        }
+        let sig_bytes: Vec<u8> = (0..token.signature.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&token.signature[i..i + 2], 16))
+            .collect::<Result<Vec<u8>, _>>()
+            .map_err(|_| "Approval token signature is malformed hex.".to_string())?;
+
+        let mut key = Self::get_approval_hmac_key()?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(&key)
+            .map_err(|e| format!("Failed to initialize approval HMAC: {}", e))?;
+        crate::vault::volatile_zeroize(&mut key);
+
+        mac.update(b"secretguard-approval-token-v1|");
+        mac.update(token.nonce.as_bytes());
+        mac.update(b"|");
+        mac.update(token.request_fingerprint.as_bytes());
+        mac.update(b"|");
+        mac.update(token.expires_at_epoch_secs.to_string().as_bytes());
+
+        mac.verify_slice(&sig_bytes).map_err(|_| {
+            "Approval token signature verification failed (possible forgery).".to_string()
+        })
+    }
+
+    fn get_nonces_store_path() -> std::path::PathBuf {
+        let base = std::env::var("SECRETGUARD_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                crate::vault::get_vault_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from(".secretguard"))
+            });
+        let base = crate::vault::resolve_canonical_security_path(&base).unwrap_or(base);
+        base.join("approval_nonces.json")
+    }
+
+    fn record_consumed_nonce_persistent(
+        nonce: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<(), String> {
+        let store_path = Self::get_nonces_store_path();
+        if let Some(parent) = store_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let lock_path = store_path.with_extension("lock");
+
+        let mut lock_file = None;
+        let max_attempts = 50;
+        for attempt in 0..max_attempts {
+            if let Ok(mut f) = crate::vault::create_secure_file_exclusive(&lock_path, 0o600) {
+                use std::io::Write;
+                let _ = writeln!(f, "pid={}", std::process::id());
+                lock_file = Some(f);
+                break;
+            }
+            if let Ok(meta) = std::fs::symlink_metadata(&lock_path) {
+                if !meta.file_type().is_symlink() {
+                    if let Ok(modified) = meta.modified() {
+                        if let Ok(elapsed) = modified.elapsed() {
+                            if elapsed.as_secs() >= 30 {
+                                let pid_alive = std::fs::read_to_string(&lock_path)
+                                    .ok()
+                                    .and_then(|s| {
+                                        s.lines().find_map(|l| {
+                                            l.strip_prefix("pid=")
+                                                .and_then(|v| v.trim().parse::<u32>().ok())
+                                        })
+                                    })
+                                    .map(crate::ghost::is_pid_alive)
+                                    .unwrap_or(false);
+                                if !pid_alive {
+                                    let _ = std::fs::remove_file(&lock_path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if attempt < max_attempts - 1 {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+        let _lock = lock_file.ok_or_else(|| {
+            "Failed to acquire approval nonce store lock (concurrent contention).".to_string()
+        })?;
+
+        struct NonceLockGuard<'a>(&'a std::path::Path);
+        impl<'a> Drop for NonceLockGuard<'a> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0);
+            }
+        }
+        let _guard = NonceLockGuard(&lock_path);
+
+        let mut store: HashMap<String, u64> = if store_path.exists() {
+            crate::vault::validate_secure_path(&store_path, true)
+                .map_err(|e| format!("Approval nonce store path unsafe: {}", e))?;
+            let raw = std::fs::read_to_string(&store_path)
+                .map_err(|e| format!("Failed to read approval nonce store: {}", e))?;
+            if raw.trim().is_empty() {
+                HashMap::new()
+            } else {
+                serde_json::from_str(&raw)
+                    .map_err(|e| format!("Corrupted approval nonce store: {}", e))?
+            }
+        } else {
+            HashMap::new()
+        };
+
+        // Prune expired nonces so the store stays bounded
+        store.retain(|_, &mut exp| exp >= now);
+
+        if store.contains_key(nonce) {
+            return Err("Approval token replay detected (already consumed).".to_string());
+        }
+        store.insert(nonce.to_string(), expires_at);
+
+        let json = serde_json::to_string(&store)
+            .map_err(|e| format!("Failed to serialize approval nonce store: {}", e))?;
+        let tmp_name = format!(
+            ".approval_nonces.{}.{:x}.tmp",
+            std::process::id(),
+            OsRng.next_u64()
+        );
+        let tmp_path = store_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(tmp_name);
+        {
+            use std::io::Write;
+            let mut f = crate::vault::create_secure_file_exclusive(&tmp_path, 0o600)
+                .map_err(|e| format!("Failed to create temp approval nonce store: {}", e))?;
+            f.write_all(json.as_bytes())
+                .map_err(|e| format!("Failed to write temp approval nonce store: {}", e))?;
+            f.sync_all()
+                .map_err(|e| format!("Failed to sync temp approval nonce store: {}", e))?;
+        }
+        crate::vault::atomic_replace_file(&tmp_path, &store_path)
+            .map_err(|e| format!("Failed to persist approval nonce store: {}", e))?;
+        Ok(())
+    }
+
+    pub fn configured_ttl_secs() -> u64 {
+        std::env::var("SECRETGUARD_APPROVAL_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&n| n > 0 && n <= 3600)
+            .unwrap_or(DEFAULT_APPROVAL_TTL_SECS)
+    }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    pub fn issue_challenge(
+        &self,
+        req: &OperationRequest,
+        ttl_secs: Option<u64>,
+    ) -> ApprovalChallenge {
+        let mut raw = [0u8; 16];
+        OsRng.fill_bytes(&mut raw);
+        let nonce: String = raw.iter().map(|b| format!("{:02x}", b)).collect();
+        let ttl = ttl_secs.unwrap_or_else(Self::configured_ttl_secs);
+        let expires = Self::now_secs().saturating_add(ttl);
+        let fp = Self::compute_request_fingerprint(req);
+        // Never expose secret values in approval prompts — only caller, operation, credential name, and target
+        let prompt = format!(
+            "Approve '{}' (PID {}) to perform '{}' on '{}' using credential '{}'? (expires in {}s)",
+            req.requester.executable_name,
+            req.requester.pid,
+            req.operation.as_str(),
+            crate::audit::sanitize_audit_target(&req.target_resource),
+            req.credential_name,
+            ttl
+        );
+        ApprovalChallenge {
+            nonce,
+            request_fingerprint: fp,
+            expires_at_epoch_secs: expires,
+            prompt,
+        }
+    }
+
+    pub fn approve_challenge(
+        &self,
+        challenge: &ApprovalChallenge,
+    ) -> Result<ApprovalToken, String> {
+        if Self::now_secs() > challenge.expires_at_epoch_secs {
+            return Err("Approval challenge expired before confirmation.".to_string());
+        }
+        let signature = Self::compute_token_signature(
+            &challenge.nonce,
+            &challenge.request_fingerprint,
+            challenge.expires_at_epoch_secs,
+        )?;
+        Ok(ApprovalToken {
+            nonce: challenge.nonce.clone(),
+            request_fingerprint: challenge.request_fingerprint.clone(),
+            expires_at_epoch_secs: challenge.expires_at_epoch_secs,
+            signature,
+        })
+    }
+
+    pub fn consume_approval(
+        &self,
+        req: &OperationRequest,
+        token: &ApprovalToken,
+    ) -> Result<(), String> {
+        let now = Self::now_secs();
+        if now > token.expires_at_epoch_secs {
+            return Err("Approval token has expired.".to_string());
+        }
+        Self::verify_token_signature(token)?;
+        let expected_fp = Self::compute_request_fingerprint(req);
+        if token.request_fingerprint != expected_fp {
+            return Err("Approval token does not match this exact request.".to_string());
+        }
+        {
+            let consumed = self
+                .consumed_nonces
+                .lock()
+                .map_err(|_| "Approval nonce store mutex poisoned".to_string())?;
+            if consumed.contains(&token.nonce) {
+                return Err("Approval token replay detected (already consumed).".to_string());
+            }
+        }
+        Self::record_consumed_nonce_persistent(&token.nonce, token.expires_at_epoch_secs, now)?;
+        let mut consumed = self
+            .consumed_nonces
+            .lock()
+            .map_err(|_| "Approval nonce store mutex poisoned".to_string())?;
+        consumed.insert(token.nonce.clone());
+        Ok(())
+    }
+}
+
 /// The Local Security Broker
 pub struct SecurityBroker {
     pub policy_engine: Arc<RwLock<PolicyEngine>>,
     pub audit_ledger: Arc<Mutex<AuditLedger>>,
+    pub approval_manager: Arc<ApprovalManager>,
 }
 
 impl Default for SecurityBroker {
@@ -460,6 +790,7 @@ impl SecurityBroker {
         Ok(Self {
             policy_engine,
             audit_ledger: Arc::new(Mutex::new(ledger)),
+            approval_manager: Arc::new(ApprovalManager::default()),
         })
     }
 
@@ -471,6 +802,18 @@ impl SecurityBroker {
         })
     }
 
+    fn record_and_persist(
+        &self,
+        req: &OperationRequest,
+        decision: &AuthorizationDecision,
+    ) -> Result<(), String> {
+        let rec = AuditLedger::append_decision_atomic(req, decision, None)?;
+        if let Ok(mut ledger) = self.audit_ledger.lock() {
+            ledger.records.push(rec);
+        }
+        Ok(())
+    }
+
     /// Evaluates an OperationRequest, records it to the tamper-evident audit ledger, and returns the decision
     pub fn authorize(&self, req: &OperationRequest) -> AuthorizationDecision {
         let decision = {
@@ -478,17 +821,7 @@ impl SecurityBroker {
             engine.evaluate(req)
         };
 
-        // Record decision in tamper-evident audit log with fail-closed guarantee
-        let record_res = if let Ok(mut ledger) = self.audit_ledger.lock() {
-            match ledger.record_decision(req, &decision) {
-                Ok(_) => ledger.save(None).map_err(|e| e.to_string()),
-                Err(e) => Err(format!("HMAC audit signing failed: {}", e)),
-            }
-        } else {
-            Err("Audit ledger mutex poisoned".to_string())
-        };
-
-        if let Err(e) = record_res {
+        if let Err(e) = self.record_and_persist(req, &decision) {
             return AuthorizationDecision::Deny {
                 reason: format!(
                     "Security Fail-Closed: Failed to record audit log ({}). Access denied.",
@@ -498,6 +831,75 @@ impl SecurityBroker {
         }
 
         decision
+    }
+
+    /// Evaluates an OperationRequest with an optional single-use, request-bound ApprovalToken.
+    pub fn authorize_with_approval(
+        &self,
+        req: &OperationRequest,
+        approval: Option<&ApprovalToken>,
+    ) -> AuthorizationDecision {
+        let raw_decision = {
+            let engine = self.policy_engine.read().unwrap();
+            engine.evaluate(req)
+        };
+
+        let final_decision = match raw_decision {
+            AuthorizationDecision::RequireHumanApproval { .. } => match approval {
+                Some(tok) => match self.approval_manager.consume_approval(req, tok) {
+                    Ok(()) => {
+                        if req.requester.requester_type == RequesterType::HumanInteractive {
+                            AuthorizationDecision::AllowRaw
+                        } else {
+                            AuthorizationDecision::AllowDelegated
+                        }
+                    }
+                    Err(err) => AuthorizationDecision::Deny {
+                        reason: format!("Approval rejected: {}", err),
+                    },
+                },
+                None => raw_decision,
+            },
+            other => other,
+        };
+
+        if let Err(e) = self.record_and_persist(req, &final_decision) {
+            return AuthorizationDecision::Deny {
+                reason: format!(
+                    "Security Fail-Closed: Failed to record audit log ({}). Access denied.",
+                    e
+                ),
+            };
+        }
+
+        final_decision
+    }
+
+    /// Centralized control-plane authorization for local CLI secret-access entry points
+    /// (`vault get`, `vault run`, `ghost virtualize`).
+    pub fn authorize_local_secret_access(
+        op: OperationType,
+        credential_name: &str,
+        target_resource: &str,
+        is_interactive_tty: bool,
+    ) -> Result<AuthorizationDecision, String> {
+        let my_pid = std::process::id();
+        let parent_pid = crate::identity::get_parent_pid(my_pid).unwrap_or(my_pid);
+        let caller = IdentityContext::from_pid_with_tty(parent_pid, is_interactive_tty)
+            .or_else(|_| IdentityContext::from_pid_with_tty(my_pid, is_interactive_tty))?;
+
+        let broker = Self::try_new()?;
+        let req = OperationRequest::new(caller, credential_name, op, target_resource);
+        let decision = broker.authorize(&req);
+        if decision.is_allowed() {
+            Ok(decision)
+        } else {
+            match decision {
+                AuthorizationDecision::Deny { reason } => Err(reason),
+                AuthorizationDecision::RequireHumanApproval { prompt, .. } => Err(prompt),
+                _ => unreachable!(),
+            }
+        }
     }
 
     /// Safely executes an HTTP operation on behalf of the caller without returning raw tokens
