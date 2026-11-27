@@ -301,3 +301,91 @@ fn test_adversarial_edge_cases_and_encodings() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn test_nul_byte_and_bomless_utf16_adversarial_bypass_remediation() {
+    let engine = SecretGuardEngine::new();
+    let dir = temp_dir("nul_bypass_remediation");
+    let openai = common::synth_openai_key();
+
+    // 1 & 2. NUL byte before synthetic secret within first 4096 bytes
+    let mut nul_prefix = vec![0x00u8];
+    nul_prefix.extend_from_slice(format!("OPENAI_API_KEY={}\n", openai).as_bytes());
+    fs::write(dir.join("nul_prefix.env"), &nul_prefix).unwrap();
+
+    // 3. Secret placed after >4096 NUL bytes (NUL-padding bypass attempt)
+    let mut nul_padded = vec![0x00u8; 5000];
+    nul_padded.extend_from_slice(format!("\nOPENAI_API_KEY={}\n", openai).as_bytes());
+    fs::write(dir.join("nul_padded.env"), &nul_padded).unwrap();
+
+    // 3b. NUL bytes embedded inside/between characters of the secret value
+    let split_mid = openai.len() / 2;
+    let mut nul_inside = Vec::new();
+    nul_inside.extend_from_slice(b"OPENAI_API_KEY=");
+    nul_inside.extend_from_slice(&openai.as_bytes()[..4]);
+    nul_inside.push(0x00);
+    nul_inside.extend_from_slice(&openai.as_bytes()[4..split_mid]);
+    nul_inside.push(0x00);
+    nul_inside.extend_from_slice(&openai.as_bytes()[split_mid..]);
+    nul_inside.push(b'\n');
+    fs::write(dir.join("nul_inside.env"), &nul_inside).unwrap();
+
+    // 4. BOM-less UTF-16LE containing synthetic secret
+    let le_str = format!("OPENAI_API_KEY={}\n", openai);
+    let mut bomless_le = Vec::new();
+    for u in le_str.encode_utf16() {
+        bomless_le.extend_from_slice(&u.to_le_bytes());
+    }
+    fs::write(dir.join("bomless_le.env"), &bomless_le).unwrap();
+
+    // 5. BOM-less UTF-16BE containing synthetic secret
+    let mut bomless_be = Vec::new();
+    for u in le_str.encode_utf16() {
+        bomless_be.extend_from_slice(&u.to_be_bytes());
+    }
+    fs::write(dir.join("bomless_be.env"), &bomless_be).unwrap();
+
+    // 6. UTF-16LE BOM
+    let mut bom_le = vec![0xFFu8, 0xFEu8];
+    bom_le.extend_from_slice(&bomless_le);
+    fs::write(dir.join("bom_le.env"), &bom_le).unwrap();
+
+    // 7. Genuine binary blob (random-like control bytes + invalid UTF-8) must remain skipped
+    let mut genuine_bin = Vec::with_capacity(8192);
+    for i in 0..8192usize {
+        genuine_bin.push(((i * 37 + 13) % 256) as u8);
+    }
+    fs::write(dir.join("blob.dat"), &genuine_bin).unwrap();
+
+    // Verify decode_buffer_text does not allocate a String for genuine binary data
+    let (is_bin, bin_text) = secretguard::scanner::decode_buffer_text(&genuine_bin);
+    assert!(is_bin);
+    assert!(bin_text.is_empty());
+
+    let report = execute_scan(
+        &engine,
+        &ScanOptions {
+            target: dir.clone(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(report.stats.binary_files_skipped, 1);
+    for expected in [
+        "nul_prefix.env",
+        "nul_padded.env",
+        "nul_inside.env",
+        "bomless_le.env",
+        "bomless_be.env",
+        "bom_le.env",
+    ] {
+        assert!(
+            report.groups.iter().any(|g| g.file.ends_with(expected)),
+            "Expected secret finding in '{}' after NUL/UTF-16 remediation",
+            expected
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}

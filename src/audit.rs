@@ -468,7 +468,17 @@ impl AuditKernelLock {
                 }
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&lock_path)
+                .map_err(|e| format!("Failed to open persistent audit lockfile: {}", e))
+        }
+        #[cfg(not(any(windows, unix)))]
         {
             fs::OpenOptions::new()
                 .read(true)

@@ -6,6 +6,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_MAX_FILE_SIZE: u64 = 2 * 1024 * 1024; // 2 MiB
+/// Maximum staged blob size (2 MiB) allowed by `check-staged` before failing closed.
+pub const DEFAULT_MAX_STAGED_BLOB_SIZE: usize = DEFAULT_MAX_FILE_SIZE as usize;
 pub const DEFAULT_MAX_FINDINGS: usize = 100;
 const MINIFIED_LINE_THRESHOLD: usize = 4000;
 
@@ -223,39 +225,124 @@ fn is_minified_filename(path: &Path) -> bool {
         || name.ends_with(".chunk.js")
 }
 
-/// Decodes UTF-8, UTF-8 BOM, UTF-16 LE/BE BOM, or lossy UTF-8; detects binary content.
-fn decode_buffer_text(buffer: &[u8]) -> (bool, String) {
+fn decode_utf16_bytes(bytes: &[u8], little_endian: bool) -> String {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| {
+            if little_endian {
+                u16::from_le_bytes([c[0], c[1]])
+            } else {
+                u16::from_be_bytes([c[0], c[1]])
+            }
+        })
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+fn is_ascii_text_or_ws(b: u8) -> bool {
+    (0x20..=0x7E).contains(&b) || matches!(b, b'\n' | b'\r' | b'\t')
+}
+
+fn detect_bomless_utf16(slice: &[u8]) -> Option<bool> {
+    let sample = &slice[..slice.len().min(4096)];
+    let pair_count = sample.len() / 2;
+    if pair_count < 4 {
+        return None;
+    }
+
+    let mut even_nul = 0usize;
+    let mut odd_nul = 0usize;
+    let mut even_ascii = 0usize;
+    let mut odd_ascii = 0usize;
+
+    for pair in sample.chunks_exact(2) {
+        if pair[0] == 0 {
+            even_nul += 1;
+        } else if is_ascii_text_or_ws(pair[0]) {
+            even_ascii += 1;
+        }
+        if pair[1] == 0 {
+            odd_nul += 1;
+        } else if is_ascii_text_or_ws(pair[1]) {
+            odd_ascii += 1;
+        }
+    }
+
+    // Require >= 70% printable ASCII in one lane and >= 70% NUL in the opposite lane
+    let threshold = (pair_count * 7) / 10;
+    if even_ascii >= threshold && odd_nul >= threshold && odd_nul > even_nul.saturating_mul(4) {
+        return Some(true); // UTF-16LE
+    }
+    if odd_ascii >= threshold && even_nul >= threshold && even_nul > odd_nul.saturating_mul(4) {
+        return Some(false); // UTF-16BE
+    }
+    None
+}
+
+/// Decodes UTF-8, UTF-8 BOM, UTF-16 LE/BE (BOM or BOM-less), or lossy UTF-8; classifies binary content
+/// without allowing isolated or prepended NUL bytes in text files to suppress secret scanning.
+pub fn decode_buffer_text(buffer: &[u8]) -> (bool, String) {
     if buffer.starts_with(&[0xFF, 0xFE]) {
-        // UTF-16 LE BOM
-        let units: Vec<u16> = buffer[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        return (false, String::from_utf16_lossy(&units));
+        return (false, decode_utf16_bytes(&buffer[2..], true));
     }
     if buffer.starts_with(&[0xFE, 0xFF]) {
-        // UTF-16 BE BOM
-        let units: Vec<u16> = buffer[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
-            .collect();
-        return (false, String::from_utf16_lossy(&units));
+        return (false, decode_utf16_bytes(&buffer[2..], false));
     }
     let slice = buffer.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(buffer);
 
-    let sample = &slice[..slice.len().min(4096)];
-    let nul_found = sample.contains(&0);
-    let control_count = sample
-        .iter()
-        .filter(|&&b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
-        .count();
-    let is_binary = nul_found || (!sample.is_empty() && control_count * 10 > sample.len());
+    if let Some(is_le) = detect_bomless_utf16(slice) {
+        return (false, decode_utf16_bytes(slice, is_le));
+    }
 
-    let text = match std::str::from_utf8(slice) {
+    let sample = &slice[..slice.len().min(4096)];
+    let non_nul_control_count = sample
+        .iter()
+        .filter(|&&b| b != 0 && b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
+        .count();
+    let nul_count = sample.iter().filter(|&&b| b == 0).count();
+    let total_control_count = non_nul_control_count + nul_count;
+
+    if !sample.is_empty() && total_control_count * 10 > sample.len() {
+        // High control/NUL density (>10%): if it is solely NUL padding around clean printable text
+        // (<=5% non-NUL control bytes, >=90% printable/UTF-8, valid UTF-8), scan it rather than
+        // allowing NUL padding to suppress secret detection. Genuine binary blobs fail this check.
+        let non_nul_sample: Vec<u8> = slice
+            .iter()
+            .copied()
+            .filter(|&b| b != 0)
+            .take(4096)
+            .collect();
+        if non_nul_sample.is_empty() {
+            return (true, String::new());
+        }
+        let printable_or_utf8 = non_nul_sample
+            .iter()
+            .filter(|&&b| is_ascii_text_or_ws(b) || b >= 0x80)
+            .count();
+        let non_nul_ctrl = non_nul_sample
+            .iter()
+            .filter(|&&b| b < 0x20 && b != b'\n' && b != b'\r' && b != b'\t')
+            .count();
+        let has_invalid_utf8 = match std::str::from_utf8(&non_nul_sample) {
+            Ok(_) => false,
+            Err(e) => e.error_len().is_some(),
+        };
+        if non_nul_ctrl * 20 > non_nul_sample.len()
+            || printable_or_utf8 * 100 < non_nul_sample.len() * 90
+            || has_invalid_utf8
+        {
+            return (true, String::new());
+        }
+    }
+
+    let mut text = match std::str::from_utf8(slice) {
         Ok(s) => s.to_string(),
         Err(_) => String::from_utf8_lossy(slice).to_string(),
     };
-    (is_binary, text)
+    if text.contains('\0') {
+        text = text.replace('\0', "");
+    }
+    (false, text)
 }
 
 fn stable_id(parts: &[&str]) -> String {
@@ -771,4 +858,428 @@ pub fn render_report_and_exit_code(report: &ScanReport, opts: &ScanOptions) -> i
         }
         0
     }
+}
+
+/// Explicit, unique ownership marker embedded in managed SecretGuard pre-commit hooks.
+pub const PRE_COMMIT_HOOK_MARKER: &str = "# secretguard-managed-hook: pre-commit";
+
+/// Fail-closed POSIX sh pre-commit hook installed by `install-pre-commit` and `SetupWizard`.
+pub const PRE_COMMIT_HOOK_SCRIPT: &str = r#"#!/bin/sh
+# secretguard-managed-hook: pre-commit
+# SecretGuard Git Pre-Commit Hook (Sub-millisecond Secret Interceptor)
+# https://github.com/hemanathk636/secretguard
+
+if ! command -v secretguard >/dev/null 2>&1; then
+    echo "" >&2
+    echo "\033[1;31m✖ [SecretGuard] Git commit blocked: 'secretguard' binary not found in PATH!\033[0m" >&2
+    echo "Install SecretGuard or restore PATH before committing. (Use 'git commit --no-verify' to bypass if intentional)" >&2
+    echo "" >&2
+    exit 1
+fi
+
+SCAN_ERR=$(secretguard check-staged 2>&1)
+EXIT_CODE=$?
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "" >&2
+    echo "\033[1;31m✖ [SecretGuard] Git commit blocked: Staged blob scan failed or secret detected!\033[0m" >&2
+    if [ -n "$SCAN_ERR" ]; then
+        echo "\033[0;33m$SCAN_ERR\033[0m" >&2
+    fi
+    echo "Please redact credentials or fix scanner errors before committing. (Use 'git commit --no-verify' to bypass if intentional)" >&2
+    echo "" >&2
+    exit 1
+fi
+exit 0
+"#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookInstallOutcome {
+    Installed,
+    Upgraded,
+    AlreadyCurrent,
+}
+
+fn set_hook_executable_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::symlink_metadata(path) {
+            if metadata.file_type().is_file() {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(path, perms);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Returns true only for hooks generated by SecretGuard (explicit marker or exact legacy templates),
+/// preserving user-customized hooks even if they mention or invoke `secretguard`.
+pub fn is_secretguard_managed_hook(content: &str) -> bool {
+    let normalized = content.replace("\r\n", "\n");
+    let trimmed = normalized.trim_start_matches('\u{feff}');
+
+    // Current / v2 marker-owned hooks
+    if trimmed.starts_with("#!/bin/sh\n")
+        && trimmed.lines().any(|line| line == PRE_COMMIT_HOOK_MARKER)
+        && trimmed.contains("secretguard check-staged")
+    {
+        return true;
+    }
+
+    // Legacy `install-pre-commit` hook (v1.0.0)
+    let is_legacy_main = trimmed.starts_with("#!/bin/sh\n")
+        && trimmed
+            .contains("# SecretGuard Git Pre-Commit Hook (Sub-millisecond Secret Interceptor)")
+        && trimmed.contains("# https://github.com/hemanathk636/secretguard")
+        && trimmed.contains("STAGED_DIFF=$(git diff --cached --unified=0")
+        && trimmed.contains("| secretguard check");
+
+    // Legacy `SetupWizard` hook (v1.0.0)
+    let is_legacy_init = trimmed
+        .starts_with("#!/bin/sh\nif command -v secretguard >/dev/null 2>&1; then\n")
+        && trimmed.contains("DIFF=$(git diff --cached --unified=0")
+        && trimmed.contains("Blocked commit: Leaked API key or secret in staged diff!");
+
+    is_legacy_main || is_legacy_init
+}
+
+fn write_hook_atomically(pre_commit_path: &Path, content: &str) -> Result<(), String> {
+    use std::io::Write;
+
+    let parent = pre_commit_path
+        .parent()
+        .ok_or_else(|| "Invalid pre-commit hook path: missing parent directory".to_string())?;
+    let parent_meta = std::fs::symlink_metadata(parent).map_err(|e| {
+        format!(
+            "Failed to inspect hooks directory '{}': {}",
+            parent.display(),
+            e
+        )
+    })?;
+    if parent_meta.file_type().is_symlink() || !parent_meta.file_type().is_dir() {
+        return Err(format!(
+            "Refusing to install hook inside non-directory or symlink '{}'",
+            parent.display()
+        ));
+    }
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_path = parent.join(format!(
+        ".secretguard-pre-commit.tmp.{}.{}",
+        std::process::id(),
+        nanos
+    ));
+
+    let mut tmp_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)
+        .map_err(|e| {
+            format!(
+                "Failed to create temporary hook file '{}': {}",
+                tmp_path.display(),
+                e
+            )
+        })?;
+
+    if let Err(e) = tmp_file
+        .write_all(content.as_bytes())
+        .and_then(|_| tmp_file.sync_all())
+    {
+        drop(tmp_file);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to write temporary hook file: {}", e));
+    }
+    drop(tmp_file);
+
+    set_hook_executable_permissions(&tmp_path);
+
+    if let Err(err) = crate::vault::atomic_replace_file(&tmp_path, pre_commit_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
+    set_hook_executable_permissions(pre_commit_path);
+    Ok(())
+}
+
+/// Installs or safely upgrades a SecretGuard pre-commit hook without following symlinks or overwriting custom hooks unless `force` is true.
+pub fn install_or_upgrade_pre_commit_hook(
+    pre_commit_path: &Path,
+    force: bool,
+) -> Result<HookInstallOutcome, String> {
+    match std::fs::symlink_metadata(pre_commit_path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "Refusing to overwrite symlink pre-commit hook at '{}'.",
+                    pre_commit_path.display()
+                ));
+            }
+            if !meta.file_type().is_file() {
+                return Err(format!(
+                    "Refusing to overwrite non-regular filesystem object at '{}'.",
+                    pre_commit_path.display()
+                ));
+            }
+
+            let existing = std::fs::read_to_string(pre_commit_path).map_err(|_| {
+                format!(
+                    "Existing non-SecretGuard pre-commit hook at '{}' was preserved. Re-run with --force to replace it.",
+                    pre_commit_path.display()
+                )
+            })?;
+
+            if existing == PRE_COMMIT_HOOK_SCRIPT {
+                set_hook_executable_permissions(pre_commit_path);
+                return Ok(HookInstallOutcome::AlreadyCurrent);
+            }
+
+            if !is_secretguard_managed_hook(&existing) && !force {
+                return Err(format!(
+                    "Existing non-SecretGuard pre-commit hook at '{}' was preserved. Re-run with --force to replace it.",
+                    pre_commit_path.display()
+                ));
+            }
+
+            write_hook_atomically(pre_commit_path, PRE_COMMIT_HOOK_SCRIPT)?;
+            Ok(HookInstallOutcome::Upgraded)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            write_hook_atomically(pre_commit_path, PRE_COMMIT_HOOK_SCRIPT)?;
+            Ok(HookInstallOutcome::Installed)
+        }
+        Err(e) => Err(format!(
+            "Failed to inspect pre-commit hook at '{}': {}",
+            pre_commit_path.display(),
+            e
+        )),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedEntry {
+    pub new_mode: String,
+    pub new_oid: String,
+    pub status: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedFinding {
+    pub path: String,
+    pub matched_rules: Vec<String>,
+}
+
+/// Parses `git diff --cached --raw -z --no-ext-diff` output into staged entries.
+/// Fails closed if any record is malformed or truncated.
+pub fn parse_git_diff_raw_z(raw: &[u8]) -> Result<Vec<StagedEntry>, String> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+    let mut pos = 0;
+
+    while pos < raw.len() {
+        let Some(rel_nul) = raw[pos..].iter().position(|&b| b == 0) else {
+            return Err("Malformed git diff --raw -z record: missing header NUL".to_string());
+        };
+        let header_bytes = &raw[pos..pos + rel_nul];
+        pos += rel_nul + 1;
+
+        let header = std::str::from_utf8(header_bytes)
+            .map_err(|_| "Malformed git diff --raw -z header: invalid UTF-8".to_string())?;
+        if !header.starts_with(':') {
+            return Err(format!("Unexpected git diff --raw -z header: '{}'", header));
+        }
+        let fields: Vec<&str> = header[1..].split(' ').collect();
+        if fields.len() != 5 {
+            return Err(format!(
+                "Unexpected git diff --raw -z field count ({}): '{}'",
+                fields.len(),
+                header
+            ));
+        }
+
+        let new_mode = fields[1];
+        let new_oid = fields[3];
+        let status = fields[4];
+
+        if new_oid.len() < 40 || !new_oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("Invalid staged object ID '{}'", new_oid));
+        }
+
+        let Some(path_nul) = raw[pos..].iter().position(|&b| b == 0) else {
+            return Err("Malformed git diff --raw -z record: missing path NUL".to_string());
+        };
+        let first_path = &raw[pos..pos + path_nul];
+        pos += path_nul + 1;
+
+        let target_path_bytes = if status.starts_with('R') || status.starts_with('C') {
+            let Some(new_path_nul) = raw[pos..].iter().position(|&b| b == 0) else {
+                return Err(
+                    "Malformed git diff --raw -z rename/copy record: missing target path NUL"
+                        .to_string(),
+                );
+            };
+            let new_path = &raw[pos..pos + new_path_nul];
+            pos += new_path_nul + 1;
+            new_path
+        } else {
+            first_path
+        };
+
+        entries.push(StagedEntry {
+            new_mode: new_mode.to_string(),
+            new_oid: new_oid.to_string(),
+            status: status.to_string(),
+            path: String::from_utf8_lossy(target_path_bytes).to_string(),
+        });
+    }
+
+    Ok(entries)
+}
+
+/// Scans all non-deleted staged blobs directly from Git's index without reading the working tree.
+pub fn scan_staged_blobs(engine: &SecretGuardEngine) -> Result<Vec<StagedFinding>, String> {
+    scan_staged_blobs_in_dir(engine, None)
+}
+
+/// Scans staged blobs in `repo_dir` (or current working directory when `None`) with `DEFAULT_MAX_STAGED_BLOB_SIZE`.
+pub fn scan_staged_blobs_in_dir(
+    engine: &SecretGuardEngine,
+    repo_dir: Option<&Path>,
+) -> Result<Vec<StagedFinding>, String> {
+    scan_staged_blobs_in_dir_with_limit(engine, repo_dir, DEFAULT_MAX_STAGED_BLOB_SIZE)
+}
+
+/// Scans staged blobs in `repo_dir` using an explicit `max_blob_bytes` limit, failing closed on oversized blobs.
+///
+/// Note on Git index concurrency: during `git commit`, Git holds `index.lock` (or a temporary index via
+/// `GIT_INDEX_FILE`) while invoking `pre-commit`, which prevents normal concurrent `git add`/`git reset`
+/// index updates. However, if an external process forcibly removes `index.lock` or mutates `GIT_INDEX_FILE`
+/// after `check-staged` returns and before `git commit` finalizes the tree object, a residual TOCTOU window exists.
+pub fn scan_staged_blobs_in_dir_with_limit(
+    engine: &SecretGuardEngine,
+    repo_dir: Option<&Path>,
+    max_blob_bytes: usize,
+) -> Result<Vec<StagedFinding>, String> {
+    let mut diff_cmd = std::process::Command::new("git");
+    if let Some(dir) = repo_dir {
+        diff_cmd.current_dir(dir);
+    }
+    let diff_out = diff_cmd
+        .args([
+            "diff",
+            "--cached",
+            "--raw",
+            "-z",
+            "--full-index",
+            "--no-abbrev",
+            "--no-ext-diff",
+            "--no-renames",
+            "--diff-filter=ACMRT",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to invoke git diff --cached: {}", e))?;
+
+    if !diff_out.status.success() {
+        let stderr = String::from_utf8_lossy(&diff_out.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git diff --cached failed with status {}", diff_out.status)
+        } else {
+            format!("git diff --cached failed: {}", stderr)
+        });
+    }
+
+    let entries = parse_git_diff_raw_z(&diff_out.stdout)?;
+    let mut findings = Vec::new();
+
+    for entry in entries {
+        // Skip symlinks (120000) and submodule gitlinks (160000); never follow symlinks on disk.
+        if entry.new_mode == "120000" || entry.new_mode == "160000" {
+            continue;
+        }
+
+        let mut size_cmd = std::process::Command::new("git");
+        if let Some(dir) = repo_dir {
+            size_cmd.current_dir(dir);
+        }
+        let size_out = size_cmd
+            .args(["cat-file", "-s", &entry.new_oid])
+            .output()
+            .map_err(|e| {
+                format!(
+                    "Failed to query staged blob size for '{}': {}",
+                    entry.path, e
+                )
+            })?;
+        if !size_out.status.success() {
+            let stderr = String::from_utf8_lossy(&size_out.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                format!("git cat-file -s failed for '{}'", entry.path)
+            } else {
+                format!("git cat-file -s failed for '{}': {}", entry.path, stderr)
+            });
+        }
+        let blob_size: usize = String::from_utf8_lossy(&size_out.stdout)
+            .trim()
+            .parse()
+            .map_err(|_| format!("Invalid staged blob size reported for '{}'", entry.path))?;
+        if blob_size > max_blob_bytes {
+            return Err(format!(
+                "Staged blob '{}' size ({} bytes) exceeds maximum allowed limit ({} bytes); failing closed",
+                entry.path, blob_size, max_blob_bytes
+            ));
+        }
+
+        let mut blob_cmd = std::process::Command::new("git");
+        if let Some(dir) = repo_dir {
+            blob_cmd.current_dir(dir);
+        }
+        let blob_out = blob_cmd
+            .args(["cat-file", "blob", &entry.new_oid])
+            .output()
+            .map_err(|e| format!("Failed to invoke git cat-file for '{}': {}", entry.path, e))?;
+
+        if !blob_out.status.success() {
+            let stderr = String::from_utf8_lossy(&blob_out.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                format!("git cat-file blob failed for '{}'", entry.path)
+            } else {
+                format!("git cat-file blob failed for '{}': {}", entry.path, stderr)
+            });
+        }
+
+        if blob_out.stdout.len() > max_blob_bytes {
+            return Err(format!(
+                "Staged blob '{}' size ({} bytes) exceeds maximum allowed limit ({} bytes); failing closed",
+                entry.path,
+                blob_out.stdout.len(),
+                max_blob_bytes
+            ));
+        }
+
+        let (is_binary, text) = decode_buffer_text(&blob_out.stdout);
+        if is_binary {
+            continue;
+        }
+
+        let res = engine.scan_and_sanitize(&text);
+        if res.has_secret {
+            findings.push(StagedFinding {
+                path: entry.path,
+                matched_rules: res.matched_rules,
+            });
+        }
+    }
+
+    Ok(findings)
 }

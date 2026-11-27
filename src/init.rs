@@ -112,44 +112,30 @@ impl SetupWizard {
             let _ = fs::create_dir_all(&hooks_dir);
             let pre_commit = hooks_dir.join("pre-commit");
 
-            let hook_script = r#"#!/bin/sh
-if command -v secretguard >/dev/null 2>&1; then
-    DIFF=$(git diff --cached --unified=0 2>/dev/null)
-    if [ -n "$DIFF" ]; then
-        if ! echo "$DIFF" | secretguard check >/dev/null 2>&1; then
-            echo "\033[1;31m✖ [SecretGuard] Blocked commit: Leaked API key or secret in staged diff!\033[0m"
-            exit 1
-        fi
-    fi
-fi
-exit 0
-"#;
-            let mut installed = false;
-            if pre_commit.exists() {
-                if let Ok(c) = fs::read_to_string(&pre_commit) {
-                    if c.contains("secretguard") {
-                        installed = true;
-                    }
+            match crate::scanner::install_or_upgrade_pre_commit_hook(&pre_commit, false) {
+                Ok(crate::scanner::HookInstallOutcome::AlreadyCurrent) => {
+                    actions_taken.push(
+                        "✓ Git: Pre-commit hook already active (.git/hooks/pre-commit)".to_string(),
+                    );
                 }
-            }
-
-            if installed {
-                actions_taken.push(
-                    "✓ Git: Pre-commit hook already active (.git/hooks/pre-commit)".to_string(),
-                );
-            } else if fs::write(&pre_commit, hook_script).is_ok() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(meta) = fs::metadata(&pre_commit) {
-                        let mut perms = meta.permissions();
-                        perms.set_mode(0o755);
-                        let _ = fs::set_permissions(&pre_commit, perms);
-                    }
+                Ok(crate::scanner::HookInstallOutcome::Upgraded) => {
+                    actions_taken.push(
+                        "✓ Git: Upgraded pre-commit hook to fail-closed staged-blob scanner"
+                            .to_string(),
+                    );
                 }
-                actions_taken.push(
-                    "✓ Git: Installed sub-millisecond (<0.02ms) commit protection hook".to_string(),
-                );
+                Ok(crate::scanner::HookInstallOutcome::Installed) => {
+                    actions_taken.push(
+                        "✓ Git: Installed sub-millisecond (<0.02ms) commit protection hook"
+                            .to_string(),
+                    );
+                }
+                Err(_) => {
+                    actions_taken.push(
+                        "ℹ️  Git: Preserved existing custom pre-commit hook (run 'secretguard install-pre-commit --force' to replace)"
+                            .to_string(),
+                    );
+                }
             }
         } else {
             actions_taken.push(

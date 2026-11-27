@@ -546,7 +546,26 @@ fn run_protect_agent(target_dir: Option<&str>, engine: &SecretGuardEngine) {
     }
 }
 
-fn run_install_pre_commit(target_dir: Option<&str>) {
+fn run_check_staged(engine: &SecretGuardEngine) -> ! {
+    match secretguard::scanner::scan_staged_blobs(engine) {
+        Ok(findings) if findings.is_empty() => process::exit(0),
+        Ok(findings) => {
+            for finding in findings {
+                eprintln!(
+                    "[secretguard] Found {:?} in staged file: {}",
+                    finding.matched_rules, finding.path
+                );
+            }
+            process::exit(1);
+        }
+        Err(err) => {
+            eprintln!("[secretguard] Staged scan error: {}", err);
+            process::exit(2);
+        }
+    }
+}
+
+fn run_install_pre_commit(target_dir: Option<&str>, force: bool) {
     let base = Path::new(target_dir.unwrap_or("."));
     let git_dir = base.join(".git");
     if !git_dir.exists() {
@@ -566,60 +585,28 @@ fn run_install_pre_commit(target_dir: Option<&str>) {
     }
 
     let pre_commit_path = hooks_dir.join("pre-commit");
-    let hook_script = r#"#!/bin/sh
-# SecretGuard Git Pre-Commit Hook (Sub-millisecond Secret Interceptor)
-# https://github.com/hemanathk636/secretguard
-
-if ! command -v secretguard >/dev/null 2>&1; then
-    exit 0
-fi
-
-STAGED_DIFF=$(git diff --cached --unified=0 2>/dev/null)
-if [ -n "$STAGED_DIFF" ]; then
-    SCAN_ERR=$(echo "$STAGED_DIFF" | secretguard check 2>&1)
-    EXIT_CODE=$?
-    if [ $EXIT_CODE -ne 0 ]; then
-        echo ""
-        echo "\033[1;31m✖ [SecretGuard] Git commit blocked: High-entropy secret or API key detected in staged diff!\033[0m"
-        echo "\033[0;33m$SCAN_ERR\033[0m"
-        echo "Please redact credentials before committing. (Use 'git commit --no-verify' to bypass if intentional)"
-        echo ""
-        exit 1
-    fi
-fi
-exit 0
-"#;
-
-    if pre_commit_path.exists() {
-        if let Ok(existing) = std::fs::read_to_string(&pre_commit_path) {
-            if existing.contains("secretguard") {
-                println!(
-                    "✓ SecretGuard pre-commit hook is already installed in: {}",
-                    pre_commit_path.display()
-                );
-                return;
-            }
+    match secretguard::scanner::install_or_upgrade_pre_commit_hook(&pre_commit_path, force) {
+        Ok(secretguard::scanner::HookInstallOutcome::AlreadyCurrent) => {
+            println!(
+                "✓ SecretGuard pre-commit hook is already installed and up to date in: {}",
+                pre_commit_path.display()
+            );
+        }
+        Ok(secretguard::scanner::HookInstallOutcome::Upgraded) => {
+            println!("✨ Successfully upgraded SecretGuard pre-commit hook!");
+            println!("📁 Path: {}", pre_commit_path.display());
+            println!("🔒 Staged commits now use fail-closed staged-blob scanning.\n");
+        }
+        Ok(secretguard::scanner::HookInstallOutcome::Installed) => {
+            println!("✨ Successfully installed SecretGuard pre-commit hook!");
+            println!("📁 Path: {}", pre_commit_path.display());
+            println!("🔒 Every 'git commit' in this repo is now shielded in <0.02ms with zero perceptible delay.\n");
+        }
+        Err(err) => {
+            eprintln!("❌ {}", err);
+            process::exit(1);
         }
     }
-
-    if let Err(e) = std::fs::write(&pre_commit_path, hook_script) {
-        eprintln!("❌ Failed to write pre-commit hook: {}", e);
-        process::exit(1);
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = std::fs::metadata(&pre_commit_path) {
-            let mut perms = metadata.permissions();
-            perms.set_mode(0o755);
-            let _ = std::fs::set_permissions(&pre_commit_path, perms);
-        }
-    }
-
-    println!("✨ Successfully installed SecretGuard pre-commit hook!");
-    println!("📁 Path: {}", pre_commit_path.display());
-    println!("🔒 Every 'git commit' in this repo is now shielded in <0.02ms with zero perceptible delay.\n");
 }
 
 fn parse_scan_options(raw_args: &[String]) -> Result<secretguard::scanner::ScanOptions, String> {
@@ -1189,7 +1176,13 @@ fn main() {
             };
             secretguard::immune::ImmuneEngine::run_cli(&target_args, &engine);
         }
+        "check-staged" => {
+            run_check_staged(&engine);
+        }
         "check" => {
+            if args.len() >= 3 && args[2] == "--staged" {
+                run_check_staged(&engine);
+            }
             let input = if args.len() >= 3 {
                 if args[2] == "-" || args[2] == "--stdin" {
                     let mut buffer = String::new();
@@ -1320,12 +1313,16 @@ fn main() {
             }
         },
         "install-pre-commit" | "pre-commit" => {
-            let target = if args.len() >= 3 {
-                Some(args[2].as_str())
-            } else {
-                None
-            };
-            run_install_pre_commit(target);
+            let mut force = false;
+            let mut target: Option<&str> = None;
+            for arg in &args[2..] {
+                if arg == "--force" || arg == "-f" {
+                    force = true;
+                } else if target.is_none() {
+                    target = Some(arg.as_str());
+                }
+            }
+            run_install_pre_commit(target, force);
         }
         "mcp" => {
             secretguard::mcp::run_mcp_server(&engine);

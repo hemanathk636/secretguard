@@ -3,6 +3,7 @@ mod common;
 use secretguard::identity::{
     classify_requester_with_hash, IdentityContext, RequesterType, TrustTier,
 };
+#[cfg(windows)]
 use secretguard::vault::{create_secure_file_exclusive, validate_secure_path};
 use std::collections::HashMap;
 use std::fs;

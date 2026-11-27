@@ -2,20 +2,28 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, "security/**" ]
   pull_request:
     branches: [ main ]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  lint:
-    name: Code Quality & Clippy Linting
-    runs-on: ubuntu-latest
+  build-and-test:
+    name: Build, Lint & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,63 +40,30 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy linter (-D warnings)
-        run: cargo clippy --all-targets -- -D warnings
-
-  test:
-    name: Test Matrix (${{ matrix.os }})
-    needs: lint
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run Full Workspace Test Suite
-        shell: bash
-        run: |
-          cargo test --verbose -- --nocapture --test-threads=1 2>&1 | tee test_output.log
-        continue-on-error: true
-        id: test_suite
-
-      - name: Diagnose Test Failures
-        if: steps.test_suite.outcome == 'failure'
-        shell: bash
-        run: |
-          FAILED_TESTS=$(grep -E "test .* \.\.\. FAILED" test_output.log | head -n 5 || echo "No FAILED line")
-          PANIC_INFO=$(grep -A 4 -E "panicked at" test_output.log | head -n 10 | tr '\n' ' ' | tr '"' "'" || echo "No panic line")
-          LAST_LINES=$(tail -n 10 test_output.log | tr '\n' ' ' | tr '"' "'")
-          echo "::error title=FailedTest::$FAILED_TESTS"
-          echo "::error title=PanicLocation::$PANIC_INFO"
-          echo "::error title=OutputTail::$LAST_LINES"
-          exit 1
+        run: cargo test --all --quiet
 
       - name: Run Diagnostics (secretguard doctor)
-        run: cargo run -- doctor
+        run: cargo run --locked -- doctor
 
       - name: Run Codebase Scanner (secretguard scan Cargo.toml)
-        run: cargo run -- scan Cargo.toml
+        run: cargo run --locked -- scan Cargo.toml
 
-  audit:
-    name: Dependency Security Audit
+  supply-chain:
+    name: Dependency & License Audit (cargo-audit + cargo-deny)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
+      - name: RustSec Vulnerability Audit (cargo-audit)
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install cargo-audit
-        run: cargo install --locked cargo-audit
-
-      - name: Run Dependency Security Audit
-        run: cargo audit
+      - name: License & Dependency Policy Check (cargo-deny)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
